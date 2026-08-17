@@ -43,7 +43,16 @@ final class SemanticFeed: @unchecked Sendable {
 /// building/tree/structure by ARCore Scene Semantics — the per-pixel backstop for
 /// "never draw content over a surface it's geometrically behind" where no
 /// Streetscape/LiDAR geometry exists. Confidence-feathered, temporally EMA-smoothed.
-final class SemanticOcclusionPass {
+///
+/// Wave D (counsel ARP-11/SWE-4): `@unchecked Sendable` with ONE lock guarding
+/// every piece of mutable render state — the same house style as `SemanticFeed`
+/// above. `encode`/`prepare(device:)` run on RealityKit's render thread while
+/// `setCallbacksActive`/`uninstall` run on the main actor; before this lock, a
+/// teardown mid-encode could nil the pipeline or empty `matteTextures` between
+/// the render thread's guard and its use (the ADR-045 P0-3 crash class,
+/// reintroduced). The lock is held for the whole CPU-side encode (sub-ms);
+/// main-actor callers block at worst that long.
+final class SemanticOcclusionPass: @unchecked Sendable {
     private let feed: SemanticFeed
     private let personOcclusionEnabled: Bool
     /// ADR-031: LiDAR-aligned Depth Anything output for the 4–60 m band; nil when
@@ -52,6 +61,8 @@ final class SemanticOcclusionPass {
     private weak var arView: ARView?
     private weak var session: ARSession?
 
+    /// Guards EVERY mutable field below (counsel ARP-11/SWE-4). Never nest.
+    private let stateLock = NSLock()
     private var device: MTLDevice?
     private var pipeline: MTLComputePipelineState?
     private var textureCache: CVMetalTextureCache?
@@ -137,13 +148,24 @@ final class SemanticOcclusionPass {
         self.session = arView.session
     }
 
-    private(set) var callbacksActive = false
+    private var callbacksActiveStorage = false
+    var callbacksActive: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return callbacksActiveStorage
+    }
 
     /// Attach/detach the render callbacks. Pipeline and matte history are kept
     /// across detaches; re-attach is cheap and the EMA re-converges in ~3 frames.
+    /// (ADR-035: an attached pass with no work still forces RealityKit through
+    /// an offscreen render + full-screen copy — detaching IS the heat fix, so
+    /// install-once was not an option; the lock makes detach safe instead.)
     func setCallbacksActive(_ active: Bool) {
-        guard active != callbacksActive, let arView else { return }
-        callbacksActive = active
+        stateLock.lock()
+        let changed = active != callbacksActiveStorage
+        callbacksActiveStorage = active
+        stateLock.unlock()
+        guard changed, let arView else { return }
         if active {
             arView.renderCallbacks.prepareWithDevice = { [weak self] device in
                 self?.prepare(device: device)
@@ -159,11 +181,18 @@ final class SemanticOcclusionPass {
 
     func uninstall() {
         setCallbacksActive(false)
+        // Counsel ARP-11/SWE-4: an encode may be mid-flight on the render
+        // thread — the teardown takes the same lock, so the pipeline/matte
+        // clears can never land between a guard and its use.
+        stateLock.lock()
         pipeline = nil
         matteTextures = []
+        stateLock.unlock()
     }
 
     private func prepare(device: MTLDevice) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         // Idempotent: callbacks re-attach on demand and must not rebuild Metal state.
         if pipeline != nil, self.device === device { return }
         self.device = device
@@ -188,6 +217,11 @@ final class SemanticOcclusionPass {
     }
 
     private func encode(context: ARView.PostProcessContext) {
+        // Counsel ARP-11/SWE-4: the WHOLE CPU-side encode holds the state lock —
+        // a main-actor uninstall/detach serializes against it instead of
+        // mutating pipeline/mattes under the render thread's feet.
+        stateLock.lock()
+        defer { stateLock.unlock() }
         // Fresh frame: anything left from a bailed-out frame is safe to drop.
         inFlightTextures.removeAll()
         // The contract with RealityKit: once postProcess is set, EVERY frame must
@@ -249,6 +283,11 @@ final class SemanticOcclusionPass {
         guard semanticEnabled || personEnabled || midEnabled,
               let encoder = context.commandBuffer.makeComputeCommandEncoder()
         else {
+            // Counsel ARP-12: wrappers created above must not sit in
+            // inFlightTextures until the NEXT encode — release now and flush
+            // so their IOSurfaces return to the capture pool promptly.
+            inFlightTextures.removeAll()
+            CVMetalTextureCacheFlush(textureCache, 0)
             blit(context: context)
             return
         }
@@ -257,6 +296,8 @@ final class SemanticOcclusionPass {
         ensureMatteTextures(width: target.width, height: target.height)
         guard matteTextures.count == 2 else {
             encoder.endEncoding()
+            inFlightTextures.removeAll()
+            CVMetalTextureCacheFlush(textureCache, 0)
             blit(context: context)
             return
         }
@@ -343,6 +384,11 @@ final class SemanticOcclusionPass {
         context.commandBuffer.addCompletedHandler { _ in
             _ = retained
         }
+        // Counsel ARP-12: flush ONCE PER FRAME after encoding — a non-zero
+        // CVMetalTexture use count keeps the IOSurface out of ARKit's small
+        // capture pool, and sustained pressure there drops camera frames in a
+        // sawtooth that reads as thermal throttling but isn't.
+        CVMetalTextureCacheFlush(textureCache, 0)
     }
 
     /// Counsel MATH-2: the metric distances the depth buffer's two boundary

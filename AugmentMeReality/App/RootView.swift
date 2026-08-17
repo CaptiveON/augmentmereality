@@ -13,6 +13,33 @@ struct RootView: View {
     @StateObject private var reactionSession = ReactionSession()
     @StateObject private var reactionService = ReactionService()
     @State private var receiveDropID: UUID?
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Wave D (counsel SWE-7): the single cover binding. Dismissals run their
+    /// per-destination side effects HERE — one place, no racing bindings.
+    private var destinationBinding: Binding<AppRouter.Destination?> {
+        Binding(
+            get: { router.destination },
+            set: { newValue in
+                let previous = router.destination
+                router.destination = newValue
+                guard newValue == nil, let previous else { return }
+                switch previous {
+                case .create:
+                    router.createPrefill = nil
+                case .onboardingStory:
+                    if router.onboardingPhase == .story { router.finishOnboarding() }
+                case .memory:
+                    reactionSession.endSession()
+                case .camera:
+                    // Swiping the demo camera away returns to the story beat.
+                    if router.onboardingPhase == .fireworksDemo {
+                        router.endFireworksDemo()
+                    }
+                }
+            }
+        )
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -24,32 +51,65 @@ struct RootView: View {
         .environmentObject(reactionSession)
         .environmentObject(reactionService)
         .onAppear { router.startOnboardingIfNeeded() }
-        // ---- The camera moment ----
-        .fullScreenCover(isPresented: $router.showCamera) {
-            ARScreen(isActive: true)
-                .environmentObject(router)
-                .environmentObject(reactionSession)
-                .environmentObject(reactionService)
+        // ---- Wave D (counsel SWE-7): ONE full-screen destination ----
+        // Camera, create, onboarding and memory were four stacked covers on
+        // this view; flows that dismissed one and presented another in the
+        // same update silently dropped a cover (onboarding beat 2 — the one
+        // designed magic moment — could fail to present). A single
+        // `fullScreenCover(item:)` makes every transition one state change.
+        .fullScreenCover(item: destinationBinding) { destination in
+            switch destination {
+            case .camera:
+                ARScreen(isActive: true)
+                    .environmentObject(router)
+                    .environmentObject(reactionSession)
+                    .environmentObject(reactionService)
+            case .create:
+                CreateWizard(initialCoordinate: router.createPrefill)
+                    .environmentObject(router)
+            case .onboardingStory:
+                OnboardingView()
+                    .environmentObject(router)
+            case .memory:
+                if let drop = reactionSession.drop {
+                    MemoryScreen(
+                        drop: drop,
+                        snapshot: reactionSession.memorySnapshot,
+                        watchedSeconds: reactionSession.watchedSeconds,
+                        myReaction: reactionSession.sentEmoji,
+                        delivery: reactionSession.delivery,
+                        onSendOneBack: {
+                            // One destination change (memory → create); the
+                            // session ends explicitly, not via a dismiss race.
+                            reactionSession.endSession()
+                            router.beginCreate()
+                        }
+                    )
+                    .environmentObject(reactionService)
+                }
+            }
         }
-        // ---- The create ritual (ADR-050): What → Where → Wrap → share ----
-        .fullScreenCover(isPresented: $router.showCreate, onDismiss: {
-            router.createPrefill = nil
-        }) {
-            CreateWizard(initialCoordinate: router.createPrefill)
-                .environmentObject(router)
-        }
-        // ---- Onboarding (covers everything until done) ----
-        .fullScreenCover(isPresented: Binding(
-            get: { router.onboardingPhase == .story },
-            set: { if !$0 && router.onboardingPhase == .story { router.finishOnboarding() } }
-        )) {
-            OnboardingView()
-                .environmentObject(router)
+        // The reaction session's phase drives the memory destination — one
+        // source of presentation truth.
+        .onChange(of: reactionSession.phase) { _, phase in
+            if phase == .memory { router.destination = .memory }
         }
         // ---- Receive: magic link → invitation → camera ----
+        // Wave D (counsel SWE-7): a link tapped while a cover is up is QUEUED,
+        // never presented into a busy presenter (where it silently vanished).
         .onOpenURL { url in
             if let id = DropSharingService.dropID(from: url) {
-                receiveDropID = id
+                if router.destination == nil, receiveDropID == nil {
+                    receiveDropID = id
+                } else {
+                    router.pendingReceiveDropID = id
+                }
+            }
+        }
+        .onChange(of: router.destination) { _, destination in
+            if destination == nil, let queued = router.pendingReceiveDropID {
+                router.pendingReceiveDropID = nil
+                receiveDropID = queued
             }
         }
         .sheet(item: $receiveDropID) { id in
@@ -72,29 +132,6 @@ struct RootView: View {
                 }
                 reactionSession.startWatching(drop)
                 router.showCamera = true
-            }
-        }
-        // ---- Memory: graceful close ----
-        .fullScreenCover(isPresented: Binding(
-            get: { reactionSession.phase == .memory },
-            set: { if !$0 { reactionSession.endSession() } }
-        )) {
-            if let drop = reactionSession.drop {
-                MemoryScreen(
-                    drop: drop,
-                    snapshot: reactionSession.memorySnapshot,
-                    watchedSeconds: reactionSession.watchedSeconds,
-                    myReaction: reactionSession.sentEmoji,
-                    // Round 8 (counsel B2): the delivery outcome travels WITH
-                    // the reaction — the Memory renders sent/queued/failed
-                    // distinctly instead of assuming receipt.
-                    delivery: reactionSession.delivery,
-                    onSendOneBack: {
-                        router.showCamera = false
-                        router.beginCreate() // straight into the ritual (ADR-050)
-                    }
-                )
-                .environmentObject(reactionService)
             }
         }
         // ---- Sender: live reaction toast ----
@@ -154,6 +191,21 @@ struct RootView: View {
         // reactions to the drop they just shared).
         .task(id: ReactionService.listenKey(for: library.drops, myUid: account.uid)) {
             reactionService.listenToMySharedDrops(library.drops, myUid: account.uid)
+        }
+        // ---- Wave D (counsel SWE-10/PBS-9): listeners are lifecycle-owned ----
+        // Torn down when the scene leaves the foreground (each is a live
+        // Firestore stream: network, battery, per-read billing) and re-attached
+        // on return; the primed-set watermark makes the re-attach's initial
+        // snapshot history, never a stale toast.
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                reactionService.stop()
+            case .active:
+                reactionService.listenToMySharedDrops(library.drops, myUid: account.uid)
+            default:
+                break
+            }
         }
         // ---- Wave C (counsel SWE-3): auth-ready reconciliation ----
         // Round 2 (C21 — CRITICAL): a full refresh, never a bare reconcile.

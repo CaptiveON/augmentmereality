@@ -3,6 +3,7 @@ import ARKit
 import CoreLocation
 import RealityKit
 import UIKit
+import os
 import simd
 
 /// Tier C — Google ARCore Geospatial (VPS).
@@ -29,6 +30,7 @@ final class GeospatialEngine {
     }
 
     private(set) var state: State = .off
+    private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "geospatial")
 
     /// Latest Scene Semantics buffers for the SilhouetteRefiner (ADR-011).
     let semanticFeed = SemanticFeed()
@@ -414,6 +416,18 @@ final class GeospatialEngine {
 
     // MARK: - Streetscape building occluders
 
+    /// Wave D (counsel ARP-7): mesh construction runs OFF the main actor. The
+    /// old path copied every vertex/triangle in a scalar loop and called the
+    /// synchronous `MeshResource.generate` inside the per-frame GAR update —
+    /// a dozen streamed buildings on one corner turn = tens-to-hundreds of ms
+    /// of main-thread stall exactly when far occlusion should engage (the
+    /// main-thread class ADR-032 banned for USDZ, resurrected for buildings).
+    private let meshQueue = DispatchQueue(label: "streetscape-mesh", qos: .userInitiated)
+    private var meshBuildsInFlight: Set<UUID> = []
+    /// Geometry ids present in the LATEST GAR update — a build landing for a
+    /// building that has since streamed out must not install a ghost occluder.
+    private var lastSeenGeometryIDs: Set<UUID> = []
+
     private func syncOccluders(_ geometries: [GARStreetscapeGeometry]) {
         guard let arView else { return }
         var seen: Set<UUID> = []
@@ -424,12 +438,37 @@ final class GeospatialEngine {
                 entity.setTransformMatrix(geometry.meshTransform, relativeTo: nil)
                 continue
             }
-            guard let mesh = makeMeshResource(from: geometry.mesh) else { continue }
-            let entity = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
-            ensureOccluderRoot(in: arView).addChild(entity)
-            entity.setTransformMatrix(geometry.meshTransform, relativeTo: nil)
-            occluders[id] = entity
+            guard !meshBuildsInFlight.contains(id) else { continue }
+            meshBuildsInFlight.insert(id)
+            // The GARStreetscapeGeometry is retained by the closure, keeping
+            // its vertex buffers valid for the background extraction.
+            meshQueue.async { [weak self] in
+                let descriptor = Self.makeMeshDescriptor(from: geometry.mesh)
+                var mesh: MeshResource?
+                if let descriptor {
+                    // ARP-7: a malformed geometry is a DIAGNOSTIC (logged on
+                    // the main hop below), never a silently missing occluder.
+                    mesh = try? MeshResource.generate(from: [descriptor])
+                }
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.meshBuildsInFlight.remove(id)
+                    guard let mesh else {
+                        self.log.error("Streetscape mesh generate failed for \(id) — occluder skipped")
+                        return
+                    }
+                    guard self.occluders[id] == nil,
+                          self.lastSeenGeometryIDs.contains(id),
+                          let arView = self.arView else { return }
+                    let entity = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
+                    self.ensureOccluderRoot(in: arView).addChild(entity)
+                    entity.setTransformMatrix(geometry.meshTransform, relativeTo: nil)
+                    self.occluders[id] = entity
+                    self.occluderCount = self.occluders.count
+                }
+            }
         }
+        lastSeenGeometryIDs = seen
         for (id, entity) in occluders where !seen.contains(id) {
             entity.removeFromParent()
             occluders[id] = nil
@@ -451,8 +490,10 @@ final class GeospatialEngine {
         return root
     }
 
-    private func makeMeshResource(from mesh: GARMesh) -> MeshResource? {
+    /// Pure extraction — runs on `meshQueue`, never the main actor (ARP-7).
+    private nonisolated static func makeMeshDescriptor(from mesh: GARMesh) -> MeshDescriptor? {
         let vertexCount = Int(mesh.vertexCount)
+        guard vertexCount > 0 else { return nil }
         var positions = [SIMD3<Float>]()
         positions.reserveCapacity(vertexCount)
         for index in 0..<vertexCount {
@@ -473,6 +514,6 @@ final class GeospatialEngine {
         var descriptor = MeshDescriptor(name: "streetscape-building")
         descriptor.positions = MeshBuffer(positions)
         descriptor.primitives = .triangles(indices)
-        return try? MeshResource.generate(from: [descriptor])
+        return descriptor
     }
 }

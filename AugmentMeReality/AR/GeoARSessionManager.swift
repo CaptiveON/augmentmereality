@@ -229,6 +229,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// positioner (compass re-sync, VPS anchor updates) keeps its hands off them
     /// so the object never fights the user's finger.
     private var liveEditingDrops: Set<UUID> = []
+    /// Wave D (counsel SWE-5): the drop identity captured at GESTURE START.
+    /// Every slider tick and the release-commit resolve their target from
+    /// this, never from `nearestDrop` — which is recomputed on a 400 ms timer
+    /// and can change mid-drag (the old code then edited and PERSISTED a drop
+    /// the user was not touching, and leaked the first drop's id into
+    /// `liveEditingDrops` forever, pinning the governor to `.full`).
+    private var editingDropID: UUID?
     private var placementBasis: CLLocation?
     private var basisCameraPosition: SIMD3<Float> = .zero
     /// Refinements are rate-limited: once content is placed it must feel nailed
@@ -441,7 +448,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             return
         }
         arView.session.run(makeConfiguration(
-            activePerception: appliedPerception.active,
+            reconstruction: appliedPerception.reconstruction,
             personSeg: appliedPerception.person,
             sceneDepth: appliedPerception.depth
         ))
@@ -595,7 +602,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// LiDAR meshing, no depth, no person segmentation. `personSeg` adds the
     /// person ML on top — only worth its watts while content is actually in view.
     private func makeConfiguration(
-        activePerception: Bool, personSeg: Bool, sceneDepth: Bool
+        reconstruction: Bool, personSeg: Bool, sceneDepth: Bool
     ) -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
         // With VPS active, Google requires plain .gravity alignment (heading-based
@@ -605,67 +612,106 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         config.worldAlignment = AppConfig.vpsEnabled ? .gravity : .gravityAndHeading
         config.planeDetection = [.horizontal]
 
-        if activePerception {
-            // Real occlusion: on LiDAR devices, reconstruct the environment mesh
-            // and use per-pixel scene depth so real objects hide virtual content.
-            // The mesh persists spatially while active.
-            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
-                config.sceneReconstruction = .mesh
-            }
-            // Raw scene depth (ADR-035/037): Apple's depth ML fusion runs at a
-            // fixed 60 Hz internally whenever requested — request it only for
-            // its actual consumers (person depth-test, mid-field alignment).
-            if sceneDepth,
-               ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
-                config.frameSemantics.insert(.sceneDepth)
-            }
-            // ADR-030 people occlusion: stencil-only `.personSegmentation` (does
-            // NOT trigger RealityKit's blurry built-in people occlusion); our
-            // Metal pass owns the edge. Counsel ARP-1: the custom path also
-            // requires LiDAR scene depth for its depth test — on hardware
-            // without it, fall through to `.personSegmentationWithDepth` so
-            // RealityKit's built-in people occlusion actually runs (the old
-            // gate requested a stencil the pass could never composite: full
-            // segmentation cost, zero occlusion, on most of the install base).
-            if personSeg {
-                if Self.supportsCustomPersonOcclusion {
-                    config.frameSemantics.insert(.personSegmentation)
-                } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
-                    config.frameSemantics.insert(.personSegmentationWithDepth)
-                }
+        // Wave D (counsel SWE-11): scene reconstruction is STATEFUL — every
+        // re-enable rebuilds the mesh from nothing, leaving a multi-second
+        // occlusion hole while sceneUnderstanding still requests occlusion.
+        // It is requested for the whole camera-visible pedestrian session
+        // (shed in transit — counsel ARP-8: meshing glass at vehicle speed
+        // for no consumer — and at thermal .critical), decoupled from the
+        // fast person/depth semantics gating below.
+        if reconstruction, ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            config.sceneReconstruction = .mesh
+        }
+        // Raw scene depth (ADR-035/037): Apple's depth ML fusion runs at a
+        // fixed 60 Hz internally whenever requested — request it only for
+        // its actual consumers (person depth-test, mid-field alignment).
+        if sceneDepth,
+           ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            config.frameSemantics.insert(.sceneDepth)
+        }
+        // ADR-030 people occlusion: stencil-only `.personSegmentation` (does
+        // NOT trigger RealityKit's blurry built-in people occlusion); our
+        // Metal pass owns the edge. Counsel ARP-1: the custom path also
+        // requires LiDAR scene depth for its depth test — on hardware
+        // without it, fall through to `.personSegmentationWithDepth` so
+        // RealityKit's built-in people occlusion actually runs (the old
+        // gate requested a stencil the pass could never composite: full
+        // segmentation cost, zero occlusion, on most of the install base).
+        if personSeg {
+            if Self.supportsCustomPersonOcclusion {
+                config.frameSemantics.insert(.personSegmentation)
+            } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+                config.frameSemantics.insert(.personSegmentationWithDepth)
             }
         }
 
-        // ADR-030/034: cap capture near 30 fps at the LOWEST adequate resolution.
-        // The old "nearest fps" picker could land on a 4K@30 format — 4× the
-        // pixels through the ISP and through every ARKit ML model, far hotter
-        // than 1440p@60. Deterministic rule: target-fps formats, smallest area
-        // that is still ≥720p; if none exists, keep ARKit's default.
-        let candidates = ARWorldTrackingConfiguration.supportedVideoFormats
-            .filter { $0.framesPerSecond == AppConfig.targetFrameRate }
-            .filter { $0.imageResolution.width * $0.imageResolution.height
-                >= 1280 * 720 }
-            .sorted { $0.imageResolution.width * $0.imageResolution.height
-                < $1.imageResolution.width * $1.imageResolution.height }
-        if let format = candidates.first {
-            config.videoFormat = format
+        // ADR-030/034 + Wave D (counsel ARP-6): the capture-format policy has
+        // BOTH bounds — fps ≤ target AND area within [720p … 1920×1440]. The
+        // old floor-only, exact-fps filter could re-select the 4K@30 heat bug
+        // ADR-034 exists to kill, and silently left ARKit's 60 fps default
+        // standing when no exact-30 format existed.
+        let formats = ARWorldTrackingConfiguration.supportedVideoFormats
+        let descriptors = formats.map {
+            (fps: $0.framesPerSecond,
+             width: Int($0.imageResolution.width),
+             height: Int($0.imageResolution.height))
         }
-        let chosen = config.videoFormat
-        videoFormatDescription = String(
-            format: "%.0f×%.0f@%d",
-            chosen.imageResolution.width, chosen.imageResolution.height,
-            chosen.framesPerSecond
-        )
-        metricsLog.log("Capture format \(self.videoFormatDescription)")
+        if let index = Self.pickVideoFormat(from: descriptors) {
+            config.videoFormat = formats[index]
+            let chosen = config.videoFormat
+            videoFormatDescription = String(
+                format: "%.0f×%.0f@%d",
+                chosen.imageResolution.width, chosen.imageResolution.height,
+                chosen.framesPerSecond
+            )
+            metricsLog.log("Capture format \(self.videoFormatDescription)")
+        } else {
+            // The policy is UNSATISFIABLE on this device — never silent: the
+            // HUD carries the evidence (ADR-030 calls capture the single
+            // biggest heat lever) and the log makes it a field diagnostic.
+            let chosen = config.videoFormat
+            videoFormatDescription = String(
+                format: "%.0f×%.0f@%d · UNCAPPED",
+                chosen.imageResolution.width, chosen.imageResolution.height,
+                chosen.framesPerSecond
+            )
+            metricsLog.error("CAPTURE FORMAT POLICY UNSATISFIABLE — platform default stands (heat risk): \(self.videoFormatDescription)")
+        }
         return config
+    }
+
+    /// Wave D (counsel ARP-6): the format policy as a PURE function so the
+    /// device suite can table-test it without constructing ARVideoFormats.
+    /// Preference: highest fps ≤ target, then smallest adequate area.
+    /// nil = no format satisfies policy — the caller logs loudly.
+    nonisolated static func pickVideoFormat(
+        from formats: [(fps: Int, width: Int, height: Int)],
+        targetFPS: Int = AppConfig.targetFrameRate
+    ) -> Int? {
+        let minArea = 1280 * 720
+        let maxArea = 1920 * 1440
+        var best: (index: Int, fps: Int, area: Int)?
+        for (index, format) in formats.enumerated() {
+            let area = format.width * format.height
+            guard format.fps <= targetFPS, area >= minArea, area <= maxArea else { continue }
+            if let current = best {
+                if format.fps > current.fps
+                    || (format.fps == current.fps && area < current.area) {
+                    best = (index: index, fps: format.fps, area: area)
+                }
+            } else {
+                best = (index: index, fps: format.fps, area: area)
+            }
+        }
+        return best?.index
     }
 
     private func runGPSCompass() {
         guard let arView else { return }
         // Sessions start on the idle diet (pre-warm often precedes any content);
         // the governor upgrades perception the moment something renders.
-        let config = makeConfiguration(activePerception: false, personSeg: false, sceneDepth: false)
-        appliedPerception = (active: false, person: false, depth: false)
+        let config = makeConfiguration(reconstruction: false, personSeg: false, sceneDepth: false)
+        appliedPerception = (reconstruction: false, person: false, depth: false)
 
         let occlusionCapable = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
             || ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
@@ -675,7 +721,9 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             // the real reconstructed surface (ADR-027).
             arView.environment.sceneUnderstanding.options.insert(.collision)
         }
-        occlusionActive = occlusionCapable
+        // Wave D (SWE-11 tail): the chip is LIVE state now — the idle diet has
+        // no reconstruction yet; the first governor tick raises it honestly.
+        occlusionActive = false
 
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         resetPlacements()
@@ -694,17 +742,19 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
     /// ADR-033/034/037: swap the perception diet WITHOUT resetting tracking —
     /// anchors, world map, and placed content all survive `session.run(config)`.
-    private var appliedPerception = (active: false, person: false, depth: false)
-    private func setPerception(active: Bool, person: Bool, depth: Bool) {
-        let desired = (active: active, person: active && person, depth: active && depth)
+    /// Wave D (counsel SWE-11): the reconstruction request is its own axis —
+    /// stable across tier cycles — while person/depth stay fast-gated.
+    private var appliedPerception = (reconstruction: false, person: false, depth: false)
+    private func setPerception(reconstruction: Bool, person: Bool, depth: Bool) {
+        let desired = (reconstruction: reconstruction, person: person, depth: depth)
         guard desired != appliedPerception, mode == .gpsCompass, let arView else { return }
         appliedPerception = desired
         arView.session.run(makeConfiguration(
-            activePerception: desired.active,
+            reconstruction: desired.reconstruction,
             personSeg: desired.person,
             sceneDepth: desired.depth
         ))
-        metricsLog.log("Perception active=\(desired.active) person=\(desired.person) depth=\(desired.depth) (tier \(self.powerTier.description))")
+        metricsLog.log("Perception recon=\(desired.reconstruction) person=\(desired.person) depth=\(desired.depth) (tier \(self.powerTier.description))")
     }
 
     private func resetPlacements() {
@@ -729,6 +779,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         deferredTargets.removeAll()
         deferredVPSTransforms.removeAll()
         liveEditingDrops.removeAll()
+        editingDropID = nil
+        // Wave D (counsel SWE-12): a session reset forgets reveals too — the
+        // set grew unbounded across resets before.
+        revealedDrops.removeAll()
         roomDrops.removeAll()
         placementBasis = nil
         headingCorrectionSin = 0
@@ -1034,13 +1088,35 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // alignment with far content.
         // Window mode (ADR-044): reflections misfire the person model and the
         // LiDAR band is all pane — both depth consumers shed.
-        let personUseful = Date().timeIntervalSince(lastContentInViewAt) < 30
-            && personSentinel.personLikely
-            && !windowModeActive
-        let depthUseful = (personUseful
-            || (AppConfig.midFieldDepthEnabled && anyContentBeyondMidMin && tier == .full))
-            && !windowModeActive
-        setPerception(active: tier > .idle, person: personUseful, depth: depthUseful)
+        // Wave D (counsel SWE-11/ARP-8): the request set is a PURE function of
+        // its inputs — the sensor REQUEST derives from the same predicate as
+        // the sensor's USE — with hysteresis so a person stepping out of frame
+        // (5 s sentinel decay) can't cycle `session.run` on the 400 ms tick.
+        let plan = Self.perceptionPlan(
+            tierAboveIdle: tier > .idle,
+            fullTier: tier == .full,
+            cameraVisible: cameraVisible,
+            pedestrian: renderPath == .pedestrian,
+            windowModeActive: windowModeActive,
+            personLikely: personSentinel.personLikely,
+            contentInViewRecently: Date().timeIntervalSince(lastContentInViewAt) < 30,
+            anyContentBeyondMidMin: anyContentBeyondMidMin,
+            thermalCritical: thermal == .critical,
+            supportsCustomPersonOcclusion: Self.supportsCustomPersonOcclusion,
+            midFieldEnabled: AppConfig.midFieldDepthEnabled
+        )
+        let person = applyPerceptionHysteresis(
+            desired: plan.person, applied: appliedPerception.person,
+            downSince: &personDownSince
+        )
+        let depth = applyPerceptionHysteresis(
+            desired: plan.depth, applied: appliedPerception.depth,
+            downSince: &depthDownSince
+        )
+        setPerception(reconstruction: plan.reconstruction, person: person, depth: depth)
+        // Wave D (SWE-11 tail): the HUD chip reports what is ACTUALLY
+        // configured this session, not a static device capability.
+        occlusionActive = appliedPerception.reconstruction
 
         // ADR-035 range-based exclusivity: Google's semantic NN only exists for
         // the >60 m band (and transit, where it is the only occluder). With no
@@ -1072,6 +1148,71 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
     }
     private var passIdleSince: Date?
+    private var personDownSince: Date?
+    private var depthDownSince: Date?
+
+    /// Wave D (counsel SWE-11/ARP-8 + ARP-13's testability ask): the perception
+    /// request set as a PURE function — table-tested on device, no ARKit needed.
+    /// Reconstruction is stateful (rebuilds leave multi-second occlusion holes)
+    /// so it keys ONLY on stable session facts: camera visible, pedestrian
+    /// path, not thermally critical. Person/depth are the fast semantics; each
+    /// depth term carries its own preconditions so a request can never outlive
+    /// its use (the transit-meshing and transit-depth leaks).
+    nonisolated static func perceptionPlan(
+        tierAboveIdle: Bool,
+        fullTier: Bool,
+        cameraVisible: Bool,
+        pedestrian: Bool,
+        windowModeActive: Bool,
+        personLikely: Bool,
+        contentInViewRecently: Bool,
+        anyContentBeyondMidMin: Bool,
+        thermalCritical: Bool,
+        supportsCustomPersonOcclusion: Bool,
+        midFieldEnabled: Bool
+    ) -> (reconstruction: Bool, person: Bool, depth: Bool) {
+        // Every stream requires the camera surface — the plan is TOTAL over
+        // its inputs and never relies on the governor keeping tier and
+        // visibility consistent (a hidden camera sheds everything, whatever
+        // the other inputs claim).
+        let reconstruction = cameraVisible && pedestrian && !thermalCritical
+        let person = cameraVisible
+            && tierAboveIdle
+            && contentInViewRecently
+            && personLikely
+            && !windowModeActive
+        let depth = cameraVisible
+            && ((person && supportsCustomPersonOcclusion)
+                || (midFieldEnabled && anyContentBeyondMidMin && fullTier && pedestrian))
+            && !windowModeActive
+        return (reconstruction, person, depth)
+    }
+
+    /// Wave D (counsel SWE-11): semantics engage IMMEDIATELY (occlusion
+    /// correctness can't wait on a timer) but disengage only after the desire
+    /// has been continuously absent for 10 s AND the stream is actually on —
+    /// never re-raising a stream that is already off.
+    private func applyPerceptionHysteresis(
+        desired: Bool, applied: Bool, downSince: inout Date?
+    ) -> Bool {
+        if desired {
+            downSince = nil
+            return true
+        }
+        guard applied else {
+            downSince = nil
+            return false
+        }
+        if let since = downSince {
+            if Date().timeIntervalSince(since) >= 10 {
+                downSince = nil
+                return false
+            }
+            return true
+        }
+        downSince = Date()
+        return true
+    }
 
     /// When the current VPS convergence attempt began; nil once localized.
     private var convergenceSprintStart: Date?
@@ -1226,7 +1367,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             vpsGlideUntil.removeAll()
             metricsLog.log("Render path → transit")
         case .pedestrian:
-            if occlusionActive {
+            // Wave D: keyed on device CAPABILITY (occlusionActive is live state
+            // now, and is false here — transit just had reconstruction shed).
+            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+                || ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
                 arView.environment.sceneUnderstanding.options.insert(.occlusion)
             }
             geospatial.setOccludersHidden(false)
@@ -1243,7 +1387,35 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         return nearby + demoDrops
     }
 
+    /// Wave D (counsel SWE-5/SWE-12): EVERY site that destroys a drop's
+    /// presence goes through here. Per-drop state lives in many parallel maps
+    /// and the three old ad-hoc cleanup loops each forgot a different subset —
+    /// the leaked `liveEditingDrops` entry alone pinned the power governor to
+    /// `.full` for the rest of the session (thermal `.serious` inside 10 min).
+    private func removePerDropState(_ id: UUID) {
+        placedHolders[id]?.removeFromParent()
+        placedHolders[id] = nil
+        placedDrops[id] = nil
+        markers[id] = nil
+        contentEntities[id] = nil
+        appliedCompensation[id] = nil
+        groundDiscs[id] = nil
+        groundLockBaseY[id] = nil
+        deferredTargets[id] = nil
+        deferredVPSTransforms[id] = nil
+        liveEditingDrops.remove(id)
+        if editingDropID == id { editingDropID = nil }
+        vpsOwnedDrops.remove(id)
+        vpsGlideUntil[id] = nil
+        vpsCorrectionTotals[id] = nil
+        revealedDrops.remove(id)
+    }
+
     private func updateNearest() {
+        // Wave D (counsel SWE-5): nearest is FROZEN while a drag is live — a
+        // mid-drag nearest change used to jump the sliders (`syncSliders`) and
+        // land the release-commit on a drop the user wasn't editing.
+        guard editingDropID == nil else { return }
         // Room drops win by AR-space distance — geo distance is meaningless for
         // them, and indoors they are what the user is testing (ADR-025).
         if !roomDrops.isEmpty, let arView {
@@ -1486,17 +1658,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             }
         }
 
-        for (id, holder) in placedHolders where !seen.contains(id) && roomDrops[id] == nil {
-            holder.removeFromParent()
-            placedHolders[id] = nil
-            placedDrops[id] = nil
-            markers[id] = nil
-            contentEntities[id] = nil
-            appliedCompensation[id] = nil
-            groundDiscs[id] = nil
-            groundLockBaseY[id] = nil
-            deferredTargets[id] = nil
-            deferredVPSTransforms[id] = nil
+        for (id, _) in placedHolders where !seen.contains(id) && roomDrops[id] == nil {
+            removePerDropState(id)
         }
 
         // Counsel ARP-5 + Wave B review (C3/C11): a basis captured while
@@ -1595,9 +1758,19 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     func adjustNearestDrop(
         height: Double? = nil, scale: Double? = nil, rotation: Double? = nil, commit: Bool
     ) {
-        guard let current = nearestDrop else { return }
-        let id = current.id
-        var drop = placedDrops[id] ?? current
+        // Wave D (counsel SWE-5): bind to the identity captured at gesture
+        // start; `updateNearest()` is frozen while a drag is live, and a drop
+        // removed mid-drag clears the capture via `removePerDropState`.
+        if editingDropID == nil { editingDropID = nearestDrop?.id }
+        guard let id = editingDropID else { return }
+        guard let resolved = placedDrops[id] ?? roomDrops[id]
+            ?? demoDrops.first(where: { $0.id == id })
+            ?? (nearestDrop?.id == id ? nearestDrop : nil) else {
+            editingDropID = nil
+            liveEditingDrops.remove(id)
+            return
+        }
+        var drop = resolved
         let oldHeight = drop.heightAboveGround
         if let height { drop.heightAboveGround = height }
         if let scale { drop.scale = scale }
@@ -1659,6 +1832,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
         if commit {
             liveEditingDrops.remove(id)
+            editingDropID = nil // the gesture is over; the next drag re-captures
             if height != nil {
                 // A deliberate height choice overrides any previous ground lock.
                 groundLockBaseY[id] = nil
@@ -1977,17 +2151,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
                 DropEntityFactory.startAnimations(on: holder)
             }
         }
-        for (id, holder) in placedHolders where !seen.contains(id) && roomDrops[id] == nil {
-            holder.removeFromParent()
-            placedHolders[id] = nil
-            placedDrops[id] = nil
-            markers[id] = nil
-            contentEntities[id] = nil
-            appliedCompensation[id] = nil
-            groundDiscs[id] = nil
-            groundLockBaseY[id] = nil
-            deferredTargets[id] = nil
-            deferredVPSTransforms[id] = nil
+        for (id, _) in placedHolders where !seen.contains(id) && roomDrops[id] == nil {
+            removePerDropState(id)
         }
         renderedDropCount = placedHolders.count
 

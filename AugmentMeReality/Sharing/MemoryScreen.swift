@@ -93,7 +93,9 @@ struct MemoryScreen: View {
                     saveToPhotos()
                 }
                 NightGhost(title: "Send one back") {
-                    dismiss()
+                    // Wave D (counsel SWE-7): the closure performs ONE
+                    // destination change — a dismiss()+present pair here was
+                    // exactly the racing-bindings pattern that dropped covers.
                     onSendOneBack()
                 }
                 Text("Closed itself — short & battery-kind by design")

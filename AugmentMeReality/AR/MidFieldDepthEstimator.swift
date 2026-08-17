@@ -138,11 +138,21 @@ final class MidFieldDepthEstimator {
         lastRunAt = Date()
         stateLock.unlock()
 
-        guard let lidar = frame.sceneDepth?.depthMap else {
+        guard let lidarSource = frame.sceneDepth?.depthMap else {
             stateLock.lock(); busy = false; stateLock.unlock()
             return
         }
-        let image = frame.capturedImage
+        // Wave D (counsel ARP-12, researcher-corrected direction): COPY OUT and
+        // promptly release — never hold ARKit's pool-managed buffers (and never
+        // retain the ARFrame) for the 17–50 ms of a full inference + fit. The
+        // capture pool is small; sustained pressure drops camera frames in a
+        // sawtooth that reads as thermal throttling. The copies are app-owned;
+        // ARKit gets its buffers back the moment this scope ends.
+        guard let image = Self.copyPixelBuffer(frame.capturedImage),
+              let lidar = Self.copyPixelBuffer(lidarSource) else {
+            stateLock.lock(); busy = false; stateLock.unlock()
+            return
+        }
         let timestamp = frame.timestamp
 
         queue.async { [weak self] in
@@ -181,6 +191,64 @@ final class MidFieldDepthEstimator {
                 self.feed.invalidateIfStale(maxAge: AppConfig.midDepthMaxSampleAge)
             }
         }
+    }
+
+    // MARK: - Buffer ownership (Wave D, counsel ARP-12)
+
+    /// Deep-copies a pixel buffer into an APP-OWNED allocation (all planes).
+    /// The returned buffer has no ties to ARKit's capture pool — the original
+    /// can be released immediately, which is the researcher-verified fix
+    /// direction (retaining frames is the documented CAUSE of pool
+    /// exhaustion, not the cure).
+    static func copyPixelBuffer(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        let format = CVPixelBufferGetPixelFormatType(source)
+        var copyOut: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+        ]
+        guard CVPixelBufferCreate(
+            nil, width, height, format, attributes as CFDictionary, &copyOut
+        ) == kCVReturnSuccess, let copy = copyOut else { return nil }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(copy, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(copy, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+        if CVPixelBufferIsPlanar(source) {
+            for plane in 0..<CVPixelBufferGetPlaneCount(source) {
+                guard let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
+                      let dst = CVPixelBufferGetBaseAddressOfPlane(copy, plane) else { return nil }
+                let srcStride = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
+                let dstStride = CVPixelBufferGetBytesPerRowOfPlane(copy, plane)
+                let rows = CVPixelBufferGetHeightOfPlane(source, plane)
+                if srcStride == dstStride {
+                    memcpy(dst, src, srcStride * rows)
+                } else {
+                    let rowBytes = min(srcStride, dstStride)
+                    for row in 0..<rows {
+                        memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+                    }
+                }
+            }
+        } else {
+            guard let src = CVPixelBufferGetBaseAddress(source),
+                  let dst = CVPixelBufferGetBaseAddress(copy) else { return nil }
+            let srcStride = CVPixelBufferGetBytesPerRow(source)
+            let dstStride = CVPixelBufferGetBytesPerRow(copy)
+            if srcStride == dstStride {
+                memcpy(dst, src, srcStride * height)
+            } else {
+                let rowBytes = min(srcStride, dstStride)
+                for row in 0..<height {
+                    memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+                }
+            }
+        }
+        return copy
     }
 
     // MARK: - Metric alignment
