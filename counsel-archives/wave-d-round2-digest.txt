@@ -1,0 +1,161 @@
+===== render thread, Metal, buffers: 2 findings =====
+[RENDER-LENS-1] MEDIUM /Users/captiveon/Documents/techproject/experimental/thmillion/practical/AugmentMeReality/AugmentMeReality/AR/GeoARSessionManager.swift:1226 — RENDER-1's dwell floor is a dead conjunct plus a tripled idle-attached window: the 10 s min-attach term can never bind, so the pass now burns ADR-035's offscreen-render cost for 15 s of no work instead of 5 s
+  HARM: Every idle episode (person walks out of frame, content leaves view, thermal sheds the depth streams) now costs ~15 s x 60 fps ≈ 900 forced offscreen renders + full-screen source→target blits instead of ~300 — roughly 600 extra full-screen copies per episode, repeated on each cycle across a 10-minute session. That is precisely the regression ADR-035 exists to prevent, charged against the charter's 
+  FIX: Put the guarantee in the conjunct that can bind and give the idle window back: restore the idle threshold to 5 s and let the 10 s min-attach floor set the toggle period — `if Date().timeIntervalSince(since) > 5, Date().timeIntervalSince(passAttachedAt) > 10`. Toggle period stays ≥10 s (attach at T, work ends at T+1, idle satisfied T+6, detach held to T+10) while idle-attached time drops from 15 s to ≤9 s and to 5 s whenever work ran longer than 1
+[RENDER-LENS-2] LOW /Users/captiveon/Documents/techproject/experimental/thmillion/practical/AugmentMeReality/AugmentMeReality/Services/PersonSentinel.swift:47 — RENDER-6's 'measured, not asserted' buffer hold starts the clock after the queue wait, so it under-reports exactly under the thermal pressure it exists to detect
+  HARM: On a device where the fps sawtooth is being caused by capture-pool starvation from a delayed sentinel block, the field trace shows no 'PersonSentinel buffer hold exceeded 100 ms' line at all, because perform() on a downscaled human-rectangle pass is a few ms regardless. The one instrument round 2 added to attribute the sawtooth correctly reports clean under the failure it was built for, sending th
+  FIX: Sample the start on the caller's side, where the retain actually happens, and capture it: `let holdStart = Date()` immediately before `queue.async`, then `queue.async { [weak self, holdStart] in ... }`. Also store the last measured hold (e.g. `private(set) var lastHoldSeconds`) or accept an injectable clock so the measurement itself is testable rather than log-only.
+
+CLOSURES:
+  CLOSED: RENDER-2 — historyValid uniform gates the EMA seed; Swift↔Metal layout in sync
+  PARTIAL: RENDER-1 step 1 — pass detach dwell floor (15 s idle AND 10 s since attach)
+  CLOSED: RENDER-3 — releaseCaptureResources() on detach + uninstall
+  CLOSED: RENDER-4 — prepare(device:) builds Metal state outside the lock, commits with a 
+  CLOSED: RENDER-5 — MidFieldDepthEstimator copies on the QUEUE via SourceBox into pooled 
+  PARTIAL: RENDER-6 — PersonSentinel queue .userInitiated with a measured >100 ms hold log
+  CLOSED: RENDER-7 — bailOut() on every encode exit
+  CLOSED: RSCH-2 — SemanticFeed.clear() called from disarmSemanticMatte
+  CLOSED: RENDER-8 — planar stride-mismatch copy test
+  PARTIAL: ARPCFG-1 — does the USE side share midFieldServiceable, or did only the request 
+  CLOSED: ARPCFG-3/STATE-2 — occlusion option tick-derived; transitions set only their own
+  CLOSED: ARPCFG-7/FLOW-8 — capability terms in the plan; occlusionActive capability-faith
+
+===== ARSession config + scheduling: tick-derived occlus: 3 findings =====
+[ARPCFG-R2-1] HIGH AugmentMeReality/AR/GeoARSessionManager.swift:1151 — Reconstruction grace expires BEFORE the suspend it exists to cover — the tab-flip fires a mesh-destroying session.run ~0.2 s before session.pause()
+  HARM: Charter bar 'zero draw-over' is violated on the app's most common interaction. The tick-derived option keeps `.occlusion` inserted throughout (:1183-1192 — capable && pedestrian && !window, no reconstruction term), so RealityKit is asked to occlude with no mesh: for the seconds LiDAR takes to remesh after every tab flip, content renders straight through walls, furniture and the ground. The build's
+  FIX: Give the plan's grace strictly more room than the suspend timer plus one tick quantum. Either stamp `lastCameraVisibleAt = Date()` inside markCameraHidden() (GeoARSessionManager.swift:512-518) so the clock starts at the true visibility edge, or compare against a named `reconstructionGraceSeconds = AppConfig.pauseGraceSeconds + tickPeriodSeconds` at :1152. Expose tickPeriodSeconds as a static so the relationship is assertable.
+[ARPCFG-R2-2] MEDIUM AugmentMeReality/AR/GeoARSessionManager.swift:488 — resumeSession's plan omits the camera-visibility term the tick's plan has — a warm-up resume fires two session.runs back to back
+  HARM: Two full ARSession reconfigurations, each restarting the capture pipeline, at exactly the moment beginRevealWarmup exists to have a live session ready for 'Reveal in AR' — the pre-warm the call buys is thrown away and restarted twice. Both runs re-stamp sessionRunSince (:505, :803), so ADR-043's reveal gate (frameUpdate:2360-2366, frame.timestamp > sessionRunSince) must wait for a frame captured a
+  FIX: Make the resume plan the same function as the tick plan: give resumeSession a `cameraRecentlyVisible` input (cameraVisible || Date().timeIntervalSince(lastCameraVisibleAt) < grace) and require it for reconstruction, or extract `resumePerceptionPlan(...)` as a nonisolated static and assert it agrees with perceptionPlan's reconstruction for identical inputs.
+[ARPCFG-R2-3] MEDIUM AugmentMeReality/AR/GeoARSessionManager.swift:2401 — Mid-field depth USE gate has no capability term — the ~50 MB Depth Anything model loads on non-LiDAR devices that can never feed it
+  HARM: A CoreML/ANE compile heat spike plus roughly 50 MB of model weights resident for the rest of the session, on the non-LiDAR majority of the install base, for a stream the hardware cannot deliver and a consumer that is nil. The ADR-035 comment at :2419-2420 names this exact cost ('the CoreML/ANE compile is a launch heat spike — pay it only when far content actually exists'). It lands during the .ful
+  FIX: Store `wantsMidDepth` from :365-366 as a property and gate :2401 on it (or on `semanticPass.hasMidDepthFeed`). While there, replace the inlined band at :2415-2416 with the shared Self.midFieldServiceable(distance:) so the doc claim at :1293-1296 becomes true, and add !windowModeActive so the use side is a subset of the request side in every term.
+
+CLOSURES:
+  CLOSED: ARPCFG-3/STATE-2 (tick-derived occlusion option; transitions set only their own 
+  CLOSED: RENDER-2 (historyValid uniform gates the EMA seed)
+  PARTIAL: ARPCFG-1 (mid-field depth term = the consumer's real predicate; shared midFieldS
+  PARTIAL: ARPCFG-2 (suspend resets the scheduler; resume computes its own plan; sessionRun
+  PARTIAL: ARPCFG-4 (cameraRecentlyVisible feeds the reconstruction term only)
+  PARTIAL: ARPCFG-7/FLOW-8 (capability terms in the plan; occlusionActive capability-faithf
+  CLOSED: STATE-1/FLOW-5 (1.5 s live-edit abandon; cancelLiveEdit from markCameraHidden + 
+  CLOSED: ARPCFG-6 (ground snap declines without a real surface; mesh rung gated on recons
+  CLOSED: RENDER-1 step 1 (pass detach dwell floor: 15 s idle AND 10 s since attach)
+  CLOSED: RENDER-3/4/7 (releaseCaptureResources on detach+uninstall; bailOut on every enco
+  CLOSED: RENDER-5/6 (pooled off-queue copies, SourceBox empties pre-inference; sentinel .
+  CLOSED: RSCH-2 (SemanticFeed.clear from disarmSemanticMatte)
+  CLOSED: STATE-3 (clearRoomDrops loops removePerDropState)
+  CLOSED: STATE-4 (strict edit-target resolution; nearestDrop cleared on removal)
+  CLOSED: STATE-5 (invalidateAnchor on removal; vpsOwnedDrops.insert below the holder guar
+  CLOSED: STATE-6 (durable per-drop reaction watermark)
+  CLOSED: STATE-8 (mesh builds capped 8/pass nearest-first; SeenGeometryBox checked inside
+  CLOSED: FLOW-1/RSCH-1 (onboardingBeat on the router; startDemo clears room drops)
+  CLOSED: STATE-7/FLOW-3 (linkArrived/promotePendingReceive machine; promotion from cover 
+  CLOSED: FLOW-2 (reveal hand-off via revealedDrop + sheet onDismiss)
+  CLOSED: FLOW-4 (memory destination gated on camera-up; camera exit ends the watch sessio
+  CLOSED: FLOW-6 (escape chevron above all branches)
+  CLOSED: FLOW-7 (UNCAPPED chip)
+  CLOSED: FLOW-9 (toast + persist banner inside every cover and on the base)
+  CLOSED: FLOW-10 (Home WAITING FOR YOU card starts the watch session)
+  CLOSED: FLOW-11 unit-table half (state machines got unit tables)
+
+===== state lifecycle: 5 findings =====
+[STATE-L1] HIGH AugmentMeReality/AR/GeoARSessionManager.swift:1089 — The 1.5 s gesture terminator fires on a stationary-finger drag and lets the still-live gesture re-bind to a different drop, persisting the edit
+  HARM: Two concrete harms in a session with ≥2 drops near each other (the common 'I left two gifts here' case, and the two-object Playground flow which resolves nearest by AR-space distance at GeoARSessionManager.swift:1548-1560). (1) Wrong-drop persist: user drags drop A's height slider, holds still ~1.9 s to look up and judge the placement — the designed interaction, per the panel's own doc comment at 
+  FIX: Make the terminator key on gesture LIVENESS, not tick cadence. Add `onEditingChanged` begin/end plumbing: in ARScreen.swift:498-502/:519-523/:540-544 change each closure to `{ editing in if editing { manager.beginLiveEdit() } else { manager.adjustNearestDrop(..., commit: true) } }`, have beginLiveEdit() stamp lastLiveEditTickAt, and gate the terminator on `!gestureTouchActive`. Extract the decision as a pure `static func liveEditVerdict(captureEx
+[STATE-L2] MEDIUM AugmentMeReality/AR/GeospatialEngine.swift:467 — The mesh-build budget is per sync pass, and sync passes run at render rate — the claimed backlog bound does not bind
+  HARM: On the exact scenario the fix names — a corner turn streaming a dense block while VPS is still converging (localized but above vpsGoodHorizontalAccuracy, so isConverging is true and the sprint interval is 0) — the entire streamed building set reaches the serial queue within ⌈N/8⌉ render frames, ~200 ms for N=100. All N GARStreetscapeGeometry vertex+triangle buffers are then pinned simultaneously b
+  FIX: Make the budget a CONCURRENCY cap rather than a per-pass cap: admit `max(0, budget - meshBuildsInFlight.count)` ids per pass, and extract the choice as a pure `static func meshBuildAdmissions(pending:inFlight:budget:) -> [UUID]` so the bound is table-testable. Optionally also rate-limit syncOccluders itself (it does not need to run at 60 Hz — the already-built occluders' setTransformMatrix loop at :457-459 is the only part that benefits from rend
+[STATE-L3] MEDIUM AugmentMeReality/Services/ReactionService.swift:188 — Re-prime advances every drop's watermark but surfaces only one reaction — simultaneous missed reactions are permanently swallowed
+  HARM: Sender has 3 shared drops; a reaction lands on each while the app is backgrounded. On foreground return, all 3 re-prime: 3 watermarks advance to the new document ids, and 1 toast renders (the last callback to land — the other two assignments are overwritten within the same run-loop turn, so SwiftUI never draws them). The other 2 reactions are now permanently unrecoverable: the durable watermark eq
+  FIX: Buffer instead of overwriting. Add `private var missedQueue: [(key: String, title: String, reaction: DropReaction)]`; in the re-prime branch enqueue rather than assign, and record the watermark only when an entry is actually surfaced. Make `clearIncoming()` pop the next queued entry into `incoming` (and record ITS watermark) instead of nilling unconditionally, so N missed reactions produce N sequential toasts and N watermark advances. Extract the
+[STATE-L4] MEDIUM AugmentMeReality/AR/GeoARSessionManager.swift:2411 — ARPCFG-1's capability term landed on the request side only — frameUpdate loads the ~50 MB depth model on hardware where it can never produce a sample
+  HARM: On every non-LiDAR iPhone (the majority of the install base) running a shipping build with a Google Geospatial key, the first time any drop sits 4–5 m away at full tier the app pays a CoreML/ANE compile — the launch-class heat spike ADR-035 explicitly defers — and then holds ~50 MB of model weights resident for the whole session, feeding a MidFieldDepthFeed the render pass was not even wired to. T
+  FIX: Route both sides through one predicate. Add `nonisolated static func midFieldUseful(supportsSceneDepth:pedestrian:thermalSerious:fullTier:anyServiceable:) -> Bool`, call it from frameUpdate (replacing :2411-2417) and use it as the mid-field clause of perceptionPlan's depth term (:1287-1288). At minimum, add `ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)` to the `useful` expression so loadIfNeeded() is unreachable without LiDAR.
+[STATE-L5] LOW AugmentMeReality/Services/ReactionService.swift:48 — The durable reaction watermark dictionary is never pruned — it grows monotonically in UserDefaults for the life of the install
+  HARM: A prolific sender accumulates one permanent ~36-byte key plus a ~36-byte value (plus plist overhead) for every drop they have ever link-shared, and the whole dictionary is re-encoded and written to the standard defaults domain on the main actor on every single reaction recorded (:49, reached from both the prime path :188 and the live path :196). At a few hundred drops this is tens of KB re-seriali
+  FIX: Prune inside the existing loop at ReactionService.swift:143-147 using the SAME `allSharedKeys` set the listener prune uses (so the SURF-lens-4 rule holds: a drop that merely fell out of the newest-10 attach window keeps its watermark; only a drop that left the shared set entirely loses it). Extract as `nonisolated static func prunedWatermarks(_ current: [String: String], keepingSharedKeys: Set<String>) -> [String: String]` and write once per list
+
+CLOSURES:
+  CLOSED: ARPCFG-3/STATE-2 (occlusion option tick-derived from a pure predicate)
+  CLOSED: RENDER-2 (historyValid uniform gates the EMA seed)
+  PARTIAL: ARPCFG-1 (mid-field depth term = the consumer's predicate, shared static)
+  PARTIAL: STATE-1/FLOW-5 (lastLiveEditTickAt + 1.5 s abandon; cancelLiveEdit from markCame
+  CLOSED: FLOW-1 (router.onboardingBeat survives the cover hand-off)
+  PARTIAL: RSCH-1 (startDemo clears room drops first — demo is idempotent)
+  CLOSED: ARPCFG-2 (suspend resets scheduler; resume computes its own plan; sessionRunSinc
+  CLOSED: ARPCFG-4 (cameraRecentlyVisible feeds the reconstruction term only)
+  CLOSED: ARPCFG-7/FLOW-8 (capability terms in the plan; occlusionActive capability-faithf
+  CLOSED: STATE-3 (clearRoomDrops loops removePerDropState)
+  CLOSED: STATE-4 (strict edit-target resolution; nearest cleared on removal)
+  CLOSED: STATE-5 (invalidateAnchor on removal; vpsOwnedDrops.insert below the holder guar
+  CLOSED: ARPCFG-6 (ground snap declines visibly with no real surface; mesh rung gated on 
+  CLOSED: RENDER-1 step 1 (pass detach dwell floor: 15 s idle AND 10 s since attach)
+  CLOSED: RENDER-3/7 (releaseCaptureResources on detach + uninstall; bailOut on every enco
+  CLOSED: RENDER-4 (prepare(device:) builds Metal state outside the lock, commits under it
+  CLOSED: RSCH-2 (SemanticFeed.clear() from disarmSemanticMatte)
+  CLOSED: RENDER-5/6 (SourceBox empties before inference; pooled buffers; sentinel .userIn
+  PARTIAL: STATE-6 (durable per-drop reaction watermark)
+  PARTIAL: STATE-8 (mesh builds capped 8/pass nearest-first; relevance checked inside the q
+  CLOSED: STATE-7/FLOW-3 (router.linkArrived/promotePendingReceive; promotion from cover A
+  CLOSED: FLOW-2 (reveal hand-off via revealedDrop + sheet onDismiss)
+  CLOSED: FLOW-4 (memory destination gated on camera-up; camera-exit ends the session)
+  CLOSED: FLOW-6 (escape chevron is a ZStack sibling above all branches)
+  CLOSED: FLOW-7 (UNCAPPED chip in statusCard)
+  CLOSED: FLOW-9 (toast + persist banner inside every cover and on the base)
+  CLOSED: FLOW-10 (Home's WAITING FOR YOU card starts the watch session)
+  CLOSED: FLOW-11 XCUITest half / RENDER-1 steps 2-3 / ARPCFG-5 / STATE-9 / RENDER-5 downs
+
+===== End-to-end presentation + UX. Verified against sou: 3 findings =====
+[UX-1] MEDIUM AugmentMeReality/App/RootView.swift:83 — Round 2's second, cover-scoped reaction toast makes an unguarded cancellation-clear reachable — any cover transition wipes a live toast, defeating FLOW-9
+  HARM: The sender's live reaction toast is the loop's payoff and its only surface — there is no reaction inbox, and ReactionService.incoming/incomingDropTitle are the sole carriers of the reactor's name and the drop title. Leaving any cover within 4 s of a toast destroys it mid-read, and the natural user response to seeing a toast in the camera IS to tap the chevron out to look at it. This is precisely t
+  FIX: Guard the cancellation and key the window to the reaction: `.task(id: reaction.id) { do { try await Task.sleep(for: .seconds(4)) } catch { return }; reactionService.clearIncoming() }`. Better, since the toast is now rendered twice: move the timer out of the view entirely and give ReactionService a single owner — e.g. an `autoClearIncoming(after:)` started when `incoming` is assigned (ReactionService.swift:184 and :198) and cancelled/restarted per
+[UX-2] MEDIUM AugmentMeReality/Home/HomeScreen.swift:151 — FLOW-10's Home card commits the full watch ritual at any distance — a one-tap path from the front door to a fabricated Memory and a false reaction to the sender
+  HARM: The sender is told their gift was found and reacted to by someone who was three kilometres away and never saw it, and the receiver is handed a keepsake asserting a live viewing that did not happen. This is a fabricated receipt in both directions, against the invariant the counsel has enforced across rounds 8/10/12 and that the code itself states at MemoryScreen.swift:57-58 ('Nothing on this screen
+  FIX: Make the card's action a function of distance, matching the copy it already renders. Introduce one pure seam, e.g. `static func watchAdmission(distanceMeters: Double?) -> WatchAdmission` returning `.startRitual` inside the arrival radius (the 60 m the subline already uses at HomeScreen.swift:182) and `.navigateOnly` otherwise and when there is no location fix; on `.navigateOnly` set `router.showCamera = true` WITHOUT startWatching, and let the ri
+[UX-3] MEDIUM AugmentMeReality/AR/GeoARSessionManager.swift:2037 — ARPCFG-6's ground-snap decline was wired into the CRITICAL persist-error slot and evicts a live data-loss message from the adjacent control
+  HARM: A data-loss warning is destroyed unseen by a cosmetic advisory triggered from the adjacent button, and the user is left believing an edit persisted (or that a received drop was saved) when it did not. persistErrorText is single-slot with no history, so the warning has no second surface. This regresses an invariant the counsel already made law in round 6 (sync-6/arui-6, encoded in the comment at :8
+  FIX: `showPersistError("Couldn't find the ground here — move closer and try again", critical: false)`. Cleaner: give transient AR advisories their own published slot rather than borrowing the persist-failure channel, so an advisory can never contend with a data-loss message at all — the decline is a coaching message, not a failure to save.
+
+CLOSURES:
+  CLOSED: FLOW-1/RSCH-1 — onboarding beat on the router; beginFireworksDemo advances it; s
+  CLOSED: FLOW-2 — reveal hand-off via revealedDrop + sheet onDismiss
+  CLOSED: FLOW-3/STATE-7 — router.linkArrived/promotePendingReceive; promotion from cover 
+  CLOSED: FLOW-4 — memory destination gated on camera-up; camera-exit ends a live watch se
+  CLOSED: FLOW-6 — escape chevron is a ZStack sibling above all branches
+  CLOSED: FLOW-7 — UNCAPPED chip in statusCard
+  PARTIAL: FLOW-9 — toast + persist banner render inside every cover and on the base
+  PARTIAL: FLOW-10 — Home's WAITING FOR YOU card starts the watch session
+  CLOSED: FLOW-5/STATE-1 — lastLiveEditTickAt + 1.5 s abandon; cancelLiveEdit from markCam
+  CLOSED: STATE-3 — clearRoomDrops loops removePerDropState
+  CLOSED: STATE-4 — strict edit-target resolution; removePerDropState clears nearestDrop
+  CLOSED: STATE-5 — invalidateAnchor on removal; vpsOwnedDrops.insert below the holder gua
+  CLOSED: STATE-6 — durable per-drop reaction watermark
+  CLOSED: ARPCFG-3/STATE-2 — occlusionOptionDesired pure predicate applied every tick; set
+  CLOSED: ARPCFG-7/FLOW-8 — capability terms in the plan; occlusionActive capability-faith
+  CLOSED: ARPCFG-4 — cameraRecentlyVisible feeds the reconstruction term only
+  CLOSED: ARPCFG-2 — suspend resets the scheduler; resume computes its own plan; sessionRu
+  PARTIAL: ARPCFG-1 — perceptionPlan takes midFieldServiceable + thermalSerious; VERIFY the
+  PARTIAL: ARPCFG-6 — ground-snap declines with a visible error when no surface exists; mes
+
+PRIORITY: STATE-L1 > ARPCFG-R2-1 > UX-3 > UX-1 > RENDER-LENS-1 > ARPCFG-R2-2 > ARPCFG-R2-3+STATE-L4 (merge — one defect, one fix) > UX-2 > STATE-L2 > STATE-L3 > RENDER-LENS-2 > STATE-L5
+
+SELF-AUDIT: WHAT I VERIFIED MECHANICALLY (not accepted on the reporter's word): (1) The pass-dwell dead conjunct — re-derived the `passAttachedAt <= passIdleSince` invariant from the three assignment sites at GeoARSessionManager.swift:1220/:1222/:1231, and confirmed the 5→15 regression in `git diff dec7a6a~1 dec7a6a`. (2) The reconstruction-grace phase arithmetic — read the tick loop (:983-988, 400 ms Task.sleep), the single writer of lastCameraVisibleAt (:1092), the grace expression (:1151-1152), and ARSessionHolder.schedulePause (:109-119); recomputed the first-failing-tick index independently (k=13, t=5.2−phi) and added the sleep-drift argument the reporter missed, which WIDENS the harm window. (3) MatteUniforms layout — recomputed every offset by hand rather than trusting either reviewer: simd_float3x3/float3x3 at 48 B, then 23 floats, putting `historyValid` at byte 136 on both sides, size 156 → stride 160, matching `setBytes(length: .stride)` at SemanticOcclusionPass.swift:412. RENDER lens's numbers are exactly right. (4) PersonSentinel in full (87 lines) — which also let me catch that the ARPCFG lens cited ':14' and ':624-637' for a file that ends at 87; those anchors are wrong and the supervisor should use RENDER-LENS-2's. (5) The slider path end to end — ARScreen.swift:489-544 (no begin-edit plumbing), :583 (syncSliders on nearest change), :289 (panel stays mounted), GeoARSessionManager.swift:1891/:1893/:1949-1961, plus the two finger-guards at :860 and :1718. (6) syncOccluders + the round-2 diff, confirming pre-fix behaviour was a single-pass dispatch of ALL pending — which is what let me refute the 'peak memory' regression reading. (7) ReactionService in full, RootView's toast and the sole clearIncoming call site, HomeScreen.forYouCard AND ReceiveScreen's reveal (the latter is what refuted UX-2's 'newly reachable'). (8) showPersistError's slot rule (:93-105) against all six call sites.
+
+CANDIDATE OWN-FINDINGS I HUNTED AND REFUTED, so the supervisor knows the negative space is real: (a) I suspected round 2's new `sessionRunSince` stamp in setPerception (:803) would re-arm the ADR-043 reveal gate on every governor perception change — REFUTED: :2360 is `if !sessionFrameReady`, a latch, so the stamp is inert except in the one window ARPCFG-R2-2 already names. (b) I suspected `midDepthActive` could latch true on non-LiDAR hardware and pin the Metal pass attached forever via `passNeeded` (:1212) — REFUTED: it derives from `midDepth.feed.hasSample` (:1387) and update() bails before publishing (MidFieldDepthEstimator.swift:141-144), so it cannot rise there. (c) I checked whether round 2's hoisted `occlusionCapable` (now `supportsSceneReconstruction(.mesh) || supportsFrameSemantics(.sceneDepth)`, vs the old mesh-only local at the pre-round-2 :716) changed behaviour at runGPSCompass:761 — REFUTED: on iOS both predicates are LiDAR-equivalent, so the OR is a no-op. (d) `applyPerceptionHysteresis` (:1317-1337) — read it looking for a stuck-on path; it is sound. (e) `clearRoomDrops` iteration safety — verified removePerDropState (:1512-1539) touches sixteen maps and never `roomDrops`, so the keys view cannot be invalidated. (f) I looked hard at whether frameUpdate keeps running after suspendSession (the guard at :2358 does not include a suspended term, and geospatial.update would then feed a FROZEN currentFrame to GARSession) — this is potentially real but it is pre-existing (unchanged by round 2), it depends on whether RealityKit keeps firing SceneEvents.Update for an off-window ARView, and I have no device evidence. Under D5 that is a residual and a field question, not a finding; I flag it in the wave-exit note rather than pad the list.
+
+I therefore return ZERO own findings. That is a deliberate D4 answer, not an empty one: the four lenses covered this build densely and their misses were framing errors (three of which I corrected above), not unfound defects.
+
+WHERE I DISAGREE WITH THE PANEL: three regression claims do not hold — STATE-L3's 'the watermark records the swallow' (pre-round-2 was 0-of-N, round 2 is 1-of-N: an improvement), STATE-L2's implied memory regression (peak retention is unchanged; only the claim is unmet), and UX-2's 'the whole chain is newly reachable' (ReceiveScreen has the same missing gate and predates round 2). One reporter also offered ARPCFG-R2-1's two fixes as alternatives when they are jointly necessary. And STATE-L5's UserDefaults cost model is wrong on platform behaviour.
+
+SHIP VERDICT: DO NOT SHIP THIS BUILD; DO NOT CLOSE WAVE D ON IT. One more short, surgical round is required — not a re-architecture. Two defects are disqualifying on their own: STATE-L1 silently persists an edit to the WRONG drop, to disk and to Firestore, through a gesture the panel's own copy invites (hold still and look), reopening a defect the file documents as fixed at :232-238; and ARPCFG-R2-1 leaves the charter's 'zero draw-over' bar violated on roughly half of all tab flips by destroying the LiDAR mesh 0–200 ms before the pause that made the destruction pointless. Both were introduced or left open by round 2's own fixes for round-1 findings, which is exactly what this audit exists to catch. Round 3 scope should be exactly six items, all small and all with pure-function seams already designed by the panel: STATE-L1 (gesture liveness + re-bind refusal), ARPCFG-R2-1 (true-edge stamp AND grace > pauseGrace + one tick — both, not either), ARPCFG-R2-2 (one plan function, or stamp intent in beginRevealWarmup), UX-3 (one word today, separate advisory channel properly), UX-1 (guard the cancellation; move the timer to the single owner), RENDER-LENS-1 (idle 5 s + min-attach 10 s, extracted and table-tested). Land the accompanying tests in the same commit — every one of these six slipped past 140 green tests because the pure predicates are tested with their time-quantized inputs supplied as LITERALS (WaveDTests.swift:179-188 hands `cameraRecentlyVisible: true` directly), so the tests must drive the CALLER's clock, not the predicate's argument. The remaining six items do not gate the build: merge ARPCFG-R2-3/STATE-L4 and fix at least the capability term plus the false sharing comment at :1293-1296; carry UX-2 (with a fix that covers BOTH entrances), STATE-L2, STATE-L3, RENDER-LENS-2 and STATE-L5 into the Wave E backlog — but correct every comment that asserts an invariant the code does not hold (:444-447, :1293-1296, PersonSentinel :49-51) in the round-3 commit, because a false invariant comment is precisely how a closed finding gets re-litigated two rounds later.
+
+WAVE EXIT: WAVE D DOES NOT CLOSE ON THIS BUILD, and it cannot close on code review alone regardless of round 3 — but the gap is small and precisely nameable.
+
+WHAT BLOCKS CLOSURE, CODE-SIDE (must be in the build the field tasks measure): (1) STATE-L1 — a wrong-drop persist to disk and Firestore, reachable from the designed slider interaction, introduced by round 2's STATE-1/FLOW-5 fix. Data integrity is not a wave-exit tradeable. (2) ARPCFG-R2-1 — the charter names four bars and 'zero draw-over' is one of them; ARPCFG-4 was the fix written for this exact scenario and it closes only for phi ≤ 0.2 (less, with tick drift). A charter bar that is still violated by the fix built for it is the definition of an open wave item. I would also require (3) UX-3 and (4) UX-1 in the same round purely because they are a one-word and a five-line fix respectively and both are regressions of invariants the counsel already made law — carrying them costs more in re-review than fixing them costs to write. RENDER-LENS-1 and ARPCFG-R2-2 should ride along; they are two-line and one-argument changes against the thermal and TTFO bars.
+
+WHAT DOES NOT BLOCK CLOSURE: ARPCFG-R2-3/STATE-L4, UX-2, STATE-L2, STATE-L3, RENDER-LENS-2, STATE-L5. Each is a partial closure or hygiene item with bounded harm and none is a round-2 regression (I refuted the regression framing on STATE-L2, STATE-L3 and UX-2 specifically). They belong in the Wave E backlog with their comments corrected.
+
+THE STRUCTURAL BLOCKER THE PANEL DID NOT NAME, which the supervisor should weigh most: NONE of Wave D's four bars has been MEASURED. Crash-free 99.5 %, ≥30 fps, not thermal .serious at 10 min, and zero draw-over are empirical claims, and every instrument that would substantiate them is on the deferred list — the on-device TSan run (RENDER-1 step 2), FT-28/FT-31, and RENDER-1 step 3's install-once decision which explicitly awaits that measurement. The one new instrument round 2 DID add, PersonSentinel's hold log, is defective in exactly the failure mode it exists to detect (RENDER-LENS-2) and latches after one line, so it will read clean under the sawtooth. That is the honest exit condition: Wave D closes when (a) round 3 lands the six surgical fixes with caller-clock tests, and (b) the named field tasks RUN and return numbers against the four bars on that build — not when the code review goes quiet. If the field tasks are genuinely deferred past wave close, then what closes is 'Wave D code review', and the four numeric bars remain formally unmet and must be carried as an explicit, named debt rather than assumed satisfied by a clean verdict. Fix RENDER-LENS-2's measurement before FT-28/FT-31 run, or the frame-budget investigation will be pointed at thermal throttling by an instrument the charter itself warns 'reads as thermal throttling but isn't'.
+
+Positive note for the record, because it is load-bearing for the closure decision: the four genuinely hard round-1 blockers ARE closed and I verified them rather than assuming — RENDER-2's historyValid uniform (layout parity recomputed offset-by-offset, ping-pong pairing sound, invalid seed provably biases toward MORE occlusion so it cannot introduce draw-over), RENDER-3/4/7 (bailOut on all three encode exits, prepare() building outside the lock with a correct lost-race discard, lock order honoured in practice at :289/:314 vs :410-411), RENDER-5 (SourceBox empties at MidFieldDepthEstimator.swift:163 strictly before the handler at :173, and nothing else retains the ARKit originals), and the STATE-3/4/5/8-relevance destroy-path consolidation. The remaining defects are all in the same narrow seam — time-quantized couplings between a clock, a timer and a predicate that were never derived from one source of truth. That is one round's work, not a wave's.
