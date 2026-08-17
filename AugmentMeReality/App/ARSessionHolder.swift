@@ -61,8 +61,12 @@ final class ARSessionHolder: ObservableObject {
     func cameraDidAppear() {
         cameraVisible = true
         pauseTask?.cancel()
-        startIfNeeded()
+        // Round 4 (counsel F-D3-02): visibility is marked BEFORE the session
+        // (re)starts — resumeSession computes its plan from manager state,
+        // and marking after meant the visibility term was false on every
+        // reachable resume (a double session.run at the reveal instant).
         manager.markCameraVisible()
+        startIfNeeded()
     }
 
     func cameraDidDisappear() {
@@ -86,8 +90,10 @@ final class ARSessionHolder: ObservableObject {
     /// idle — every occluder silently off (counsel Wave B review C10/C16).
     func appDidBecomeActive() {
         guard cameraVisible, !sessionRunning else { return }
-        startIfNeeded()
+        // Round 4 (counsel F-D3-02): visibility BEFORE the restart — same
+        // ordering contract as cameraDidAppear.
         manager.markCameraVisible()
+        startIfNeeded()
     }
 
     private var attached = false

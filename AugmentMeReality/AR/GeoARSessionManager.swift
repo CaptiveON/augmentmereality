@@ -238,15 +238,15 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private var editingDropID: UUID?
     /// Round 2 (counsel STATE-1): the last non-commit slider tick.
     private var lastLiveEditTickAt = Date.distantPast
-    /// Round 3 (counsel STATE-L1): TRUE while a finger is physically on a
-    /// slider (`onEditingChanged(true)` → `beginLiveEdit`). A stationary
-    /// finger sends no value ticks, so tick-recency alone misclassified a
-    /// held gesture as abandoned — the expiry then cleared the capture and
-    /// the still-live gesture re-bound to a DIFFERENT drop (a wrong-drop
-    /// persist to disk and Firestore). Expiry now applies only when no
-    /// gesture is held; a 30 s backstop covers an end event that never
-    /// arrives (view torn down mid-drag without the callback).
-    private var gestureHeld = false
+    /// Round 3 (counsel STATE-L1) / round 4 (counsel F-D3-04): fingers
+    /// physically on sliders, as a DEPTH COUNTER — one boolean couldn't
+    /// represent two concurrent thumb gestures (committing one slider killed
+    /// a still-live drag on another). Incremented per `beginLiveEdit`,
+    /// decremented per gesture commit (floored at zero), zeroed on cancel.
+    /// A stationary finger sends no value ticks, so tick-recency alone must
+    /// never expire a held gesture; a 30 s backstop covers a lost end event.
+    private var heldGestures = 0
+    private var gestureHeld: Bool { heldGestures > 0 }
     /// Round 2 (counsel ARPCFG-4): reconstruction keys on RECENT visibility so
     /// a sub-grace tab flip can't destroy and rebuild the LiDAR mesh.
     private var lastCameraVisibleAt = Date.distantPast
@@ -449,7 +449,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// capture; a tick arriving with NO capture and NO held gesture is stale
     /// context and is refused (re-bind refusal).
     func beginLiveEdit() {
-        gestureHeld = true
+        heldGestures = min(heldGestures + 1, 4) // bounded: >4 thumbs is noise
         lastLiveEditTickAt = Date()
         if editingDropID == nil { editingDropID = nearestDrop?.id }
     }
@@ -458,7 +458,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// gesture WITHOUT committing — an abandoned drag is not an edit. Clears
     /// the nearest freeze and the governor's live-edit pin.
     func cancelLiveEdit() {
-        gestureHeld = false
+        heldGestures = 0
         guard editingDropID != nil || !liveEditingDrops.isEmpty else { return }
         liveEditingDrops.removeAll()
         editingDropID = nil
@@ -485,6 +485,32 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         now: Date, lastVisible: Date
     ) -> Bool {
         now.timeIntervalSince(lastVisible) < AppConfig.pauseGraceSeconds + 1.0
+    }
+
+    /// Round 4 (counsel F-D3-02): THE reconstruction predicate — the single
+    /// definition consumed by BOTH the tick's plan and the resume plan, so
+    /// the two can never disagree (the round-3 resume conjunct was evaluated
+    /// against caller state that made it invariantly false).
+    nonisolated static func reconstructionDesired(
+        supportsSceneReconstruction: Bool,
+        cameraRecentlyVisible: Bool,
+        pedestrian: Bool,
+        thermalCritical: Bool
+    ) -> Bool {
+        supportsSceneReconstruction && cameraRecentlyVisible
+            && pedestrian && !thermalCritical
+    }
+
+    /// Round 4 (counsel F-D3-01): WHO an edit binds to, as a pure decision.
+    /// An AUTHORED edit (ground snap, relocate) binds to its explicit target
+    /// with no gesture involved; a gesture tick binds to its capture; a tick
+    /// with no capture binds to nearest ONLY while a finger is provably down.
+    nonisolated static func editTarget(
+        capture: UUID?, held: Bool, authored: UUID?, nearest: UUID?
+    ) -> UUID? {
+        if let authored { return authored }
+        if let capture { return capture }
+        return held ? nearest : nil
     }
 
     /// Round 3 (counsel RENDER-LENS-1): the detach decision, re-derived so
@@ -537,14 +563,18 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // resumes immediately; the per-frame ML streams re-earn their place
         // from fresh frames (the sentinel's evidence decayed over the pause),
         // so the common resume is exactly ONE run.
-        // Round 3 (counsel ARPCFG-R2-2): the visibility term the tick's plan
-        // carries — a warm-up resume with the camera still hidden must run
-        // the idle diet ONCE, not request mesh and shed it a tick later.
+        // Round 4 (counsel F-D3-02): ONE shared predicate for the resume plan
+        // and the tick's plan — they can never disagree, so the resume runs
+        // the configuration the first tick would also choose (one session.run,
+        // including on the beginRevealWarmup path inside the grace window).
         let resumePlan = (
-            reconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
-                && cameraVisible
-                && renderPath == .pedestrian
-                && ProcessInfo.processInfo.thermalState != .critical,
+            reconstruction: Self.reconstructionDesired(
+                supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),
+                cameraRecentlyVisible: cameraVisible
+                    || Self.cameraRecentlyVisible(now: Date(), lastVisible: lastCameraVisibleAt),
+                pedestrian: renderPath == .pedestrian,
+                thermalCritical: ProcessInfo.processInfo.thermalState == .critical
+            ),
             person: false,
             depth: false
         )
@@ -888,6 +918,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         deferredVPSTransforms.removeAll()
         liveEditingDrops.removeAll()
         editingDropID = nil
+        heldGestures = 0
         // Wave D (counsel SWE-12): a session reset forgets reveals too — the
         // set grew unbounded across resets before.
         revealedDrops.removeAll()
@@ -1143,11 +1174,11 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
     /// ADR-033: feed the governor the scene's actual demands, apply the verdict.
     private func updatePowerTier() {
-        // Round 2 (counsel STATE-1/FLOW-5) corrected in round 3 (counsel
-        // STATE-L1): abandonment never fires on a HELD gesture — a
-        // stationary finger is the panel's own designed interaction, and
-        // expiring it re-bound the still-live drag to a different drop.
-        if editingDropID != nil,
+        // Round 2 (counsel STATE-1/FLOW-5) corrected in round 3 (STATE-L1)
+        // and round 4 (F-D3-03): abandonment never fires on a HELD gesture,
+        // and the backstop is UNGATED on the capture — a latched hold with no
+        // capture (lost end event before any tick) must still expire.
+        if editingDropID != nil || gestureHeld,
            Self.gestureAbandoned(
                now: Date(), lastTick: lastLiveEditTickAt, held: gestureHeld
            ) {
@@ -1285,14 +1316,19 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             passIdleSince = nil
             if !(semanticPass?.callbacksActive ?? false) {
                 passAttachedAt = Date()
+                // Round 4 (counsel RSCH-4): the dwell floor is MEASURABLE in
+                // the field log — FT-28/31 assert no two toggles within 10 s.
+                metricsLog.log("Semantic pass attached")
             }
             semanticPass?.setCallbacksActive(true)
         } else if let since = passIdleSince {
-            if Self.passShouldDetach(
-                idleFor: Date().timeIntervalSince(since),
-                attachedFor: Date().timeIntervalSince(passAttachedAt)
-            ) {
+            if semanticPass?.callbacksActive == true,
+               Self.passShouldDetach(
+                   idleFor: Date().timeIntervalSince(since),
+                   attachedFor: Date().timeIntervalSince(passAttachedAt)
+               ) {
                 semanticPass?.setCallbacksActive(false)
+                metricsLog.log("Semantic pass detached")
             }
         } else {
             passIdleSince = Date()
@@ -1335,10 +1371,12 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // (the pause-grace window) so a sub-5 s tab flip cannot destroy and
         // rebuild the mesh the app already decided to smooth over; the
         // per-frame ML keeps the hard visibility term.
-        let reconstruction = supportsSceneReconstruction
-            && cameraRecentlyVisible
-            && pedestrian
-            && !thermalCritical
+        let reconstruction = reconstructionDesired(
+            supportsSceneReconstruction: supportsSceneReconstruction,
+            cameraRecentlyVisible: cameraRecentlyVisible,
+            pedestrian: pedestrian,
+            thermalCritical: thermalCritical
+        )
         let person = cameraVisible
             && tierAboveIdle
             && contentInViewRecently
@@ -1588,7 +1626,12 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         deferredTargets[id] = nil
         deferredVPSTransforms[id] = nil
         liveEditingDrops.remove(id)
-        if editingDropID == id { editingDropID = nil }
+        if editingDropID == id {
+            editingDropID = nil
+            // Round 4 (counsel F-D3-03/R3-3): the gesture context died with
+            // its target — a live finger over a deleted drop must not re-bind.
+            heldGestures = 0
+        }
         vpsOwnedDrops.remove(id)
         vpsGlideUntil[id] = nil
         vpsCorrectionTotals[id] = nil
@@ -1952,27 +1995,41 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     func adjustNearestDrop(
         height: Double? = nil, scale: Double? = nil, rotation: Double? = nil, commit: Bool
     ) {
-        // Wave D (counsel SWE-5): bind to the identity captured at gesture
-        // start; `updateNearest()` is frozen while a drag is live, and a drop
-        // removed mid-drag clears the capture via `removePerDropState`.
-        // Round 3 (counsel STATE-L1, re-bind refusal): the capture happens at
-        // the gesture's TRUE start (`beginLiveEdit`). A tick with no capture
-        // and no held gesture is stale context from a terminated drag — it
-        // must NOT capture whatever `nearestDrop` is now.
-        if editingDropID == nil {
-            guard gestureHeld else { return }
-            editingDropID = nearestDrop?.id
-        }
-        guard let id = editingDropID else { return }
+        // Wave D (counsel SWE-5) / round 3 (STATE-L1) / round 4 (F-D3-01):
+        // binding is the PURE `editTarget` decision — a gesture tick binds to
+        // its capture (or, finger provably down, to nearest); a tick with
+        // neither is refused. AUTHORED edits (ground snap) never come through
+        // here — they call `applyEdit` with their explicit target, which the
+        // round-3 gate wrongly refused (the flagship "Place on ground" was a
+        // silent no-op with an orphaned ground lock).
+        guard let id = Self.editTarget(
+            capture: editingDropID, held: gestureHeld,
+            authored: nil, nearest: nearestDrop?.id
+        ) else { return }
+        editingDropID = id
         if !commit { lastLiveEditTickAt = Date() }
-        if commit { gestureHeld = false }
+        if commit {
+            // Round 4 (counsel F-D3-03, hoisted above the resolve): a failed
+            // resolve must not leave the gesture count stuck.
+            heldGestures = max(0, heldGestures - 1)
+        }
+        applyEdit(to: id, height: height, scale: scale, rotation: rotation, commit: commit)
+    }
+
+    /// Round 4 (counsel F-D3-01): the MUTATION, split from gesture binding —
+    /// programmatic (authored) callers commit to an explicit target with no
+    /// gesture state read or written.
+    private func applyEdit(
+        to id: UUID, height: Double? = nil, scale: Double? = nil,
+        rotation: Double? = nil, commit: Bool
+    ) {
         // Round 2 (counsel STATE-4): resolve STRICTLY from owned state — the
         // old `nearestDrop` fallback was invariantly non-nil while a capture
         // existed (updateNearest is frozen), which made the vanish-guard dead
         // code and resurrected deleted drops into the library and the cloud.
         guard let resolved = placedDrops[id] ?? roomDrops[id]
             ?? demoDrops.first(where: { $0.id == id }) else {
-            editingDropID = nil
+            if editingDropID == id { editingDropID = nil }
             liveEditingDrops.remove(id)
             return
         }
@@ -1982,7 +2039,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         if let scale { drop.scale = scale }
         if let rotation { drop.facingDegrees = rotation }
         placedDrops[id] = drop
-        nearestDrop = drop
+        // An authored edit of a non-nearest target must not clobber nearest.
+        if nearestDrop == nil || nearestDrop?.id == id { nearestDrop = drop }
 
         if !commit {
             liveEditingDrops.insert(id)
@@ -2038,7 +2096,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
         if commit {
             liveEditingDrops.remove(id)
-            editingDropID = nil // the gesture is over; the next drag re-captures
+            if editingDropID == id { editingDropID = nil } // gesture over; next drag re-captures
             if height != nil {
                 // A deliberate height choice overrides any previous ground lock.
                 groundLockBaseY[id] = nil
@@ -2120,8 +2178,12 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
 
         let currentHeight = (placedDrops[drop.id] ?? drop).heightAboveGround
-        let targetHeight = currentHeight + Double(groundY + 0.005 - base.y)
-        adjustNearestDrop(height: min(max(targetHeight, -2), 20), commit: true)
+        // Round 4 (counsel F-D3-01): an AUTHORED edit — binds to the drop this
+        // function already resolved, with no gesture state involved. Routing
+        // through the gesture entry point made this a silent no-op while the
+        // ground-lock write below still landed (tap-does-nothing, then
+        // moves-by-itself, then reverts on relaunch).
+        applyEdit(to: drop.id, height: min(max(currentHeight + Double(groundY + 0.005 - base.y), -2), 20), commit: true)
         // Set AFTER the commit (which clears locks as a manual-override signal).
         groundLockBaseY[drop.id] = groundY + 0.005
     }

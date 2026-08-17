@@ -454,3 +454,103 @@ final class CallerClockTests: XCTestCase {
         XCTAssertTrue(GeoARSessionManager.passShouldDetach(idleFor: 6, attachedFor: 11))
     }
 }
+
+/// Round 4 (counsel F-D3-01/F-D3-02): the caller-CONTEXT rule — round 3's
+/// escapes were correct pure functions evaluated against wrong caller state.
+final class Round4BindingTests: XCTestCase {
+    func testEditTargetBindsInBothDirections() {
+        let authored = UUID()
+        let captured = UUID()
+        let nearest = UUID()
+        // An authored edit binds with NO finger down and overrides everything
+        // — the round-3 gate refused it, killing "Place on ground".
+        XCTAssertEqual(
+            GeoARSessionManager.editTarget(
+                capture: nil, held: false, authored: authored, nearest: nearest
+            ), authored
+        )
+        XCTAssertEqual(
+            GeoARSessionManager.editTarget(
+                capture: captured, held: true, authored: authored, nearest: nearest
+            ), authored, "authored targets outrank a live gesture's capture"
+        )
+        // A live capture is never overridden by a moved nearest.
+        XCTAssertEqual(
+            GeoARSessionManager.editTarget(
+                capture: captured, held: true, authored: nil, nearest: nearest
+            ), captured
+        )
+        // An unheld tick with no capture is still refused (STATE-L1 holds).
+        XCTAssertNil(GeoARSessionManager.editTarget(
+            capture: nil, held: false, authored: nil, nearest: nearest
+        ))
+        // Finger provably down, no capture yet → binds to nearest.
+        XCTAssertEqual(
+            GeoARSessionManager.editTarget(
+                capture: nil, held: true, authored: nil, nearest: nearest
+            ), nearest
+        )
+    }
+
+    func testResumeAndTickReconstructionCanNeverDisagree() {
+        // F-D3-02: ONE predicate, both sides — asserted across the full 2^4
+        // fact table so the resume plan and the tick plan cannot drift.
+        for supports in [false, true] {
+            for recent in [false, true] {
+                for pedestrian in [false, true] {
+                    for critical in [false, true] {
+                        let direct = GeoARSessionManager.reconstructionDesired(
+                            supportsSceneReconstruction: supports,
+                            cameraRecentlyVisible: recent,
+                            pedestrian: pedestrian,
+                            thermalCritical: critical
+                        )
+                        let viaPlan = GeoARSessionManager.perceptionPlan(
+                            tierAboveIdle: true, fullTier: true,
+                            cameraVisible: recent, cameraRecentlyVisible: recent,
+                            pedestrian: pedestrian, windowModeActive: false,
+                            personLikely: false, contentInViewRecently: false,
+                            midFieldServiceable: false, thermalSerious: critical,
+                            thermalCritical: critical,
+                            supportsCustomPersonOcclusion: true,
+                            supportsSceneReconstruction: supports,
+                            supportsSceneDepth: true,
+                            midFieldEnabled: false
+                        ).reconstruction
+                        XCTAssertEqual(
+                            direct, viaPlan,
+                            "diverged at supports=\(supports) recent=\(recent) pedestrian=\(pedestrian) critical=\(critical)"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Round 4 (field protocol Session 1c): the cross-thread toggle probe — under
+/// simulator TSan this is the race detector for the pass's lock discipline;
+/// on device it exercises the same paths without assertion on timing.
+final class SemanticPassCrossThreadTests: XCTestCase {
+    func testCallbackToggleIsSafeUnderConcurrentReads() {
+        let pass = SemanticOcclusionPass(
+            feed: SemanticFeed(), labelBuilding: 1, labelTree: 2,
+            labelStructure: 3, personOcclusionEnabled: false, midDepthFeed: nil
+        )
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue(label: "toggler").async {
+            for index in 0..<2000 {
+                pass.setCallbacksActive(index % 2 == 0)
+            }
+            group.leave()
+        }
+        var observedActive = 0
+        for _ in 0..<2000 where pass.callbacksActive {
+            observedActive += 1
+        }
+        group.wait()
+        // The assertion IS the sanitizer/lock safety — the count is incidental.
+        XCTAssertGreaterThanOrEqual(observedActive, 0)
+    }
+}

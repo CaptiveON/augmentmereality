@@ -230,3 +230,8 @@ Every fail goes into DECISIONS.md as field evidence, gets fixed, and the FT re-r
 covering geo math (ENU/bearing/dead-reckoning caps), motion-classifier hysteresis,
 model codability/color fallbacks, store corruption-quarantine, and geo-radius filtering.
 **v0.8: 21/21 passed on Muhammad's iPhone (2026-07-07).**
+
+## FT-40 · GROUND-SNAP (Wave D round 4 — the case whose absence let a CRITICAL live a full round)
+Place a drop, raise it with the height slider and release, then tap **"Place on ground"** once with no slider touched.
+**PASS, all five:** (a) the content drops to the measured surface within a frame; (b) the height readout changes after syncSliders; (c) no persist-error toast; (d) after force-quit and relaunch the drop is STILL on the ground (proves `library.update(persist: true)` ran); (e) staying in-session five more minutes, the drop never moves again on its own (the orphaned-groundLock symptom).
+Report as "FT-40: ✓/✗ + which assertion failed".

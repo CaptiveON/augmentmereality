@@ -19,6 +19,10 @@ final class PersonSentinel {
     private let queue = DispatchQueue(label: "person-sentinel", qos: .userInitiated)
     private let lock = NSLock()
     private var lastLongHoldLogAt = Date.distantPast
+    /// Round 4 (counsel RSCH-2): the app subsystem — the field capture
+    /// filters on it, and the default-subsystem os_log line was silently
+    /// dropped by that filter (an empty grep read as "no pressure").
+    private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "sentinel")
     private var request: VNDetectHumanRectanglesRequest?
     private var busy = false
     private var lastRunAt = Date.distantPast
@@ -61,7 +65,7 @@ final class PersonSentinel {
                 if shouldLog { self.lastLongHoldLogAt = Date() }
                 self.lock.unlock()
                 if shouldLog {
-                    os_log(.error, "PersonSentinel buffer hold exceeded 100 ms (%.0f ms incl. queue wait) — capture pool under pressure", held * 1000)
+                    self.log.error("PersonSentinel buffer hold exceeded 100 ms (\(Int(held * 1000)) ms incl. queue wait) — capture pool under pressure")
                 }
             }
             let request: VNDetectHumanRectanglesRequest
