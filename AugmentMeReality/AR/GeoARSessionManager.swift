@@ -236,6 +236,17 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// the user was not touching, and leaked the first drop's id into
     /// `liveEditingDrops` forever, pinning the governor to `.full`).
     private var editingDropID: UUID?
+    /// Round 2 (counsel STATE-1): the last non-commit slider tick — a gesture
+    /// with no tick for 1.5 s is ABANDONED (cover torn down mid-drag) and
+    /// terminates without a commit.
+    private var lastLiveEditTickAt = Date.distantPast
+    /// Round 2 (counsel ARPCFG-4): reconstruction keys on RECENT visibility so
+    /// a sub-grace tab flip can't destroy and rebuild the LiDAR mesh.
+    private var lastCameraVisibleAt = Date.distantPast
+    /// Round 2 (counsel ARPCFG-3): device capability for the occlusion option,
+    /// computed once — the OPTION is re-derived per tick from this + live state.
+    private let occlusionCapable = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        || ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
     private var placementBasis: CLLocation?
     private var basisCameraPosition: SIMD3<Float> = .zero
     /// Refinements are rate-limited: once content is placed it must feel nailed
@@ -393,7 +404,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// attached, burning an offscreen render per frame with the SEM chip lit.
     private func disarmSemanticMatte() {
         semanticMatteArmed = false
-        geospatial.semanticFeed.setEnabled(false)
+        // Round 2 (counsel RSCH-2): clear() releases ARCore's pool-managed
+        // semantic buffers on the same edge that stops consuming them —
+        // setEnabled(false) alone pinned the last pair across the suspension.
+        geospatial.semanticFeed.clear()
         semanticPass?.setCallbacksActive(false)
     }
 
@@ -409,8 +423,26 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         failureRetryDeadline = nil
         isInterrupted = false
         disarmSemanticMatte()
+        // Round 2 (counsel ARPCFG-2): a paused session APPLIES nothing — the
+        // scheduler resets so resume computes a fresh plan instead of
+        // replaying a tuple frozen 5 s into a tab flip (which fired a second
+        // session.run at the reveal moment). Round 2 (counsel FLOW-5): a drag
+        // interrupted by the suspend terminates without a commit.
+        appliedPerception = (reconstruction: false, person: false, depth: false)
+        personDownSince = nil
+        depthDownSince = nil
+        cancelLiveEdit()
         arView?.session.pause()
         statusText = "Paused"
+    }
+
+    /// Round 2 (counsel STATE-1/FLOW-5): terminate an unfinished slider
+    /// gesture WITHOUT committing — an abandoned drag is not an edit. Clears
+    /// the nearest freeze and the governor's live-edit pin.
+    func cancelLiveEdit() {
+        guard editingDropID != nil || !liveEditingDrops.isEmpty else { return }
+        liveEditingDrops.removeAll()
+        editingDropID = nil
     }
 
     /// Counsel ARP-4/SWE-2: resume is NOT a cold start. The pre-fix path
@@ -447,10 +479,24 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             }
             return
         }
+        // Round 2 (counsel ARPCFG-2): resume computes its OWN plan — never a
+        // replay of the pre-suspend tuple (which was frozen mid-hysteresis and
+        // fired a second session.run at the reveal moment). The stable axis
+        // resumes immediately; the per-frame ML streams re-earn their place
+        // from fresh frames (the sentinel's evidence decayed over the pause),
+        // so the common resume is exactly ONE run.
+        let resumePlan = (
+            reconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+                && renderPath == .pedestrian
+                && ProcessInfo.processInfo.thermalState != .critical,
+            person: false,
+            depth: false
+        )
+        appliedPerception = resumePlan
         arView.session.run(makeConfiguration(
-            reconstruction: appliedPerception.reconstruction,
-            personSeg: appliedPerception.person,
-            sceneDepth: appliedPerception.depth
+            reconstruction: resumePlan.reconstruction,
+            personSeg: false,
+            sceneDepth: false
         ))
         relocalizingSince = nil
         sessionFailed = false
@@ -465,6 +511,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// off-screen (pre-warm, other tabs) — the map tab must not cook the phone.
     func markCameraHidden() {
         cameraVisible = false
+        // Round 2 (counsel FLOW-5): a drag can't outlive the surface it was
+        // dragging on — abandon it now, never at the next commit that will
+        // never come.
+        cancelLiveEdit()
     }
 
     /// Killer-#1 measurement point: TTFO counts from the moment the user can see
@@ -552,16 +602,11 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     }
 
     func clearRoomDrops() {
-        for (id, _) in roomDrops {
-            placedHolders[id]?.removeFromParent()
-            placedHolders[id] = nil
-            placedDrops[id] = nil
-            markers[id] = nil
-            contentEntities[id] = nil
-            appliedCompensation[id] = nil
-            groundDiscs[id] = nil
-            groundLockBaseY[id] = nil
-            liveEditingDrops.remove(id)
+        // Round 2 (counsel STATE-3): the third destroy site goes through the
+        // ONE cleanup helper like every other — its ad-hoc loop missed
+        // editingDropID and revealedDrops.
+        for id in roomDrops.keys {
+            removePerDropState(id)
         }
         roomDrops.removeAll()
         renderedDropCount = placedHolders.count
@@ -713,8 +758,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         let config = makeConfiguration(reconstruction: false, personSeg: false, sceneDepth: false)
         appliedPerception = (reconstruction: false, person: false, depth: false)
 
-        let occlusionCapable = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
-            || ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
         if occlusionCapable {
             arView.environment.sceneUnderstanding.options.insert(.occlusion)
             // Collision shapes on the LiDAR mesh: lets "Place on ground" raycast
@@ -754,6 +797,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             personSeg: desired.person,
             sceneDepth: desired.depth
         ))
+        // Round 2 (counsel ARPCFG-2): a reconfiguration restarts the frame
+        // stream — the ADR-043 reveal gate must not be satisfied by a frame
+        // that predates it.
+        sessionRunSince = ProcessInfo.processInfo.systemUptime
         metricsLog.log("Perception recon=\(desired.reconstruction) person=\(desired.person) depth=\(desired.depth) (tier \(self.powerTier.description))")
     }
 
@@ -811,8 +858,11 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         guard renderPath == .pedestrian else { return }
         // Never fight the user's finger mid-slide (live HUD adjust).
         guard !liveEditingDrops.contains(dropID) else { return }
-        vpsOwnedDrops.insert(dropID)
+        // Round 2 (counsel STATE-5): ownership requires PRESENCE — a drop with
+        // no holder must never be marked VPS-owned (the stale mark exempted a
+        // re-entering drop from the compass pipeline forever).
         guard let holder = placedHolders[dropID] else { return }
+        vpsOwnedDrops.insert(dropID)
         // Ground lock (ADR-027): the locally measured surface overrides the
         // anchor's terrain altitude — Google's terrain can differ by ±0.5 m,
         // which is exactly the re-float the field test caught.
@@ -1022,32 +1072,34 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private func setWindowMode(_ active: Bool) {
         guard active != windowModeActive else { return }
         windowModeActive = active
-        guard let arView else { return }
-        if active {
-            // The pane mesh is the enemy: depth-based occlusion off; the
-            // semantic matte (image-based, glass-proof) carries occlusion.
-            arView.environment.sceneUnderstanding.options.remove(.occlusion)
-            metricsLog.log("Window mode ON (mesh-vs-geo conflict)")
-        } else {
-            if occlusionActive, renderPath == .pedestrian {
-                arView.environment.sceneUnderstanding.options.insert(.occlusion)
-            }
-            metricsLog.log("Window mode off")
-        }
+        // Round 2 (counsel ARPCFG-3/STATE-2): this transition sets ONLY its
+        // flag — the occlusion option is re-derived from live inputs every
+        // tick in updatePowerTier. The old edge-toggled restore read
+        // `occlusionActive` (live state since Wave D) and could permanently
+        // strand the option removed while meshing kept burning watts.
+        metricsLog.log("Window mode \(active ? "ON (mesh-vs-geo conflict)" : "off")")
     }
 
     /// ADR-033: feed the governor the scene's actual demands, apply the verdict.
     private func updatePowerTier() {
+        // Round 2 (counsel STATE-1/FLOW-5): an ABANDONED gesture terminates —
+        // a drag whose cover was torn down mid-slide must not freeze nearest
+        // tracking and pin the governor to .full for the session.
+        if editingDropID != nil,
+           Date().timeIntervalSince(lastLiveEditTickAt) > 1.5 {
+            cancelLiveEdit()
+        }
+        if cameraVisible { lastCameraVisibleAt = Date() }
         var contentInView = false
         var nearestRendered: Float?
-        var anyContentBeyondMidMin = false
+        var anyContentMidServiceable = false
         if let arView, !placedHolders.isEmpty {
             let camPos = arView.cameraTransform.translation
             for holder in placedHolders.values {
                 let distance = simd_length(holder.position - camPos)
                 nearestRendered = min(nearestRendered ?? .infinity, distance)
-                if distance > AppConfig.midDepthMinContentDistance {
-                    anyContentBeyondMidMin = true
+                if Self.midFieldServiceable(distance: distance) {
+                    anyContentMidServiceable = true
                 }
                 if !contentInView, isInView(holder.position, arView: arView) {
                     contentInView = true
@@ -1096,13 +1148,18 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             tierAboveIdle: tier > .idle,
             fullTier: tier == .full,
             cameraVisible: cameraVisible,
+            cameraRecentlyVisible: cameraVisible
+                || Date().timeIntervalSince(lastCameraVisibleAt) < AppConfig.pauseGraceSeconds,
             pedestrian: renderPath == .pedestrian,
             windowModeActive: windowModeActive,
             personLikely: personSentinel.personLikely,
             contentInViewRecently: Date().timeIntervalSince(lastContentInViewAt) < 30,
-            anyContentBeyondMidMin: anyContentBeyondMidMin,
+            midFieldServiceable: anyContentMidServiceable,
+            thermalSerious: thermal == .serious || thermal == .critical,
             thermalCritical: thermal == .critical,
             supportsCustomPersonOcclusion: Self.supportsCustomPersonOcclusion,
+            supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),
+            supportsSceneDepth: ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth),
             midFieldEnabled: AppConfig.midFieldDepthEnabled
         )
         let person = applyPerceptionHysteresis(
@@ -1115,8 +1172,25 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         )
         setPerception(reconstruction: plan.reconstruction, person: person, depth: depth)
         // Wave D (SWE-11 tail): the HUD chip reports what is ACTUALLY
-        // configured this session, not a static device capability.
+        // configured this session — and the plan now carries the capability
+        // terms, so this can never claim a stream the hardware lacks
+        // (round 2, counsel ARPCFG-7/FLOW-8).
         occlusionActive = appliedPerception.reconstruction
+        // Round 2 (counsel ARPCFG-3/STATE-2): the occlusion OPTION is derived
+        // here every tick — transitions (window mode, render path) set only
+        // their own flags and can no longer strand the option removed.
+        if let arView {
+            let wanted = Self.occlusionOptionDesired(
+                capable: occlusionCapable,
+                pedestrian: renderPath == .pedestrian,
+                windowModeActive: windowModeActive
+            )
+            if wanted {
+                arView.environment.sceneUnderstanding.options.insert(.occlusion)
+            } else {
+                arView.environment.sceneUnderstanding.options.remove(.occlusion)
+            }
+        }
 
         // ADR-035 range-based exclusivity: Google's semantic NN only exists for
         // the >60 m band (and transit, where it is the only occluder). With no
@@ -1136,11 +1210,21 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // so attaching would burn an offscreen render + blit for nothing.
         let passNeeded = (Self.supportsCustomPersonOcclusion && appliedPerception.person)
             || semanticMatteArmed || midDepthActive
+        // Round 2 (counsel RENDER-1 step 1): a DWELL FLOOR on the callback
+        // slots — attach/detach is the one cross-thread mutation RealityKit's
+        // contract doesn't synchronize for us, so its frequency IS the race
+        // surface. Detach requires 15 s of no work AND 10 s since attach; a
+        // person walking in and out can no longer toggle the slots at
+        // seconds scale. (Step 2, the on-device TSan run, is a field task.)
         if passNeeded {
             passIdleSince = nil
+            if !(semanticPass?.callbacksActive ?? false) {
+                passAttachedAt = Date()
+            }
             semanticPass?.setCallbacksActive(true)
         } else if let since = passIdleSince {
-            if Date().timeIntervalSince(since) > 5 {
+            if Date().timeIntervalSince(since) > 15,
+               Date().timeIntervalSince(passAttachedAt) > 10 {
                 semanticPass?.setCallbacksActive(false)
             }
         } else {
@@ -1148,6 +1232,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
     }
     private var passIdleSince: Date?
+    private var passAttachedAt = Date.distantPast
     private var personDownSince: Date?
     private var depthDownSince: Date?
 
@@ -1162,30 +1247,67 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         tierAboveIdle: Bool,
         fullTier: Bool,
         cameraVisible: Bool,
+        cameraRecentlyVisible: Bool,
         pedestrian: Bool,
         windowModeActive: Bool,
         personLikely: Bool,
         contentInViewRecently: Bool,
-        anyContentBeyondMidMin: Bool,
+        midFieldServiceable: Bool,
+        thermalSerious: Bool,
         thermalCritical: Bool,
         supportsCustomPersonOcclusion: Bool,
+        supportsSceneReconstruction: Bool,
+        supportsSceneDepth: Bool,
         midFieldEnabled: Bool
     ) -> (reconstruction: Bool, person: Bool, depth: Bool) {
-        // Every stream requires the camera surface — the plan is TOTAL over
-        // its inputs and never relies on the governor keeping tier and
-        // visibility consistent (a hidden camera sheds everything, whatever
-        // the other inputs claim).
-        let reconstruction = cameraVisible && pedestrian && !thermalCritical
+        // Round 2 (counsel ARPCFG-7/FLOW-8): CAPABILITY terms live in the plan
+        // — appliedPerception must record what the configuration actually
+        // requests, never a desire the hardware can't deliver (the LiDAR chip
+        // lit on non-LiDAR phones and setPerception churned no-op runs).
+        // Round 2 (counsel ARPCFG-4): reconstruction keys on RECENT visibility
+        // (the pause-grace window) so a sub-5 s tab flip cannot destroy and
+        // rebuild the mesh the app already decided to smooth over; the
+        // per-frame ML keeps the hard visibility term.
+        let reconstruction = supportsSceneReconstruction
+            && cameraRecentlyVisible
+            && pedestrian
+            && !thermalCritical
         let person = cameraVisible
             && tierAboveIdle
             && contentInViewRecently
             && personLikely
             && !windowModeActive
-        let depth = cameraVisible
+        // Round 2 (counsel ARPCFG-1): the mid-field depth term is the
+        // CONSUMER's real predicate — serviceable band (4–5 m), pedestrian,
+        // full tier, not thermally serious — never the unbounded "anything
+        // beyond 4 m" that ran the 60 Hz depth ML with zero consumer.
+        let depth = supportsSceneDepth
+            && cameraVisible
             && ((person && supportsCustomPersonOcclusion)
-                || (midFieldEnabled && anyContentBeyondMidMin && fullTier && pedestrian))
+                || (midFieldEnabled && midFieldServiceable && fullTier
+                    && pedestrian && !thermalSerious))
             && !windowModeActive
         return (reconstruction, person, depth)
+    }
+
+    /// Round 2 (counsel ARPCFG-1): the ONE predicate shared by the request
+    /// side (perceptionPlan) and the use side (frameUpdate's mid-depth gate) —
+    /// a drop is mid-field-serviceable only inside the band LiDAR can
+    /// calibrate (4 m … 4 m × 1.25).
+    nonisolated static func midFieldServiceable(distance: Float) -> Bool {
+        distance > Float(AppConfig.midDepthMinContentDistance)
+            && distance < Float(AppConfig.midDepthLiDARBandMax * AppConfig.midDepthSupportMargin)
+    }
+
+    /// Round 2 (counsel ARPCFG-3/STATE-2): the sceneUnderstanding occlusion
+    /// option as a PURE predicate, re-derived every tick — never edge-toggled
+    /// from window-mode or render-path transitions, whose interleavings
+    /// permanently dropped it (the option is cheap to set; the honesty is in
+    /// deriving it from live inputs).
+    nonisolated static func occlusionOptionDesired(
+        capable: Bool, pedestrian: Bool, windowModeActive: Bool
+    ) -> Bool {
+        capable && pedestrian && !windowModeActive
     }
 
     /// Wave D (counsel SWE-11): semantics engage IMMEDIATELY (occlusion
@@ -1361,18 +1483,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             // §6.3: LiDAR/scene-mesh occlusion is unreliable through vehicle glass
             // (it would mesh the window itself), and streetscape occluders live in
             // the now-untrusted VIO frame. Semantic matte + person-seg carry it.
-            arView.environment.sceneUnderstanding.options.remove(.occlusion)
+            // Round 2 (counsel ARPCFG-3): the occlusion OPTION is tick-derived
+            // in updatePowerTier — transitions set only their own flags.
             geospatial.setOccludersHidden(true)
             vpsOwnedDrops.removeAll()
             vpsGlideUntil.removeAll()
             metricsLog.log("Render path → transit")
         case .pedestrian:
-            // Wave D: keyed on device CAPABILITY (occlusionActive is live state
-            // now, and is false here — transit just had reconstruction shed).
-            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
-                || ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
-                arView.environment.sceneUnderstanding.options.insert(.occlusion)
-            }
             geospatial.setOccludersHidden(false)
             // Force a clean world-locked re-sync; VPS re-glides as anchors update.
             placementBasis = nil
@@ -1409,6 +1526,16 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         vpsGlideUntil[id] = nil
         vpsCorrectionTotals[id] = nil
         revealedDrops.remove(id)
+        // Round 2 (counsel STATE-4): the stale-nearest window closes at
+        // removal time, not at the next (possibly frozen) tick.
+        if nearestDrop?.id == id {
+            nearestDrop = nil
+            nearestDropDistance = nil
+        }
+        // Round 2 (counsel STATE-5): engine-side per-drop state dies WITH the
+        // drop — GARAnchors otherwise accumulate for the session and a stale
+        // anchor silently re-owns a re-entering drop.
+        geospatial.invalidateAnchor(for: id)
     }
 
     private func updateNearest() {
@@ -1763,9 +1890,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // removed mid-drag clears the capture via `removePerDropState`.
         if editingDropID == nil { editingDropID = nearestDrop?.id }
         guard let id = editingDropID else { return }
+        if !commit { lastLiveEditTickAt = Date() }
+        // Round 2 (counsel STATE-4): resolve STRICTLY from owned state — the
+        // old `nearestDrop` fallback was invariantly non-nil while a capture
+        // existed (updateNearest is frozen), which made the vanish-guard dead
+        // code and resurrected deleted drops into the library and the cloud.
         guard let resolved = placedDrops[id] ?? roomDrops[id]
-            ?? demoDrops.first(where: { $0.id == id })
-            ?? (nearestDrop?.id == id ? nearestDrop : nil) else {
+            ?? demoDrops.first(where: { $0.id == id }) else {
             editingDropID = nil
             liveEditingDrops.remove(id)
             return
@@ -1879,7 +2010,11 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         if let hit = arView.session.raycast(query).first {
             groundY = hit.worldTransform.columns.3.y
         }
-        if groundY == nil {
+        // Round 2 (counsel ARPCFG-6): the mesh rung states its dependency —
+        // with reconstruction shed (transit/thermal/camera-grace) the mesh is
+        // gone and this raycast can only miss; skipping it makes the
+        // degradation explicit instead of discovered as an empty result.
+        if groundY == nil, appliedPerception.reconstruction {
             // LiDAR reconstruction mesh (collision shapes enabled at session setup).
             groundY = arView.scene.raycast(
                 origin: SIMD3(base.x, base.y + 3, base.z),
@@ -1891,12 +2026,17 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             ).first?.position.y
         }
         if groundY == nil, let frame = arView.session.currentFrame {
-            // No real geometry in range: best remaining estimates. 1.65 m ≈
-            // standing eye height — beats the old 1.5 m that left content hovering.
             groundY = estimatedGroundY(frame: frame)
-                ?? (frame.camera.transform.columns.3.y - 1.65)
         }
-        guard let groundY else { return }
+        // Round 2 (counsel ARPCFG-6): a GUESS is not a measurement. The old
+        // chain fell through to camera.y − 1.65 and then ground-LOCKED and
+        // PERSISTED it — overriding VPS terrain truth for the session with an
+        // assumed eye height. Without a real surface, the snap declines
+        // honestly instead of committing fiction.
+        guard let groundY else {
+            showPersistError("Couldn't find the ground here — move closer and try again")
+            return
+        }
 
         let currentHeight = (placedDrops[drop.id] ?? drop).heightAboveGround
         let targetHeight = currentHeight + Double(groundY + 0.005 - base.y)

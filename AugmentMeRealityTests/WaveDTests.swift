@@ -61,23 +61,32 @@ final class PerceptionPlanTests: XCTestCase {
         tierAboveIdle: Bool = true,
         fullTier: Bool = true,
         cameraVisible: Bool = true,
+        cameraRecentlyVisible: Bool? = nil,
         pedestrian: Bool = true,
         windowModeActive: Bool = false,
         personLikely: Bool = true,
         contentInViewRecently: Bool = true,
-        anyContentBeyondMidMin: Bool = true,
+        midFieldServiceable: Bool = true,
+        thermalSerious: Bool = false,
         thermalCritical: Bool = false,
         supportsCustomPersonOcclusion: Bool = true,
+        supportsSceneReconstruction: Bool = true,
+        supportsSceneDepth: Bool = true,
         midFieldEnabled: Bool = true
     ) -> (reconstruction: Bool, person: Bool, depth: Bool) {
         GeoARSessionManager.perceptionPlan(
             tierAboveIdle: tierAboveIdle, fullTier: fullTier,
-            cameraVisible: cameraVisible, pedestrian: pedestrian,
+            cameraVisible: cameraVisible,
+            cameraRecentlyVisible: cameraRecentlyVisible ?? cameraVisible,
+            pedestrian: pedestrian,
             windowModeActive: windowModeActive, personLikely: personLikely,
             contentInViewRecently: contentInViewRecently,
-            anyContentBeyondMidMin: anyContentBeyondMidMin,
+            midFieldServiceable: midFieldServiceable,
+            thermalSerious: thermalSerious,
             thermalCritical: thermalCritical,
             supportsCustomPersonOcclusion: supportsCustomPersonOcclusion,
+            supportsSceneReconstruction: supportsSceneReconstruction,
+            supportsSceneDepth: supportsSceneDepth,
             midFieldEnabled: midFieldEnabled
         )
     }
@@ -122,7 +131,7 @@ final class PerceptionPlanTests: XCTestCase {
     func testDepthNotRequestedForPersonWithoutCustomPath() {
         // Non-LiDAR: personSegmentationWithDepth handles its own depth — a
         // separate .sceneDepth request would be pure waste.
-        let result = plan(anyContentBeyondMidMin: false, supportsCustomPersonOcclusion: false)
+        let result = plan(midFieldServiceable: false, supportsCustomPersonOcclusion: false)
         XCTAssertTrue(result.person)
         XCTAssertFalse(result.depth)
     }
@@ -132,6 +141,76 @@ final class PerceptionPlanTests: XCTestCase {
         XCTAssertFalse(result.reconstruction)
         XCTAssertFalse(result.person)
         XCTAssertFalse(result.depth)
+    }
+
+    // MARK: - Round 2 (counsel ARPCFG-1/4/7, FLOW-8)
+
+    func testCapabilityGatesEveryStream() {
+        // ARPCFG-7/FLOW-8: appliedPerception must never record a request the
+        // hardware can't deliver — the LiDAR chip lit on non-LiDAR phones.
+        let noMesh = plan(supportsSceneReconstruction: false)
+        XCTAssertFalse(noMesh.reconstruction)
+        let noDepth = plan(supportsSceneDepth: false)
+        XCTAssertFalse(noDepth.depth, "no .sceneDepth request on hardware without it")
+        XCTAssertTrue(noDepth.person, "person segmentation is independent of depth capability")
+    }
+
+    func testThermalSeriousShedsMidFieldDepthButKeepsPersonDepth() {
+        // ARPCFG-1: the mid-field consumer sheds itself at .serious — the
+        // REQUEST must shed on the same predicate; person occlusion
+        // correctness survives.
+        let result = plan(thermalSerious: true)
+        XCTAssertTrue(result.depth, "the person depth-test survives .serious")
+        let noPerson = plan(personLikely: false, thermalSerious: true)
+        XCTAssertFalse(
+            noPerson.depth,
+            "with no person, .serious leaves the mid-field leg as the only claimant — and it shed"
+        )
+    }
+
+    func testMidFieldDepthRequiresTheServiceableBand() {
+        // ARPCFG-1: content merely "beyond 4 m" is NOT a depth consumer — the
+        // serviceable band is 4–5 m; a drop at 60 m must not run the 60 Hz
+        // depth ML with zero consumer.
+        let result = plan(personLikely: false, midFieldServiceable: false)
+        XCTAssertFalse(result.depth)
+    }
+
+    func testBriefTabFlipKeepsReconstruction() {
+        // ARPCFG-4: within the pause grace, the mesh survives — a sub-5 s tab
+        // flip must not destroy and rebuild it; per-frame ML still sheds.
+        let result = plan(
+            cameraVisible: false, cameraRecentlyVisible: true, personLikely: false
+        )
+        XCTAssertTrue(result.reconstruction, "the grace window keeps the stateful stream")
+        XCTAssertFalse(result.person)
+        XCTAssertFalse(result.depth)
+    }
+
+    func testMidFieldServiceableBandBounds() {
+        XCTAssertFalse(GeoARSessionManager.midFieldServiceable(distance: 3.0))
+        XCTAssertTrue(GeoARSessionManager.midFieldServiceable(distance: 4.5))
+        XCTAssertFalse(
+            GeoARSessionManager.midFieldServiceable(distance: 60),
+            "far content was the unbounded-request hole"
+        )
+    }
+
+    func testOcclusionOptionDerivation() {
+        // ARPCFG-3/STATE-2: the option is a pure predicate — window-mode exit
+        // interleavings can no longer strand it removed.
+        XCTAssertTrue(GeoARSessionManager.occlusionOptionDesired(
+            capable: true, pedestrian: true, windowModeActive: false
+        ))
+        XCTAssertFalse(GeoARSessionManager.occlusionOptionDesired(
+            capable: true, pedestrian: true, windowModeActive: true
+        ))
+        XCTAssertFalse(GeoARSessionManager.occlusionOptionDesired(
+            capable: true, pedestrian: false, windowModeActive: false
+        ))
+        XCTAssertFalse(GeoARSessionManager.occlusionOptionDesired(
+            capable: false, pedestrian: true, windowModeActive: false
+        ))
     }
 }
 
@@ -222,5 +301,99 @@ final class PixelBufferCopyTests: XCTestCase {
         XCTAssertEqual(copyBase[2 * copyStride + 5], 25, "content survives the copy")
         XCTAssertEqual(CVPixelBufferGetWidth(copy), 8)
         XCTAssertEqual(CVPixelBufferGetHeight(copy), 4)
+    }
+}
+
+/// Round 2 (counsel FLOW-1/FLOW-3/STATE-7): the beat and the deep-link
+/// machine live on the router — table-tested as state machines.
+@MainActor
+final class AppRouterRound2Tests: XCTestCase {
+    func testBeatSurvivesTheFireworksRoundTrip() {
+        // FLOW-1: the single-cover model tears the story view down on the
+        // hand-off — router-held state is what makes beat 3 reachable.
+        let router = AppRouter()
+        router.startOnboardingIfNeeded() // fresh install path sets beat 0
+        router.onboardingBeat = 1
+        router.beginFireworksDemo()
+        XCTAssertEqual(router.onboardingBeat, 2, "the hand-off advances the beat")
+        router.endFireworksDemo()
+        XCTAssertEqual(router.onboardingBeat, 2, "the return lands on the NAME beat")
+        XCTAssertEqual(router.destination, .onboardingStory)
+    }
+
+    func testLinkArrivedPresentsOnlyOnAClearStage() {
+        let router = AppRouter()
+        let a = UUID(), b = UUID(), c = UUID()
+        XCTAssertEqual(router.linkArrived(a, receiveUp: false), a, "clear stage presents now")
+        router.destination = .camera
+        XCTAssertNil(router.linkArrived(b, receiveUp: false), "covered stage queues")
+        XCTAssertEqual(router.pendingReceiveDropID, b)
+        XCTAssertNil(router.linkArrived(c, receiveUp: false), "single slot — newest wins")
+        XCTAssertEqual(router.pendingReceiveDropID, c)
+        XCTAssertNil(router.linkArrived(a, receiveUp: true), "an up receive sheet also queues")
+    }
+
+    func testPromotionRequiresAFullyClearStage() {
+        let router = AppRouter()
+        let id = UUID()
+        router.pendingReceiveDropID = id
+        router.destination = .camera
+        XCTAssertNil(router.promotePendingReceive(receiveUp: false), "covered: no promotion")
+        router.destination = nil
+        XCTAssertNil(router.promotePendingReceive(receiveUp: true), "sheet up: no promotion")
+        XCTAssertEqual(router.promotePendingReceive(receiveUp: false), id)
+        XCTAssertNil(router.pendingReceiveDropID, "promotion consumes the slot")
+        XCTAssertNil(router.promotePendingReceive(receiveUp: false), "empty slot promotes nothing")
+    }
+}
+
+/// Round 2 (counsel RENDER-8): the PLANAR copy branch — the one production
+/// actually takes for 4:2:0 camera frames — with a deliberate stride mismatch.
+final class PlanarPixelBufferCopyTests: XCTestCase {
+    func testBiplanarCopyWithOverAlignedStride() throws {
+        var sourceOut: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferBytesPerRowAlignmentKey: 256,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+        ]
+        CVPixelBufferCreate(
+            nil, 64, 32, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            attributes as CFDictionary, &sourceOut
+        )
+        let source = try XCTUnwrap(sourceOut)
+        CVPixelBufferLockBaseAddress(source, [])
+        for plane in 0..<CVPixelBufferGetPlaneCount(source) {
+            let base = CVPixelBufferGetBaseAddressOfPlane(source, plane)!
+                .assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
+            let rows = CVPixelBufferGetHeightOfPlane(source, plane)
+            let rowBytes = CVPixelBufferGetWidthOfPlane(source, plane) * (plane == 0 ? 1 : 2)
+            for row in 0..<rows {
+                for column in 0..<rowBytes {
+                    base[row * stride + column] = UInt8((plane * 31 + row * 7 + column) % 251)
+                }
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(source, [])
+
+        let copy = try XCTUnwrap(MidFieldDepthEstimator.copyPixelBuffer(source))
+        XCTAssertEqual(CVPixelBufferGetPlaneCount(copy), 2)
+        CVPixelBufferLockBaseAddress(copy, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(copy, .readOnly) }
+        var mismatches = 0
+        for plane in 0..<2 {
+            let base = CVPixelBufferGetBaseAddressOfPlane(copy, plane)!
+                .assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(copy, plane)
+            let rows = CVPixelBufferGetHeightOfPlane(copy, plane)
+            let rowBytes = CVPixelBufferGetWidthOfPlane(copy, plane) * (plane == 0 ? 1 : 2)
+            for row in 0..<rows {
+                for column in 0..<rowBytes
+                where base[row * stride + column] != UInt8((plane * 31 + row * 7 + column) % 251) {
+                    mismatches += 1
+                }
+            }
+        }
+        XCTAssertEqual(mismatches, 0, "every byte of both planes survives a stride-mismatched copy")
     }
 }

@@ -10,8 +10,11 @@ struct OnboardingView: View {
     @EnvironmentObject private var arHolder: ARSessionHolder
     @AppStorage("displayName") private var displayName = ""
 
-    /// 0 = promise, 1 = demo invite, 2 = name.
-    @State private var beat = 0
+    /// 0 = promise, 1 = demo invite, 2 = name. Round 2 (counsel FLOW-1):
+    /// lives on the ROUTER — the single-cover model tears this view down
+    /// during the fireworks hand-off, so view-local @State was destroyed and
+    /// beat 3 was unreachable.
+    private var beat: Int { router.onboardingBeat }
     @State private var draftName = ""
 
     var body: some View {
@@ -60,7 +63,7 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Night.inkSecondary)
             NightCTA(title: "Show me") {
-                withAnimation(.easeInOut) { beat = 1 }
+                withAnimation(.easeInOut) { router.onboardingBeat = 1 }
             }
             .frame(width: 230)
             .padding(.top, 8)
@@ -148,9 +151,11 @@ struct OnboardingView: View {
     }
 
     private func startDemo() {
-        beat = 2 // beat 3 waits underneath for the return
         arHolder.beginRevealWarmup()
-        router.beginFireworksDemo()
+        // Round 2 (counsel RSCH-1): the demo is IDEMPOTENT — a repeated loop
+        // must never accumulate fireworks emitters on the floor.
+        arHolder.manager.clearRoomDrops()
+        router.beginFireworksDemo() // advances the beat on the router
         // Place the fireworks once the session has real frames.
         let manager = arHolder.manager
         Task { @MainActor in

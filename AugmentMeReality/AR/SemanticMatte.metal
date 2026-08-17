@@ -37,6 +37,10 @@ struct MatteUniforms {
     float midRelMax;          // [midRelMin, midRelMax] were never calibrated
     float contentFarPlane;    // MATH-2: metric presence boundary, derived per
                               // frame from the projection itself (meters)
+    float historyValid;       // Wave D R2 (RENDER-2): 0 on the first encode
+                              // after (re)allocating the matte history — the
+                              // textures are .private and UNDEFINED; a NaN
+                              // seed is absorbing under mix()
     int   refineRadius;       // guided-filter half-window (px); 0 = raw stencil
     uint labelBuilding;
     uint labelTree;
@@ -232,7 +236,12 @@ kernel void semanticMatte(
     // Asymmetric temporal smoothing (SilhouetteRefiner): enough memory to kill
     // single-frame stencil noise, but a fast release — a slow decay left a trail
     // of restored background behind a moving hand (FT-27's gap).
-    float previous = previousMatte.read(gid).r;
+    // Wave D R2 (RENDER-2): the history read is GATED, not isfinite-checked —
+    // fast-math may fold isfinite away, and a NaN/Inf seed from the undefined
+    // .private allocation is absorbing under mix(). Seeding from the current
+    // matte also removes the EMA ramp after every resize.
+    float previous = (uniforms.historyValid > 0.5)
+        ? previousMatte.read(gid).r : matte;
     float alpha = (matte >= previous) ? uniforms.attackAlpha : uniforms.releaseAlpha;
     float smoothed = mix(previous, matte, alpha);
     nextMatte.write(float4(smoothed), gid);

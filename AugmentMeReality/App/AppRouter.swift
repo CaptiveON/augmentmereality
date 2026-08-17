@@ -36,10 +36,36 @@ final class AppRouter: ObservableObject {
     @Published var tab: Tab = .home
     @Published var destination: Destination?
     @Published var onboardingPhase: OnboardingPhase = .none
+    /// Round 2 (counsel FLOW-1): the onboarding BEAT lives on the router —
+    /// under the single-cover model the story view is torn out of the
+    /// hierarchy during the fireworks hand-off, so view-local @State was
+    /// destroyed and beat 3 (the name) was unreachable, looping the demo and
+    /// leaking a fireworks emitter per loop.
+    @Published var onboardingBeat = 0
 
     /// Wave D (counsel SWE-7): a magic link tapped while a cover is up is
     /// QUEUED here and presented when the stage clears — never dropped.
     @Published var pendingReceiveDropID: UUID?
+
+    /// Round 2 (counsel FLOW-3/STATE-7): the deep-link admission machine,
+    /// pure and table-tested. Returns the id to present NOW, or queues it.
+    func linkArrived(_ id: UUID, receiveUp: Bool) -> UUID? {
+        if destination == nil, !receiveUp, pendingReceiveDropID == nil {
+            return id
+        }
+        pendingReceiveDropID = id // single slot — the newest link wins
+        return nil
+    }
+
+    /// Round 2 (counsel FLOW-3/STATE-7): called from EVERY way the stage
+    /// clears (cover dismissed, sheet dismissed) — promotion no longer hangs
+    /// off one transition that a sheet dismissal never fires.
+    func promotePendingReceive(receiveUp: Bool) -> UUID? {
+        guard destination == nil, !receiveUp,
+              let queued = pendingReceiveDropID else { return nil }
+        pendingReceiveDropID = nil
+        return queued
+    }
 
     /// Compatibility surface — call sites read/write "the camera moment"
     /// without knowing the presentation representation.
@@ -81,13 +107,17 @@ final class AppRouter: ObservableObject {
     func startOnboardingIfNeeded() {
         if !hasOnboarded {
             onboardingPhase = .story
+            onboardingBeat = 0
             destination = .onboardingStory
         }
     }
 
     /// Beat 2: hand off to the live camera for the fireworks moment — a single
     /// destination change, never a dismiss+present pair (counsel SWE-7).
+    /// The beat advances HERE (router state survives the story view's
+    /// teardown, counsel FLOW-1): the return lands on beat 3, the name.
     func beginFireworksDemo() {
+        onboardingBeat = 2
         onboardingPhase = .fireworksDemo
         destination = .camera
     }

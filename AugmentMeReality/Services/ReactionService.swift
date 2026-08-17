@@ -29,7 +29,25 @@ final class ReactionService: ObservableObject {
     /// silently swallowed any queued reaction that flushed after the sender
     /// relaunched (the reaction's stamped time predates the new session).
     private var primedListeners: Set<String> = []
+    /// Wave D R2 (counsel STATE-6): the DURABLE per-drop watermark — the last
+    /// reaction document id this device has surfaced. The scene-background
+    /// teardown re-primes every listener, and without this the re-attach's
+    /// initial snapshot (which contains exactly the reaction that landed
+    /// while backgrounded) was swallowed as "history".
+    private var lastSeenReactionIDs: [String: String]
+    private static let watermarkDefaultsKey = "lastSeenReactionIDs"
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "reactions")
+
+    init() {
+        lastSeenReactionIDs = UserDefaults.standard
+            .dictionary(forKey: Self.watermarkDefaultsKey) as? [String: String] ?? [:]
+    }
+
+    private func recordSeen(key: String, reactionID: String) {
+        guard lastSeenReactionIDs[key] != reactionID else { return }
+        lastSeenReactionIDs[key] = reactionID
+        UserDefaults.standard.set(lastSeenReactionIDs, forKey: Self.watermarkDefaultsKey)
+    }
 
     // MARK: Viewer side
 
@@ -152,12 +170,31 @@ final class ReactionService: ObservableObject {
                         }
                         guard self.primedListeners.contains(key) else {
                             self.primedListeners.insert(key)
+                            // Round 2 (counsel STATE-6): the initial snapshot
+                            // is history — EXCEPT what arrived while this
+                            // device was torn down. The durable watermark
+                            // tells them apart: a newest row that isn't the
+                            // last one surfaced here is a MISSED reaction.
+                            if let doc = snapshot.documents.first {
+                                let known = self.lastSeenReactionIDs[key]
+                                if let known, doc.documentID != known,
+                                   !doc.metadata.hasPendingWrites,
+                                   let reaction = try? doc.data(as: DropReaction.self),
+                                   reaction.uid != myUid {
+                                    self.incoming = reaction
+                                    self.incomingDropTitle = title
+                                    self.log.log("Missed reaction surfaced: \(reaction.emoji)")
+                                }
+                                self.recordSeen(key: key, reactionID: doc.documentID)
+                            }
                             return
                         }
                         guard let added = snapshot.documentChanges
                                   .first(where: { $0.type == .added }),
-                              let reaction = try? added.document.data(as: DropReaction.self),
-                              reaction.uid != myUid else { return }
+                              let reaction = try? added.document.data(as: DropReaction.self)
+                        else { return }
+                        self.recordSeen(key: key, reactionID: added.document.documentID)
+                        guard reaction.uid != myUid else { return }
                         self.incoming = reaction
                         self.incomingDropTitle = title
                         self.log.log("Reaction received: \(reaction.emoji)")

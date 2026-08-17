@@ -142,18 +142,14 @@ final class MidFieldDepthEstimator {
             stateLock.lock(); busy = false; stateLock.unlock()
             return
         }
-        // Wave D (counsel ARP-12, researcher-corrected direction): COPY OUT and
-        // promptly release — never hold ARKit's pool-managed buffers (and never
-        // retain the ARFrame) for the 17–50 ms of a full inference + fit. The
-        // capture pool is small; sustained pressure drops camera frames in a
-        // sawtooth that reads as thermal throttling. The copies are app-owned;
-        // ARKit gets its buffers back the moment this scope ends.
-        guard let image = Self.copyPixelBuffer(frame.capturedImage),
-              let lidar = Self.copyPixelBuffer(lidarSource) else {
-            stateLock.lock(); busy = false; stateLock.unlock()
-            return
-        }
         let timestamp = frame.timestamp
+        // Wave D (counsel ARP-12) round 2 (counsel RENDER-5): the copy runs
+        // OFF the main actor, into POOLED app-owned buffers. ARKit's
+        // pool-managed buffers are held only for the memcpy itself (a few ms,
+        // bounded to one in flight by `busy`) — the box empties BEFORE the
+        // 17–50 ms inference, so neither the frame nor its buffers ever span
+        // the long work. The ARFrame is never retained.
+        let sources = SourceBox(image: frame.capturedImage, lidar: lidarSource)
 
         queue.async { [weak self] in
             guard let self else { return }
@@ -162,6 +158,10 @@ final class MidFieldDepthEstimator {
                 self.busy = false
                 self.stateLock.unlock()
             }
+            let image = sources.image.flatMap { self.pooledCopy($0) }
+            let lidar = sources.lidar.flatMap { self.pooledCopy($0) }
+            sources.empty() // ARKit's buffers release HERE, pre-inference
+            guard let image, let lidar else { return }
             let request: VNCoreMLRequest
             if let existing = self.request {
                 request = existing
@@ -193,7 +193,58 @@ final class MidFieldDepthEstimator {
         }
     }
 
-    // MARK: - Buffer ownership (Wave D, counsel ARP-12)
+    // MARK: - Buffer ownership (Wave D, counsel ARP-12 + round 2 RENDER-5)
+
+    /// A hand-off box that can be EMPTIED: closure captures are immutable, so
+    /// without it the captured ARKit buffers would stay retained for the whole
+    /// closure — including the long inference the copy exists to decouple.
+    private final class SourceBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedImage: CVPixelBuffer?
+        private var storedLidar: CVPixelBuffer?
+        init(image: CVPixelBuffer, lidar: CVPixelBuffer) {
+            storedImage = image
+            storedLidar = lidar
+        }
+        var image: CVPixelBuffer? { lock.lock(); defer { lock.unlock() }; return storedImage }
+        var lidar: CVPixelBuffer? { lock.lock(); defer { lock.unlock() }; return storedLidar }
+        func empty() {
+            lock.lock()
+            storedImage = nil
+            storedLidar = nil
+            lock.unlock()
+        }
+    }
+
+    /// Round 2 (counsel RENDER-5): copies land in POOLED buffers — no per-call
+    /// IOSurface allocation at 5 Hz. Queue-confined (the serial `queue` is the
+    /// only accessor). Falls back to a plain create if the pool fails.
+    private var bufferPools: [String: CVPixelBufferPool] = [:]
+    private func pooledCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        let format = CVPixelBufferGetPixelFormatType(source)
+        let key = "\(width)x\(height)-\(format)"
+        if bufferPools[key] == nil {
+            var newPool: CVPixelBufferPool?
+            let attributes: [CFString: Any] = [
+                kCVPixelBufferWidthKey: width,
+                kCVPixelBufferHeightKey: height,
+                kCVPixelBufferPixelFormatTypeKey: format,
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+            ]
+            CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &newPool)
+            bufferPools[key] = newPool
+        }
+        if let pool = bufferPools[key] {
+            var out: CVPixelBuffer?
+            if CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out) == kCVReturnSuccess,
+               let copy = out, Self.copyContents(of: source, into: copy) {
+                return copy
+            }
+        }
+        return Self.copyPixelBuffer(source)
+    }
 
     /// Deep-copies a pixel buffer into an APP-OWNED allocation (all planes).
     /// The returned buffer has no ties to ARKit's capture pool — the original
@@ -211,7 +262,12 @@ final class MidFieldDepthEstimator {
         guard CVPixelBufferCreate(
             nil, width, height, format, attributes as CFDictionary, &copyOut
         ) == kCVReturnSuccess, let copy = copyOut else { return nil }
+        return copyContents(of: source, into: copy) ? copy : nil
+    }
 
+    /// The plane-aware memcpy shared by the pooled and unpooled paths.
+    static func copyContents(of source: CVPixelBuffer, into copy: CVPixelBuffer) -> Bool {
+        let height = CVPixelBufferGetHeight(source)
         CVPixelBufferLockBaseAddress(source, .readOnly)
         CVPixelBufferLockBaseAddress(copy, [])
         defer {
@@ -221,7 +277,7 @@ final class MidFieldDepthEstimator {
         if CVPixelBufferIsPlanar(source) {
             for plane in 0..<CVPixelBufferGetPlaneCount(source) {
                 guard let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
-                      let dst = CVPixelBufferGetBaseAddressOfPlane(copy, plane) else { return nil }
+                      let dst = CVPixelBufferGetBaseAddressOfPlane(copy, plane) else { return false }
                 let srcStride = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
                 let dstStride = CVPixelBufferGetBytesPerRowOfPlane(copy, plane)
                 let rows = CVPixelBufferGetHeightOfPlane(source, plane)
@@ -236,7 +292,7 @@ final class MidFieldDepthEstimator {
             }
         } else {
             guard let src = CVPixelBufferGetBaseAddress(source),
-                  let dst = CVPixelBufferGetBaseAddress(copy) else { return nil }
+                  let dst = CVPixelBufferGetBaseAddress(copy) else { return false }
             let srcStride = CVPixelBufferGetBytesPerRow(source)
             let dstStride = CVPixelBufferGetBytesPerRow(copy)
             if srcStride == dstStride {
@@ -248,7 +304,7 @@ final class MidFieldDepthEstimator {
                 }
             }
         }
-        return copy
+        return true
     }
 
     // MARK: - Metric alignment

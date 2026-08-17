@@ -1,5 +1,6 @@
 import CoreVideo
 import Foundation
+import os
 import Vision
 
 /// ADR-037: cheap person-presence probe. Apple's person-segmentation ML costs
@@ -10,8 +11,14 @@ import Vision
 /// requested from ARKit only while presence is likely. Cost of the trade:
 /// someone entering frame is drawn over for up to ~1 s before occlusion engages.
 final class PersonSentinel {
-    private let queue = DispatchQueue(label: "person-sentinel", qos: .utility)
+    /// Wave D R2 (counsel RENDER-6): `.userInitiated`, not `.utility` — the
+    /// closure holds an ARKit capture-pool buffer for the detector's run, and
+    /// .utility is the QoS the system throttles hardest under exactly the
+    /// thermal pressure that stresses the pool. The `busy` flag bounds the
+    /// hold to ONE buffer; the duration is now measured, not asserted.
+    private let queue = DispatchQueue(label: "person-sentinel", qos: .userInitiated)
     private let lock = NSLock()
+    private var loggedLongHold = false
     private var request: VNDetectHumanRectanglesRequest?
     private var busy = false
     private var lastRunAt = Date.distantPast
@@ -37,10 +44,20 @@ final class PersonSentinel {
 
         queue.async { [weak self] in
             guard let self else { return }
+            let holdStart = Date()
             defer {
+                // RENDER-6: the "bounded hold" claim is measured. A hold past
+                // 100 ms means the pool is under real pressure — log once so
+                // field traces can attribute the fps sawtooth correctly.
+                let held = Date().timeIntervalSince(holdStart)
                 self.lock.lock()
                 self.busy = false
+                let shouldLog = held > 0.1 && !self.loggedLongHold
+                if shouldLog { self.loggedLongHold = true }
                 self.lock.unlock()
+                if shouldLog {
+                    os_log(.error, "PersonSentinel buffer hold exceeded 100 ms (%.0f ms) — capture pool under pressure", held * 1000)
+                }
             }
             let request: VNDetectHumanRectanglesRequest
             if let existing = self.request {

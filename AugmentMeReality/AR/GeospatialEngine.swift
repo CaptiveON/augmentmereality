@@ -204,6 +204,10 @@ final class GeospatialEngine {
         occluderRoot = nil
         occluders.removeAll()
         occluderCount = 0
+        // Round 2 (counsel STATE-8): the build pipeline dies with the engine —
+        // in-flight landings see an empty seen-set and self-discard.
+        meshBuildsInFlight.removeAll()
+        seenGeometry.replace([])
         headingErrorSample = nil
         semanticActive = false
         semanticSupported = false
@@ -424,13 +428,29 @@ final class GeospatialEngine {
     /// main-thread class ADR-032 banned for USDZ, resurrected for buildings).
     private let meshQueue = DispatchQueue(label: "streetscape-mesh", qos: .userInitiated)
     private var meshBuildsInFlight: Set<UUID> = []
-    /// Geometry ids present in the LATEST GAR update — a build landing for a
-    /// building that has since streamed out must not install a ghost occluder.
-    private var lastSeenGeometryIDs: Set<UUID> = []
+    /// Round 2 (counsel STATE-8): geometry ids present in the LATEST update,
+    /// readable from the mesh queue — the relevance check runs BEFORE the
+    /// expensive extraction, so a departed building costs nothing.
+    private final class SeenGeometryBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ids: Set<UUID> = []
+        func replace(_ new: Set<UUID>) { lock.lock(); ids = new; lock.unlock() }
+        func contains(_ id: UUID) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return ids.contains(id)
+        }
+    }
+    private let seenGeometry = SeenGeometryBox()
+    /// Round 2 (counsel STATE-8): builds admitted per sync pass — a corner
+    /// turn streaming a dense block queues the NEAREST few; the rest re-offer
+    /// on later frames instead of pinning N vertex buffers in a backlog.
+    private static let meshBuildBudgetPerPass = 8
 
     private func syncOccluders(_ geometries: [GARStreetscapeGeometry]) {
         guard let arView else { return }
+        let camPos = arView.cameraTransform.translation
         var seen: Set<UUID> = []
+        var pending: [(geometry: GARStreetscapeGeometry, id: UUID, distance: Float)] = []
         for geometry in geometries where geometry.type == .building {
             let id = geometry.identifier
             seen.insert(id)
@@ -439,10 +459,27 @@ final class GeospatialEngine {
                 continue
             }
             guard !meshBuildsInFlight.contains(id) else { continue }
+            let t = geometry.meshTransform.columns.3
+            pending.append((geometry, id, simd_length(SIMD3(t.x, t.y, t.z) - camPos)))
+        }
+        seenGeometry.replace(seen)
+        // Nearest first — the buildings most likely to occlude content now.
+        for build in pending.sorted(by: { $0.distance < $1.distance })
+            .prefix(Self.meshBuildBudgetPerPass) {
+            let id = build.id
+            let geometry = build.geometry
             meshBuildsInFlight.insert(id)
             // The GARStreetscapeGeometry is retained by the closure, keeping
             // its vertex buffers valid for the background extraction.
-            meshQueue.async { [weak self] in
+            meshQueue.async { [weak self, seenGeometry] in
+                // STATE-8: relevance BEFORE extraction — a building that
+                // streamed out while queued costs zero mesh work.
+                guard seenGeometry.contains(id) else {
+                    Task { @MainActor [weak self] in
+                        self?.meshBuildsInFlight.remove(id)
+                    }
+                    return
+                }
                 let descriptor = Self.makeMeshDescriptor(from: geometry.mesh)
                 var mesh: MeshResource?
                 if let descriptor {
@@ -458,7 +495,7 @@ final class GeospatialEngine {
                         return
                     }
                     guard self.occluders[id] == nil,
-                          self.lastSeenGeometryIDs.contains(id),
+                          self.seenGeometry.contains(id),
                           let arView = self.arView else { return }
                     let entity = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
                     self.ensureOccluderRoot(in: arView).addChild(entity)
@@ -468,7 +505,6 @@ final class GeospatialEngine {
                 }
             }
         }
-        lastSeenGeometryIDs = seen
         for (id, entity) in occluders where !seen.contains(id) {
             entity.removeFromParent()
             occluders[id] = nil

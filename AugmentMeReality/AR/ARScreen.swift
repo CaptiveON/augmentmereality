@@ -145,30 +145,6 @@ private struct ARScreenContent: View {
                         .transition(.opacity)
                 }
 
-                // ADR-048: the camera is a presented moment — always escapable.
-                VStack {
-                    HStack {
-                        Button {
-                            if router.onboardingPhase == .fireworksDemo {
-                                router.endFireworksDemo()
-                            } else {
-                                router.showCamera = false
-                            }
-                        } label: {
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Night.ink)
-                                .frame(width: 36, height: 36)
-                                .background(Night.bgBase.opacity(0.7), in: Circle())
-                                .overlay(Circle().strokeBorder(Night.lineSubtle))
-                        }
-                        .padding(.leading, 14)
-                        Spacer()
-                    }
-                    .padding(.top, 4)
-                    Spacer()
-                }
-
                 // Onboarding beat 2: the magic moment, then back to the story.
                 if router.onboardingPhase == .fireworksDemo {
                     VStack {
@@ -200,6 +176,34 @@ private struct ARScreenContent: View {
                 }
             } else {
                 Color.black.ignoresSafeArea()
+            }
+
+            // ADR-048: the camera is a presented moment — ALWAYS escapable.
+            // Round 2 (counsel FLOW-6): the chevron is a ZStack SIBLING above
+            // every branch (unsupported device, lost-configure black screen,
+            // reveal overlay) — a full-screen cover with no exit in two of
+            // its three render states was an inescapable trap.
+            VStack {
+                HStack {
+                    Button {
+                        if router.onboardingPhase == .fireworksDemo {
+                            router.endFireworksDemo()
+                        } else {
+                            router.showCamera = false
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Night.ink)
+                            .frame(width: 36, height: 36)
+                            .background(Night.bgBase.opacity(0.7), in: Circle())
+                            .overlay(Circle().strokeBorder(Night.lineSubtle))
+                    }
+                    .padding(.leading, 14)
+                    Spacer()
+                }
+                .padding(.top, 4)
+                Spacer()
             }
         }
         .onChange(of: isActive) { _, active in
@@ -388,6 +392,12 @@ private struct ARScreenContent: View {
                 }
                 if manager.windowModeActive {
                     chip("GLASS", color: .cyan)
+                }
+                // Round 2 (counsel FLOW-7): the ARP-6 heat evidence is its
+                // own chip — visible without content placed, without the
+                // metrics line, in exactly the sessions that need it.
+                if manager.videoFormatDescription.contains("UNCAPPED") {
+                    chip("UNCAPPED", color: .red)
                 }
                 if manager.renderPath == .transit {
                     chip("TRANSIT", color: .indigo)

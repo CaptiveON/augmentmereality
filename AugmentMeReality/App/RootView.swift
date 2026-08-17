@@ -13,7 +13,98 @@ struct RootView: View {
     @StateObject private var reactionSession = ReactionSession()
     @StateObject private var reactionService = ReactionService()
     @State private var receiveDropID: UUID?
+    /// Round 2 (counsel FLOW-2): the drop accepted on the receive sheet — the
+    /// camera presents from the sheet's onDismiss, never in the same
+    /// transaction as the sheet's dismissal.
+    @State private var revealedDrop: GeoDrop?
     @Environment(\.scenePhase) private var scenePhase
+
+    private func promoteQueuedLink() {
+        if let queued = router.promotePendingReceive(receiveUp: receiveDropID != nil) {
+            receiveDropID = queued
+        }
+    }
+
+    @ViewBuilder
+    private func coverContent(for destination: AppRouter.Destination) -> some View {
+        switch destination {
+        case .camera:
+            ARScreen(isActive: true)
+                .environmentObject(router)
+                .environmentObject(reactionSession)
+                .environmentObject(reactionService)
+        case .create:
+            CreateWizard(initialCoordinate: router.createPrefill)
+                .environmentObject(router)
+        case .onboardingStory:
+            OnboardingView()
+                .environmentObject(router)
+        case .memory:
+            if let drop = reactionSession.drop {
+                MemoryScreen(
+                    drop: drop,
+                    snapshot: reactionSession.memorySnapshot,
+                    watchedSeconds: reactionSession.watchedSeconds,
+                    myReaction: reactionSession.sentEmoji,
+                    delivery: reactionSession.delivery,
+                    onSendOneBack: {
+                        // One destination change (memory → create); the
+                        // session ends explicitly, not via a dismiss race.
+                        reactionSession.endSession()
+                        router.beginCreate()
+                    }
+                )
+                .environmentObject(reactionService)
+            }
+        }
+    }
+
+    /// Round 2 (counsel FLOW-9): rendered on the base AND inside every cover.
+    @ViewBuilder private var reactionToast: some View {
+        if let reaction = reactionService.incoming {
+            HStack(spacing: 8) {
+                Text(reaction.emoji).font(.system(size: 18))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(reaction.byName) reacted")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Night.ink)
+                    if let title = reactionService.incomingDropTitle {
+                        Text(title)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Night.inkSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(Night.bgBase.opacity(0.92), in: Capsule())
+            .overlay(Capsule().strokeBorder(Night.coral.opacity(0.4)))
+            .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                reactionService.clearIncoming()
+            }
+        }
+    }
+
+    @ViewBuilder private var persistBanner: some View {
+        if let error = library.lastPersistError {
+            HStack(spacing: 10) {
+                Label(error, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Night.ink)
+                    .lineLimit(2)
+                Button("OK") { library.clearPersistError() }
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Night.coral)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Night.bgBase.opacity(0.95), in: Capsule())
+            .overlay(Capsule().strokeBorder(Night.coral.opacity(0.5)))
+            .padding(.bottom, 96)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
 
     /// Wave D (counsel SWE-7): the single cover binding. Dismissals run their
     /// per-destination side effects HERE — one place, no racing bindings.
@@ -57,70 +148,66 @@ struct RootView: View {
         // same update silently dropped a cover (onboarding beat 2 — the one
         // designed magic moment — could fail to present). A single
         // `fullScreenCover(item:)` makes every transition one state change.
-        .fullScreenCover(item: destinationBinding) { destination in
-            switch destination {
-            case .camera:
-                ARScreen(isActive: true)
-                    .environmentObject(router)
-                    .environmentObject(reactionSession)
-                    .environmentObject(reactionService)
-            case .create:
-                CreateWizard(initialCoordinate: router.createPrefill)
-                    .environmentObject(router)
-            case .onboardingStory:
-                OnboardingView()
-                    .environmentObject(router)
-            case .memory:
-                if let drop = reactionSession.drop {
-                    MemoryScreen(
-                        drop: drop,
-                        snapshot: reactionSession.memorySnapshot,
-                        watchedSeconds: reactionSession.watchedSeconds,
-                        myReaction: reactionSession.sentEmoji,
-                        delivery: reactionSession.delivery,
-                        onSendOneBack: {
-                            // One destination change (memory → create); the
-                            // session ends explicitly, not via a dismiss race.
-                            reactionSession.endSession()
-                            router.beginCreate()
-                        }
-                    )
-                    .environmentObject(reactionService)
+        .fullScreenCover(item: destinationBinding, onDismiss: {
+            promoteQueuedLink() // round 2 (FLOW-3): promote AFTER dismissal
+        }) { destination in
+            coverContent(for: destination)
+                // Round 2 (counsel FLOW-9): the toast and the "global"
+                // persist banner render INSIDE every cover too — an overlay
+                // under a fullScreenCover is invisible.
+                .overlay(alignment: .top) { reactionToast }
+                .overlay(alignment: .bottom) { persistBanner }
+        }
+        // The reaction session's phase drives the memory destination.
+        // Round 2 (counsel FLOW-4): GATED on the camera being up — a wrap
+        // timer firing after the user left the camera must not ambush an
+        // unrelated screen (or destroy a Create draft) with a Memory cover.
+        .onChange(of: reactionSession.phase) { _, phase in
+            if phase == .memory {
+                if router.destination == .camera {
+                    router.destination = .memory
+                } else {
+                    reactionSession.endSession()
                 }
             }
         }
-        // The reaction session's phase drives the memory destination — one
-        // source of presentation truth.
-        .onChange(of: reactionSession.phase) { _, phase in
-            if phase == .memory { router.destination = .memory }
+        // Round 2 (counsel FLOW-4): leaving the camera ENDS the watch ritual —
+        // a session may not outlive the screen it lives on.
+        .onChange(of: router.destination) { previous, current in
+            if previous == .camera, current != .memory, current != .camera,
+               reactionSession.drop != nil {
+                reactionSession.endSession()
+            }
         }
         // ---- Receive: magic link → invitation → camera ----
-        // Wave D (counsel SWE-7): a link tapped while a cover is up is QUEUED,
-        // never presented into a busy presenter (where it silently vanished).
+        // Wave D (counsel SWE-7) + round 2 (counsel FLOW-3/STATE-7): the
+        // admission/promotion machine lives on the router, pure and tested;
+        // promotion fires from EVERY way the stage clears (cover onDismiss +
+        // sheet onDismiss), never mid-dismissal.
         .onOpenURL { url in
-            if let id = DropSharingService.dropID(from: url) {
-                if router.destination == nil, receiveDropID == nil {
-                    receiveDropID = id
-                } else {
-                    router.pendingReceiveDropID = id
-                }
+            if let id = DropSharingService.dropID(from: url),
+               let presentNow = router.linkArrived(id, receiveUp: receiveDropID != nil) {
+                receiveDropID = presentNow
             }
         }
-        .onChange(of: router.destination) { _, destination in
-            if destination == nil, let queued = router.pendingReceiveDropID {
-                router.pendingReceiveDropID = nil
-                receiveDropID = queued
+        .sheet(item: $receiveDropID, onDismiss: {
+            // Round 2 (counsel FLOW-2): the camera presents only AFTER the
+            // sheet has finished dismissing — the dismiss()+present pair
+            // across two modifiers was the SWE-7 defect shape, kept alive on
+            // the acquisition path.
+            if let drop = revealedDrop {
+                revealedDrop = nil
+                reactionSession.startWatching(drop)
+                router.destination = .camera
+            } else {
+                promoteQueuedLink()
             }
-        }
-        .sheet(item: $receiveDropID) { id in
+        }) { id in
             ReceiveScreen(dropID: id) { drop in
                 // Round 4 (counsel arui-3): a failed save of the received drop
-                // is announced IN AR — the screen the user is about to be on.
-                // The moment still plays (the drop lives in memory this
-                // session); the user just isn't lied to about it persisting.
-                // Round 10 (counsel lens-1/seams-4/flows-1): the receive flow
-                // goes through redeem() — the tombstone always clears, and a
-                // fetched copy can never overwrite a pending local edit.
+                // is announced IN AR. Round 10: the receive flow goes through
+                // redeem() — the tombstone always clears, and a fetched copy
+                // can never overwrite a pending local edit.
                 Task {
                     do {
                         try await library.redeem(drop)
@@ -130,60 +217,20 @@ struct RootView: View {
                         )
                     }
                 }
-                reactionSession.startWatching(drop)
-                router.showCamera = true
+                revealedDrop = drop // the hand-off happens in onDismiss
             }
         }
         // ---- Sender: live reaction toast ----
-        .overlay(alignment: .top) {
-            if let reaction = reactionService.incoming {
-                HStack(spacing: 8) {
-                    Text(reaction.emoji).font(.system(size: 18))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("\(reaction.byName) reacted")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Night.ink)
-                        if let title = reactionService.incomingDropTitle {
-                            Text(title)
-                                .font(.system(size: 11))
-                                .foregroundStyle(Night.inkSecondary)
-                        }
-                    }
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(Night.bgBase.opacity(0.92), in: Capsule())
-                .overlay(Capsule().strokeBorder(Night.coral.opacity(0.4)))
-                .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .task {
-                    try? await Task.sleep(nanoseconds: 4_000_000_000)
-                    reactionService.clearIncoming()
-                }
-            }
-        }
+        // Round 2 (counsel FLOW-9): rendered on the BASE and inside every
+        // cover (see cover content) — an overlay under a fullScreenCover is
+        // invisible, and the old auto-clear discarded the toast unseen.
+        .overlay(alignment: .top) { reactionToast }
         .animation(.spring(duration: 0.4), value: reactionService.incoming)
         // ---- Round 4 (counsel arui-3): global persist-failure backstop ----
         // lastPersistError was rendered only on the Sent tab; failures fired
         // from the Map or the receive flow were invisible. This banner renders
         // above every tab, dismissed by acknowledgement.
-        .overlay(alignment: .bottom) {
-            if let error = library.lastPersistError {
-                HStack(spacing: 10) {
-                    Label(error, systemImage: "externaldrive.badge.exclamationmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Night.ink)
-                        .lineLimit(2)
-                    Button("OK") { library.clearPersistError() }
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Night.coral)
-                }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Night.bgBase.opacity(0.95), in: Capsule())
-                .overlay(Capsule().strokeBorder(Night.coral.opacity(0.5)))
-                .padding(.bottom, 96)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
+        .overlay(alignment: .bottom) { persistBanner }
         .animation(.spring(duration: 0.35), value: library.lastPersistError)
         // ---- Sender: listen on my shared drops ----
         // Counsel PBS-3: keyed on the watched-drop IDENTITY set (drop count

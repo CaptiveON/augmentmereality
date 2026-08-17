@@ -6,6 +6,7 @@ import SwiftUI
 /// sandbox. The map is a tool elsewhere; this screen is about people.
 struct HomeScreen: View {
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var reactionSession: ReactionSession
     @EnvironmentObject private var library: DropLibrary
     @EnvironmentObject private var account: AccountService
     @EnvironmentObject private var locationService: LocationService
@@ -144,6 +145,10 @@ struct HomeScreen: View {
 
     private func forYouCard(_ drop: GeoDrop) -> some View {
         Button {
+            // Round 2 (counsel FLOW-10): watching a received drop STARTS the
+            // watch session — the reaction bar, wrap and Memory only exist
+            // for a session; without this the react→memory loop was link-only.
+            reactionSession.startWatching(drop)
             router.showCamera = true
         } label: {
             VStack(alignment: .leading, spacing: 5) {

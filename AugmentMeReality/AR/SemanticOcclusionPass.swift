@@ -36,6 +36,18 @@ final class SemanticFeed: @unchecked Sendable {
         guard enabled, let labels, let confidence else { return nil }
         return (labels, confidence)
     }
+
+    /// Round 2 (counsel RSCH-2): shedding the matte RELEASES the producer's
+    /// buffers on the same edge that stops consuming them — ARCore's semantic
+    /// images are pool-managed like ARKit's, and `setEnabled(false)` alone
+    /// pinned the last pair across every detach and the whole suspension.
+    func clear() {
+        lock.lock()
+        labels = nil
+        confidence = nil
+        enabled = false
+        lock.unlock()
+    }
 }
 
 /// Wave 4.5 SilhouetteRefiner (ADR-011): a RealityKit post-process that restores the
@@ -50,8 +62,11 @@ final class SemanticFeed: @unchecked Sendable {
 /// `setCallbacksActive`/`uninstall` run on the main actor; before this lock, a
 /// teardown mid-encode could nil the pipeline or empty `matteTextures` between
 /// the render thread's guard and its use (the ADR-045 P0-3 crash class,
-/// reintroduced). The lock is held for the whole CPU-side encode (sub-ms);
-/// main-actor callers block at worst that long.
+/// reintroduced). The lock is held for the whole CPU-side encode (typically
+/// sub-ms; texture-cache creates on a resize frame can reach a few ms —
+/// `prepare` builds its expensive Metal state OUTSIDE the lock, round 2
+/// RENDER-4). Lock ordering invariant: `stateLock` may be held while
+/// acquiring a feed lock (SemanticFeed/MidFieldDepthFeed), NEVER the reverse.
 final class SemanticOcclusionPass: @unchecked Sendable {
     private let feed: SemanticFeed
     private let personOcclusionEnabled: Bool
@@ -61,7 +76,9 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     private weak var arView: ARView?
     private weak var session: ARSession?
 
-    /// Guards EVERY mutable field below (counsel ARP-11/SWE-4). Never nest.
+    /// Guards EVERY mutable field below (counsel ARP-11/SWE-4). Ordering:
+    /// may be held while taking a feed lock; a feed lock is never held while
+    /// taking this one.
     private let stateLock = NSLock()
     private var device: MTLDevice?
     private var pipeline: MTLComputePipelineState?
@@ -118,6 +135,10 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         // Counsel MATH-2: metric presence boundary derived from this frame's
         // projection (replaces the NDC epsilon that rejected far content).
         var contentFarPlane: Float
+        // Wave D R2 (RENDER-2): 0 on the first encode after (re)allocating
+        // the matte history — the .private textures are UNDEFINED and a NaN
+        // seed is absorbing under the EMA's mix().
+        var historyValid: Float
         var refineRadius: Int32
         var labelBuilding: UInt32
         var labelTree: UInt32
@@ -164,6 +185,12 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         stateLock.lock()
         let changed = active != callbacksActiveStorage
         callbacksActiveStorage = active
+        if changed, !active {
+            // Round 2 (counsel RENDER-3): detaching releases this frame's
+            // wrappers and flushes — the detached steady state must not pin
+            // IOSurfaces in the capture pool.
+            releaseCaptureResources()
+        }
         stateLock.unlock()
         guard changed, let arView else { return }
         if active {
@@ -187,25 +214,42 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         stateLock.lock()
         pipeline = nil
         matteTextures = []
+        matteHistoryValid = false
+        releaseCaptureResources()
         stateLock.unlock()
     }
 
     private func prepare(device: MTLDevice) {
+        // Round 2 (counsel RENDER-4): PUBLISH, don't build, under the lock —
+        // the Metal library load + pipeline compile can take tens of ms, and
+        // the main actor takes this same lock at 2.5 Hz. Build into locals
+        // first; commit only if still needed (a losing second builder just
+        // discards its locals).
         stateLock.lock()
-        defer { stateLock.unlock() }
-        // Idempotent: callbacks re-attach on demand and must not rebuild Metal state.
-        if pipeline != nil, self.device === device { return }
-        self.device = device
+        let alreadyBuilt = pipeline != nil && self.device === device
+        stateLock.unlock()
+        if alreadyBuilt { return }
+
         guard
             let library = try? device.makeDefaultLibrary(bundle: .main),
             let function = library.makeFunction(name: "semanticMatte"),
-            let pipeline = try? device.makeComputePipelineState(function: function)
+            let builtPipeline = try? device.makeComputePipelineState(function: function)
         else { return }
-        self.pipeline = pipeline
-        CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
-        dummyUint = makeDummy(device: device, format: .r8Uint)
-        dummyUnorm = makeDummy(device: device, format: .r8Unorm)
-        dummyFloat = makeDummy(device: device, format: .r32Float)
+        var builtCache: CVMetalTextureCache?
+        CVMetalTextureCacheCreate(nil, nil, device, nil, &builtCache)
+        let builtUint = makeDummy(device: device, format: .r8Uint)
+        let builtUnorm = makeDummy(device: device, format: .r8Unorm)
+        let builtFloat = makeDummy(device: device, format: .r32Float)
+
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        if pipeline != nil, self.device === device { return } // lost the race
+        self.device = device
+        self.pipeline = builtPipeline
+        self.textureCache = builtCache
+        dummyUint = builtUint
+        dummyUnorm = builtUnorm
+        dummyFloat = builtFloat
     }
 
     private func makeDummy(device: MTLDevice, format: MTLPixelFormat) -> MTLTexture? {
@@ -234,7 +278,10 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             let yTexture = makeTexture(frame.capturedImage, format: .r8Unorm, plane: 0, cache: textureCache),
             let cbcrTexture = makeTexture(frame.capturedImage, format: .rg8Unorm, plane: 1, cache: textureCache)
         else {
-            blit(context: context)
+            // Round 2 (counsel RENDER-7): EVERY exit releases this frame's
+            // wrappers — a partially-created set (one plane wrapped, the
+            // other failed) must not survive to the next encode.
+            bailOut(context: context)
             return
         }
 
@@ -283,12 +330,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         guard semanticEnabled || personEnabled || midEnabled,
               let encoder = context.commandBuffer.makeComputeCommandEncoder()
         else {
-            // Counsel ARP-12: wrappers created above must not sit in
-            // inFlightTextures until the NEXT encode — release now and flush
-            // so their IOSurfaces return to the capture pool promptly.
-            inFlightTextures.removeAll()
-            CVMetalTextureCacheFlush(textureCache, 0)
-            blit(context: context)
+            bailOut(context: context)
             return
         }
 
@@ -296,9 +338,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         ensureMatteTextures(width: target.width, height: target.height)
         guard matteTextures.count == 2 else {
             encoder.endEncoding()
-            inFlightTextures.removeAll()
-            CVMetalTextureCacheFlush(textureCache, 0)
-            blit(context: context)
+            bailOut(context: context)
             return
         }
         let previousMatte = matteTextures[matteIndex]
@@ -349,6 +389,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             midRelMin: midRelMin,
             midRelMax: midRelMax,
             contentFarPlane: contentFarPlane,
+            historyValid: matteHistoryValid ? 1 : 0,
             refineRadius: AppConfig.personMatteRefineRadius,
             labelBuilding: labelBuilding,
             labelTree: labelTree,
@@ -389,6 +430,31 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         // capture pool, and sustained pressure there drops camera frames in a
         // sawtooth that reads as thermal throttling but isn't.
         CVMetalTextureCacheFlush(textureCache, 0)
+        // Round 2 (counsel RENDER-2): the history is defined from here on —
+        // this dispatch wrote nextMatte, and the next frame may read it.
+        matteHistoryValid = true
+    }
+
+    /// Round 2 (counsel RENDER-7): the ONE exit helper — no bail path can be
+    /// added without releasing the frame's wrappers and flushing the cache.
+    /// Caller holds `stateLock`.
+    private func bailOut(context: ARView.PostProcessContext) {
+        inFlightTextures.removeAll()
+        if let textureCache {
+            CVMetalTextureCacheFlush(textureCache, 0)
+        }
+        blit(context: context)
+    }
+
+    /// Round 2 (counsel RENDER-3): detach releases capture resources — the
+    /// detached state is the pass's designed steady state (ADR-035), and
+    /// wrappers held across it pin IOSurfaces in ARKit's small capture pool
+    /// indefinitely. Caller holds `stateLock`.
+    private func releaseCaptureResources() {
+        inFlightTextures.removeAll()
+        if let textureCache {
+            CVMetalTextureCacheFlush(textureCache, 0)
+        }
     }
 
     /// Counsel MATH-2: the metric distances the depth buffer's two boundary
@@ -430,12 +496,18 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         blitEncoder.endEncoding()
     }
 
+    /// Wave D R2 (RENDER-2): false until the first dispatch after a history
+    /// (re)allocation has WRITTEN both textures — the shader gates its EMA
+    /// seed on this so undefined `.private` contents are never read.
+    private var matteHistoryValid = false
+
     private func ensureMatteTextures(width: Int, height: Int) {
         if let first = matteTextures.first, first.width == width, first.height == height {
             return
         }
         guard let device else {
             matteTextures = []
+            matteHistoryValid = false
             return
         }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -448,6 +520,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             device.makeTexture(descriptor: descriptor),
         ].compactMap { $0 }
         matteIndex = 0
+        matteHistoryValid = false
     }
 
     private func makeTexture(
