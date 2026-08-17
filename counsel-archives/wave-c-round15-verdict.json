@@ -1,0 +1,884 @@
+{
+  "summary": "Counsel round 15: 5-Opus review of the Wave C round-14 (wave-exit) build — final closure audit",
+  "agentCount": 5,
+  "logs": [
+    "Counsel round 15: final closure audit of the round-14 build",
+    "Reviews in: 4/4 — researcher issues the wave-close ruling"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "seams + harness — digest-suppression mechanism, derived emulator payload + fail-closed regex, encoder-shape test vacuity, pre-commit hook + gitignore, deployed-suite LIST assertion, cloudProven predicate final form",
+        "closureVerdicts": [
+          {
+            "item": "exit-a1",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:966 `guard cloud != nil, drop.receivedViaLink != true else { return }` precedes DropStore.swift:974 `if drop.ownerUid != nil || ackedCloudIDs.contains(drop.id) { markCloudProven(drop.id) }` — the terminalSyncFailureIDs clause is absent from the predicate and the capture sits below the viewer-copy return, so no viewer copy can leak an unretirable durable entry. Verified no local path stamps ownerUid without a server ack: the only assignments are GeoDrop.swift:123 (decode), DropStore.swift:1076 (post-ack stamp), FirebaseDropStore.swift:74/113 (server-served read / returned canonical form), DropSharingService.swift:95 (fetched sharer copy, which then takes the receivedViaLink guard). testTerminalRefusalIsNotProofTheServerHoldsTheDocument (DropStoreTests.swift:1254) is non-vacuous: with the terminal clause restored, remove() would markCloudProven and performCloudDelete's attempts>=3 branch (DropStore.swift:1174) would markUnresolvedDelete, failing the assertion at :1275."
+          },
+          {
+            "item": "exit-a2",
+            "status": "CLOSED",
+            "trace": "rowGenerations declared DropStore.swift:447; bumped in redeem() :852, add() :899, update() :918, remove() :937. remove()'s post-await guard is DropStore.swift:952 `guard rowGenerations[drop.id] == rowGeneration` — no reference to refreshGeneration remains in remove(). redeem() epoch-guards both post-await publishes (:870 success, :875 catch). testRefreshDuringRemoveDoesNotAbandonTheDelete (DropStoreTests.swift:1170) is the discriminating test: it parks local.delete via FlakyLocalStore's new gate, runs a full refresh (which bumps refreshGeneration), releases, then asserts the tombstone stands — this fails under the round-12 global-counter guard. D3 note: its sibling testRedeemDuringRemoveSupersedesTheDelete (:1196) is branch-coverage only, not discriminating — redeem() also bumps refreshGeneration (:851), so it would pass under the old guard too. That is acceptable because exit-b asked it to ENTER the abort branch, which it does, and the discriminating case is covered by :1170."
+          },
+          {
+            "item": "exit-a3",
+            "status": "CLOSED",
+            "trace": "ReceiveScreen.swift:58-68: `.task(id: account.uid ?? \"-\")`, uid-nil path sleeps 10 s then `guard !Task.isCancelled, account.uid == nil, drop == nil, failure == nil else { return }; failure = .unknown`. Cancellation-safe (try? + explicit isCancelled re-check) and self-healing (uid arrival re-keys the task, which calls load(), and load() clears `failure` first at :167). The .unknown arm renders the non-causal copy and a Try again CTA (:143-151). Ladder order confirmed at ProfileScreen.swift:81/91/102 (three problem rungs) then :113 `else if account.uid == nil { \"Connecting…\" }` — the Connecting rung can no longer mask a terminal, unresolved-delete or unreadable-rows problem."
+          },
+          {
+            "item": "exit-a4",
+            "status": "PARTIAL",
+            "trace": "BUILT AND SOUND: acknowledgeIncident (DropStore.swift:283-291) writes only the SHA-256 content digest to the .ackdigest sidecar and never rewrites drops.json; the load path suppresses only on exact byte equality (:224 `contentDigest(data) == acknowledgedDigest()`), so any change to the bad content re-raises; a `.clean` load removes the sidecar (:240); quarantine/readFailed are excluded from suppression by the `if case .skippedRows?` guard, so a persisting real problem keeps re-journaling. LocalDropStore is an actor, so the ack's re-read of fileURL cannot interleave with a save, and any drift self-corrects through the `.clean` cleanup. FailableDrop captures the row id independently of the body (:171-190); lostIDs flow to markLost at :688; hasCompletedCleanRefresh is revoked at :684/:691; the read-failure catch records the memory at :557; the rung is above Synced at ProfileScreen.swift:148 with a Clear button at :162. testLostRowsAreRecordedDurablyAndDismissDestroysNothing (DropStoreTests.swift:1285) is non-vacuous (the round-12 destructive ack fails the raw-file assertion at :1314). NOT CLOSED: the ledger's documented user-retirement path is inert on the primary path (F-SEAMS-14-2 — markLost re-runs from lostIDs on every refresh, so acknowledgeLosses() is undone on the next foreground), and the quarantine arm names only pendingSyncIDs, leaving link-received rows destroyed with no record (F-SEAMS-14-3)."
+          },
+          {
+            "item": "exit-a5",
+            "status": "CLOSED",
+            "trace": "redeem() DropStore.swift:868-878: `try await local.save(drop)` executes BEFORE `drops.insert(drop, at: 0)` (:872), so a failed persist leaves no memory-only ghost and a later redeem of the same id re-enters the persist branch rather than no-oping on the row-exists arm. The staged-delete recall (:888-891) sits above `if let persistError { throw persistError }` (:892) and resolves its row via `drops.first(...) ?? drop`. testRedeemPersistFailureLeavesNoGhostAndStillRecallsTheDelete (DropStoreTests.swift:1222) enters both branches via FlakyLocalStore.setFailSave and is non-vacuous on both halves (ghost assertion :1238, recall assertion :1242 waits for cloud.saved count >= 2)."
+          },
+          {
+            "item": "exit-a6",
+            "status": "PARTIAL",
+            "trace": "BUILT: drift-check.mjs:44-54 matches var/let with optional @attribute prefixes and throws below 3 parsed fields; rules.test.mjs:99-113 derives the emulator payload from appReactionKeys() and throws on an unknown key (the throw escapes the check() wrapper into module scope, so it still exits non-zero — fail-closed); ReactionShapeTests.swift:12 locks JSONEncoder's key set to the rules' hasOnly list and is non-vacuous for added or CodingKeys-renamed fields; `node web/rules-tests/drift-check.mjs` runs green (emoji ❤️ 😂 🥹 🤯; keys id, emoji, uid, byName, at) against firestore.rules:77-78. NOT CLOSED: the widened regex still fails OPEN on access-modifier-prefixed stored properties — F-SEAMS-14-1, verified empirically. Minor note (not filed): the regex also matches computed properties (`var summary: String { emoji }` parses as a key), a false-positive that fails in the safe direction. Minor note (not filed): the shape test proxies Firestore.Encoder with JSONEncoder; the known divergences (@DocumentID omitted vs throwing, @ServerTimestamp sentinel) either preserve the key set or fail the test, so it does not fail open."
+          },
+          {
+            "item": "exit-b",
+            "status": "CLOSED",
+            "trace": "FlakyLocalStore (DropStoreTests.swift:1495) is an actor matching production isolation and gained setFailSave (:1510), setGateDeletes (:1511), parkedDeleteCount (:1512), releaseAllDeletes (:1514); delete() parks at a real suspension via withCheckedContinuation (:1552-1554) and save() throws on demand (:1540). All three previously-unreachable branches are entered: remove's abort (DropStore.swift:952) via DropStoreTests.swift:1196-1210; redeem's persist-catch (DropStore.swift:874) via :1233-1237; redeem's post-throw recall (DropStore.swift:888) via :1242. Rule-6 residual note (not filed): FlakyLocalStore.acknowledgeIncident (:1522) only nils the warning and does not reproduce the digest suppression or the fact that lastOutcome REMAINS .skippedRows after an ack — the ledger test correctly uses a real LocalDropStore, so nothing depends on the double for that behavior."
+          },
+          {
+            "item": "exit-c",
+            "status": "CLOSED",
+            "trace": "lostRowIDs published set DropStore.swift:419, durable under key \"lostRowIDs\" (:480, restored :515-516, persisted via persistSet :1252/1258/1265); the rung renders at ProfileScreen.swift:148, strictly above both `!hasCompletedCleanRefresh` (:165) and the \"Synced\" terminal arm (:172), with a Clear button wired to acknowledgeLosses (:162). The mechanism exists as specified; its two coverage/retirement defects are filed under exit-a4."
+          },
+          {
+            "item": "exit-d",
+            "status": "PARTIAL",
+            "trace": "COUNSEL-WAVE-C-LOG.md:76 asserts \"(d) residuals re-stated\" but the round-14 section contains no restatement. The only residual list in the log is the ROUND-8 list at :35; round-13's items 7-12 at :72 were folded into round 14 and are no longer residuals. Round 13 specifically required re-stating the two whose risk it had re-priced (own-1 reap redesign, now one tap away; serverTimestamp watermark, the declaration form the drift lock misses) — neither appears anywhere after :72. Also stale: the log's cross-cutting rule 6 at :83 still reads \"isolation and suspension points\", omitting the \"AND failure modes\" clause round 13 added and round 14 built to; the Build/verify block at :88 still says \"28 emulator assertions, green as of round 8\" against the actual 30 + 6. Documentation-only; no code harm, no finding filed."
+          },
+          {
+            "item": "seams-3-fold",
+            "status": "CLOSED",
+            "trace": "authDidBecomeReady DropStore.swift:808-827: `let firstPassThisSession = !authReadyRan; authReadyRan = true` (:810-811) and the revalidation gate is `if changed || firstPassThisSession` (:817), so terminal verdicts are re-attempted on the first auth-ready pass of every process. accountDidChange() is genuinely deleted — grep over *.swift finds only three comment mentions (RootView.swift:164, DropStore.swift:807, DropStoreTests.swift:840) and zero call sites or declarations. RootView.swift:162-169 calls authDidBecomeReady and nothing else."
+          },
+          {
+            "item": "flows-5-fold",
+            "status": "CLOSED",
+            "trace": "ReactionService.swift:81-87 introduces `sharedDrops(in:myUid:)`; watchedDrops (:91) is `sharedDrops(...).prefix(10)`, listenKey (:100-105) keys on `sharedDrops` (the FULL set, sorted ids), and the prune at :122-129 builds allSharedKeys from `sharedDrops` too. RootView.swift:155 keys the listen task on listenKey, so a change anywhere in the shared set — not just inside the newest-10 window — re-invokes the pass and the uncapped prune is reachable. One definition, three consumers, no drift possible."
+          },
+          {
+            "item": "surf-4-fold",
+            "status": "CLOSED",
+            "trace": "ReceiveScreen.swift:124 now reads \"Only people with this link can find it · your camera stays private\"; grep for \"one-time\" across *.swift returns only the explanatory comment at ReceiveScreen.swift:123. The remaining claim is backed by firestore.rules:52-55 (get requires ownership or visibility in ['link','public'], and doc ids are UUIDs) and :56-57 (list is owner-only), so link-holder-only discovery is what the rules actually implement."
+          },
+          {
+            "item": "seams-6-fold",
+            "status": "CLOSED",
+            "trace": "deployed-rules.test.mjs:63-64 asserts `getDocs(query(collection(owner,'drops'), where('ownerUid','==',OWNER)))` succeeds under firestore.rules.deployed. Non-vacuous: the seed at :30-34 writes drops/link-drop with ownerUid = OWNER, which matches the query, and the assertion is evaluated BEFORE the hijack write at :67-70 reassigns that doc's ownerUid — so a real document is rule-evaluated rather than an empty result set trivially passing. This is the exact shape FirebaseDropStore.loadDropsWithProvenance issues (FirebaseDropStore.swift:64-66). Deployed-suite count verified by enumeration: 6 assertions (:51,:55,:58,:59,:63,:67). v3 suite verified at 30 (7 get/list + 7 create/update/delete + 12 reactions incl. the 4-emoji loop + 2 client-read-shape + 2 users)."
+          },
+          {
+            "item": "copy-fold",
+            "status": "CLOSED",
+            "trace": "ProfileScreen.swift:107-110 read-warning rung is \"Some saved drops couldn't be read\" with no sync-status claim; grep for \"on hold\" across *.swift returns only an unrelated AR hit (GeoARSessionManager.swift:686). The copy is now backed by the mechanics: DropStore.swift:729 reconcileCloud() runs on every refresh regardless of localOutcome, so sync of readable drops genuinely proceeds."
+          },
+          {
+            "item": "git-process",
+            "status": "PARTIAL",
+            "trace": "Secrets are clean: git ls-files shows only Secrets.sample.plist (a PASTE-YOUR-KEY placeholder) and Config/Info.plist (no credentials); the real Secrets.plist and GoogleService-Info.plist are present on disk and confirmed ignored via `git status --ignored`, alongside node_modules, firestore-debug.log and web/.firebase. 111 tracked files, zero node_modules. The hook body (.githooks/pre-commit) is tracked and correct: `set -e` + `node web/rules-tests/drift-check.mjs`, which resolves its Swift/rules paths from import.meta.url, so it is cwd-robust, and a missing node fails the commit closed. NOT CLOSED: activation depends on `core.hooksPath=.githooks`, a repo-local config that is neither committed nor documented — F-SEAMS-14-4."
+          }
+        ],
+        "findings": [
+          {
+            "id": "F-SEAMS-14-1",
+            "severity": "MEDIUM",
+            "file": "web/rules-tests/drift-check.mjs",
+            "line": 46,
+            "title": "Reaction-key drift lock still fails OPEN on access-modifier-prefixed fields — both Node locks (pre-commit hook and the 'derived' emulator payload) go green on the exact drift class a6 exists to catch",
+            "trace": "The round-14 regex is `/^\\s*(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:var|let)\\s+(\\w+)\\s*[:=]/gm` (drift-check.mjs:46). The optional prefix group accepts ONLY @-attributes; a bare Swift access/storage modifier before var|let kills the match because `^\\s*` is immediately followed by a required attribute-or-var|let. I ran the exact regex against DropReaction's body plus one added field: baseline -> 5 keys; `private var clientVersion: String = \"1\"` -> 5 keys; `public var ...` -> 5; `private(set) var ...` -> 5; `lazy var ...` -> 5. (`let schema: Int = 2` -> 6 and `@ServerTimestamp var commitAt: Date?` -> 6, so round 14's stated widenings do work.) The fail-closed guard at drift-check.mjs:49 (`keys.length < 3`) cannot fire because the 5 known fields still parse. Consequence chain: appReactionKeys() returns the stale 5 names, so (1) the pre-commit hook (.githooks/pre-commit:8) reports 'reaction key drift check OK'; and (2) rules.test.mjs:104 iterates those same 5 names, so its `if (!(key in sampleValues)) throw` fail-closed guard at :106 never fires and the suite writes the OLD 5-key payload — meaning the comment at rules.test.mjs:96-98 ('the emulator payload is DERIVED from the app's actual DropReaction fields — if the struct grows a field, this suite writes what the app will write and fails the moment the rules refuse it') is false for this edit class. Only ReactionShapeTests.swift:12 (device suite, JSONEncoder — which does encode private stored properties) still catches it. Two of the three locks fail open, and they are the two that gate the rules deploy from the command line.",
+            "harm": "A developer adds `private var clientVersion: String` (or any modifier-prefixed field) to DropReaction. `npm test` in web/rules-tests passes and the pre-commit hook passes, both explicitly certifying no reaction-key drift. firestore.rules:78 `keys().hasOnly(['id','emoji','uid','byName','at'])` then rejects every real reaction write. FirestoreAcked maps that permission-denied through DropStoreError.terminalRefusalReason (FirebaseDropStore.swift:246) to refusedByServer — a terminal verdict. Every emoji tap in the app fails permanently, which is precisely the risk the log itself ranks as pre-deploy priority 2 (COUNSEL-WAVE-C-LOG.md:73: 'first post-deploy reaction under a drifted struct = permission-denied -> terminal -> the loop's payoff dies').",
+            "fix": "Allow non-@ declaration modifiers in the prefix group while still excluding type-level and computed members, e.g. `/^\\s*(?:(?:@\\w+(?:\\([^)]*\\))?|private(?:\\(set\\))?|fileprivate(?:\\(set\\))?|internal|public|open|final|lazy|weak|unowned(?:\\((?:safe|unsafe)\\))?|nonisolated)\\s+)*(?:var|let)\\s+(\\w+)\\s*[:=](?![^\\n]*\\{\\s*$)/gm`, keeping `static`/`class` unmatched (Codable ignores them) and dropping computed properties via the trailing-brace lookahead. Add a Node self-test that feeds fixture struct bodies through an exported parse(source) helper and asserts each modifier form yields 6 keys — the current regex has no test of its own, so both its round-14 widenings and its fail-closed threshold are unexercised."
+          },
+          {
+            "id": "F-SEAMS-14-2",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 688,
+            "title": "The loss ledger's 'Clear' control is inert on the skipped-rows path — acknowledgeLosses() is undone by the very next refresh, permanently, because round 14 made Dismiss non-destructive",
+            "trace": "refresh()'s memory switch re-derives the ledger from the load outcome on EVERY pass: DropStore.swift:679-688 `case .skippedRows(_, _, let lostIDs)?: ... for id in lostIDs { markLost(id) }`. LocalDropStore.loadDrops sets lastOutcome = .skippedRows at :217 BEFORE the digest check at :224 — the .ackdigest suppresses only pendingReadWarning, never the outcome — so a dismissed-but-still-present bad file yields .skippedRows with the same lostIDs forever. Round 14 deliberately stopped Dismiss from rewriting the file (:276-291), so the bad rows persist indefinitely; nothing in the app removes them except a subsequent save() (LocalDropStore.save :347-351 reloads, drops the bad rows, and persists the survivors), which is not something the loss rung prompts. acknowledgeLosses() (:1263-1266) clears lostRowIDs with no durable record of the acknowledgement, so the next markLost re-inserts every id. Refresh triggers are frequent and unavoidable: AugmentMeRealityApp.swift:52 refreshes on every scenePhase .active, plus RootView.swift:168 on launch, DropsListScreen.swift:26 pull-to-refresh, MapScreen.swift:106, and acknowledgeReadIncident's own kicked refresh (DropStore.swift:789). D3 — the test is vacuous with respect to this: testLostRowsAreRecordedDurablyAndDismissDestroysNothing (DropStoreTests.swift:1319-1320) calls acknowledgeLosses() then asserts lostRowIDs.isEmpty and ENDS; it never refreshes afterwards, so it passes identically with and without the defect.",
+            "harm": "User has drops.json with one unreadable row. The ladder shows '1 drop was lost to a storage problem' with a Clear button (ProfileScreen.swift:148-164). The user taps Clear; the rung disappears. They background the app and return — AugmentMeRealityApp.swift:52 refreshes, markLost re-fires, and the identical rung is back. This repeats forever with no user action that can retire it, which contradicts the exit condition's own contract ('retired ... wholesale by the user (acknowledgeLosses)') and puts a control in the UI whose advertised effect the mechanics cannot back — a charter violation in the same family as the copy findings this wave has been closing.",
+            "fix": "Give the acknowledgement the same durable shape the .ackdigest gave the banner: persist an `acknowledgedLossIDs` set in acknowledgeLosses() and have markLost skip ids already in it (re-raising only if the id is genuinely destroyed again after a restore, i.e. clear the acknowledgement in clearLost). Then extend DropStoreTests.swift:1319 with an `await library.refresh(near: nil); XCTAssertTrue(library.lostRowIDs.isEmpty)` after the Clear — that assertion fails today."
+          },
+          {
+            "id": "F-SEAMS-14-3",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 695,
+            "title": "Whole-file quarantine records only pendingSyncIDs, so a link-received drop destroyed by a quarantine leaves no ledger entry and the ladder converges to 'Synced — the server has confirmed your drops'",
+            "trace": "DropStore.swift:692-696: `if case .quarantinedWholeFile? = localOutcome { for id in pendingSyncIDs { markLost(id) } }`. Own drops that were pending are named; own drops that were acked come back from the owner-scoped cloud query (FirebaseDropStore.swift:64-66), so omitting them is correct. Link-received rows are neither: redeem() persists them to disk (:869), enqueueCloudSync returns early for them (:1028) so they are never in pendingSyncIDs, and they carry the sharer's ownerUid so the owner-scoped query never returns them. They are therefore unrecoverable and unrecorded. The library cannot even name them at that point: on a quarantine local.loadDrops returns [] (LocalDropStore.swift:266), merged is empty, and if the cloud read completes, phase 2 at DropStore.swift:641-644 replaces `drops` with the cloud rows only — so the received rows are already gone from `drops` before the memory switch at :678 runs. Convergence to a false all-clear: after the quarantine the journal raises the banner; the user taps Dismiss (DropsListScreen.swift:66 -> acknowledgeReadIncident -> LocalDropStore.acknowledgeIncident, which for .quarantinedWholeFile skips the digest write and just clears the journal at :289); subsequent loads return .absentFile, which keeps localProvablyClean false only via defaults[hadLocalReadIncident] (:711-722). The moment the user creates one new drop, LocalDropStore.save writes a fresh file, the next load is .clean, :698 sets the incident memory false, :723-725 sets hasCompletedCleanRefresh = true, lostRowIDs is empty — and ProfileScreen.swift:172-176 renders 'Synced — the server has confirmed your drops'.",
+            "harm": "A user keeps drops received from friends via magic links. drops.json becomes wholly unreadable (device-level corruption, a partial restore, a truncated file from a crash outside the atomic write). Every received drop is destroyed permanently — they cannot be re-fetched by the library, only by the sender re-sending the link — and the app ends up affirmatively claiming the server has confirmed the user's drops, with no rung, no banner and no ledger entry. This is exactly the charter's 'a loss that leaves no record' hole that round 14's ledger was built to close, left open on the destruction path that destroys the most.",
+            "fix": "On the .quarantinedWholeFile arm, record the rows the library can still name and the cloud provably cannot restore: capture the published id set BEFORE the phase-2 replace (DropStore.swift:641) and, on quarantine, markLost every captured id that the completed cloud read did not return (a positive per-object check, not a set-difference over a narrowed query — the cloud read's serverConfirmedIDs is already available), unioned with pendingSyncIDs as today. Retirement is already wired: clearLost fires on redeem (:873/:880) and on a late save ack (:1064). Add a test that seeds a received drop (receivedViaLink = true) into a real LocalDropStore file, corrupts the file wholesale, refreshes with a cloud store that returns no rows, and asserts library.lostRowIDs contains the received drop's id."
+          },
+          {
+            "id": "F-SEAMS-14-4",
+            "severity": "LOW",
+            "file": ".githooks/pre-commit",
+            "line": 8,
+            "title": "The drift-lock pre-commit hook is activated by an uncommitted, undocumented repo-local git config — a fresh clone silently has no lock while the docs assert the repo carries one",
+            "trace": "`git config --get core.hooksPath` returns `.githooks` and `git config --list --local` shows core.hookspath=.githooks — this lives in .git/config, which is not part of the repository. .git/hooks/ contains only the stock *.sample files, so without that local setting git runs nothing. .githooks/pre-commit IS tracked (confirmed via git ls-files), but nothing in the tree sets core.hooksPath: grep across COUNSEL-WAVE-C-LOG.md, README.md and DECISIONS.md finds no `git config core.hooksPath` instruction, no bootstrap script, and no CI equivalent. Meanwhile COUNSEL-WAVE-C-LOG.md:76 states 'Process: repo under git (.githooks/pre-commit runs both drift locks)' and DECISIONS.md:1182 states 'the repo is under version control with the drift locks as a pre-commit hook' — both true only of this one working copy.",
+            "harm": "Any fresh clone (a second machine, a rebuild after a repo move, a collaborator, CI) gets the hook file but not the hook. Commits that drift the emoji list or the reaction key set against firestore.rules land unblocked, and the repo's own record says they cannot. This is the failure mode the round-13 researcher named directly (COUNSEL-WAVE-C-LOG.md:73, item 6: 'a checklist run by memory is not a checklist'): the enforcement is a machine-local setting, not a repo-carried one.",
+            "fix": "Add a one-line bootstrap the docs point at — `git config core.hooksPath .githooks` — as a tracked `make setup` / `scripts/bootstrap.sh` step, and record it in COUNSEL-WAVE-C-LOG.md's Build/verify block next to the npm gate. Verify by cloning the repo to a temp path, running the bootstrap, and confirming a deliberately drifted commit is rejected."
+          }
+        ],
+        "testCases": [
+          {
+            "name": "testDriftLockParsesModifierPrefixedFields",
+            "findingId": "F-SEAMS-14-1",
+            "asserts": "Export a pure `parseReactionKeys(source)` from drift-check.mjs and assert it returns 6 keys for each fixture struct body that appends one of `private var clientVersion: String = \"1\"`, `public var clientVersion: String = \"1\"`, `private(set) var clientVersion: String = \"1\"`, and `lazy var cache: String = \"x\"` to the five current fields; assert it returns 5 for `static let sentinel = 1` and for `var summary: String { emoji }` (type-level and computed members are not encoded).",
+            "failsWhen": "Fails today: the current regex at drift-check.mjs:46 returns 5 for all four modifier fixtures (verified empirically) and 6 for the computed-property fixture. Passes only once the prefix group accepts non-@ declaration modifiers and excludes computed properties."
+          },
+          {
+            "name": "testClearingTheLossLedgerSurvivesTheNextRefresh",
+            "findingId": "F-SEAMS-14-2",
+            "asserts": "Extend DropStoreTests.swift:1285's scenario: after `library.acknowledgeLosses()` and `XCTAssertTrue(library.lostRowIDs.isEmpty)`, run `await library.refresh(near: nil)` and assert `library.lostRowIDs.isEmpty` still holds while the unreadable row is still present on disk (`XCTAssertTrue(try String(contentsOf: url).contains(lostID.uuidString))`).",
+            "failsWhen": "Fails today: DropStore.swift:688 re-runs markLost from the unchanged skippedRows lostIDs on the refresh, repopulating lostRowIDs. Passes once acknowledgeLosses persists a durable acknowledgement that markLost honors."
+          },
+          {
+            "name": "testQuarantineRecordsReceivedDropsAsLost",
+            "findingId": "F-SEAMS-14-3",
+            "asserts": "Seed a real LocalDropStore file containing one drop with receivedViaLink = true and one acked own drop; overwrite the file with non-JSON bytes; refresh against a GatedCloudStore whose loadResult returns only the own drop; assert `library.lostRowIDs.contains(receivedID)` and `!library.lostRowIDs.contains(ownID)`; then assert that after a subsequent clean load the ladder precondition still cannot reach the all-clear (`XCTAssertFalse(library.hasCompletedCleanRefresh)` is not required, but `XCTAssertFalse(library.lostRowIDs.isEmpty)` is).",
+            "failsWhen": "Fails today: the .quarantinedWholeFile arm at DropStore.swift:695 iterates pendingSyncIDs only, which is empty for a received drop, so lostRowIDs stays empty and the ladder converges to 'Synced'. Passes once the quarantine arm records published ids the completed cloud read did not return."
+          },
+          {
+            "name": "testPreCommitHookIsActiveFromACleanClone",
+            "findingId": "F-SEAMS-14-4",
+            "asserts": "Shell/CI check: clone the repo into a temp directory, run the documented bootstrap step, then attempt a commit that changes firestore.rules' emoji allow-list without touching ReactionSession.swift; assert the commit is rejected with a non-zero exit and the 'EMOJI DRIFT' message.",
+            "failsWhen": "Fails today: a clean clone has core.hooksPath unset and no documented bootstrap step exists, so .git/hooks holds only samples and the drifted commit succeeds. Passes once a tracked bootstrap sets core.hooksPath and the docs reference it."
+          }
+        ],
+        "cleanAreas": [
+          "Digest-suppression mechanism (the lens's primary target) — verified sound. LocalDropStore.swift:302-305 digests the WHOLE file with SHA-256 (8-byte prefix), so suppressed bytes cannot change without re-raising; :224 compares the freshly-read bytes against the sidecar on every load; :240 removes the .ackdigest on any `.clean` load, so the sidecar cannot outlive the content it acknowledged; the `if case .skippedRows?` guard at :284 correctly excludes quarantine and readFailed from suppression, so a persisting real problem keeps re-journaling. Because LocalDropStore is an actor, acknowledgeIncident's re-read of fileURL (:285) cannot interleave with save/delete, and both interleaving orders I traced (ack-then-save, save-then-ack) self-correct through the `.clean` cleanup. No re-journal loop and no destructive rewrite: acknowledgeIncident writes only the sidecar and clears the journal.",
+          "Sidecar interaction — preserveUnreadable (:312-323) is content-digest-named and existence-checked, so repeated loads and relaunches of the same bad bytes accumulate exactly one copy, and the 'original kept on disk' claim at :231 is made only when the write actually succeeded (round-10 lens-6 still holds).",
+          "Derived emulator payload fail-closed behavior — rules.test.mjs:104-108 throws on any parsed key with no sample value; the throw occurs during argument evaluation, escaping the check() try/catch into module scope, so the process exits non-zero rather than silently skipping. Fails closed for the field-addition case the regex DOES parse.",
+          "Drift-check rules-side parsing is unambiguous — firestore.rules contains exactly one `keys().hasOnly([...])` (:78) and one `data.emoji in [...]` (:77), so the first-match regexes at drift-check.mjs:59/24 cannot mis-target; a second hasOnly added elsewhere would produce a loud mismatch, not a silent pass.",
+          "ReactionShapeTests.swift:12 is non-vacuous — it fails on an added field, a CodingKeys rename, or a @DocumentID change. Its JSONEncoder proxy for Firestore.Encoder does not fail open on any divergence I could construct (@DocumentID throws, @ServerTimestamp keeps the key name).",
+          "Deployed-suite LIST assertion (deployed-rules.test.mjs:63-64) is non-vacuous — the owner-owned seed doc matches the query and is evaluated before the hijack write mutates its ownerUid; it pins the exact query shape FirebaseDropStore.swift:64-66 issues on every refresh. Assertion counts verified by enumeration: 30 v3 + 6 deployed-v2, matching the claim.",
+          "cloudProven predicate final form (DropStore.swift:966/974) is correct and complete — the terminal clause is gone, the capture is below the received-drop return, and no code path stamps ownerUid locally without a server ack (all six assignment sites traced).",
+          "Repository hygiene — 111 tracked files, zero node_modules; the real Secrets.plist and GoogleService-Info.plist are on disk and confirmed ignored, as are web/.firebase and firestore-debug.log; the only tracked plists are a placeholder sample and a credential-free Config/Info.plist. The hook body itself is correct and fail-closed (set -e; import.meta.url-relative paths make it cwd-robust; a missing node blocks the commit).",
+          "ReceiveScreen bounded wait (ReceiveScreen.swift:58-68) is cancellation-safe, cannot fire over an already-resolved state, and self-heals when the uid arrives; the .unknown copy claims no cause and offers a working retry.",
+          "Test-double fidelity (rule 6) for the round-14 branches — FlakyLocalStore is an actor with real continuation-based suspension on delete and an on-demand save failure; all three previously-unreachable branches are genuinely entered, and testRefreshDuringRemoveDoesNotAbandonTheDelete is a true discriminating test for the round-12 CRITICAL."
+        ]
+      },
+      {
+        "lens": "DropLibrary state machines — final audit: rowGenerations epochs across every mutator/await pair, loss-ledger lifecycle (record/retire/leak), latch revocation vs sticky evidence, authDidBecomeReady first-pass flag, redeem end-to-end. All claims traced against commit 5bb6ea5 source; drift locks executed locally.",
+        "closureVerdicts": [
+          {
+            "item": "exit-a1",
+            "status": "CLOSED",
+            "trace": "Services/DropStore.swift:966 `guard cloud != nil, drop.receivedViaLink != true else { return }` sits ABOVE the capture; :974-976 predicate is `drop.ownerUid != nil || ackedCloudIDs.contains(id)` — the terminalSyncFailureIDs clause is gone. Provenance of the predicate verified: ownerUid is written ONLY from server-sourced data (FirebaseDropStore.swift:73-74 cloud read, :113 save stamp persisted back at DropStore.swift:1073-1085; DropSharingService.swift:94-95 fetched doc). No local code path assigns ownerUid from Auth (grep over AugmentMeReality/**: no other assignment sites). Test DropStoreTests.swift:1254-1279 is non-vacuous — with the old terminal clause markCloudProven fires and the `unresolvedDeleteIDs` assertion at :1275 fails."
+          },
+          {
+            "item": "exit-a2",
+            "status": "CLOSED",
+            "trace": "rowGenerations declared DropStore.swift:447; bumped in add():899, update():918, remove():937-938, redeem():852-853 — and NOWHERE else (grep: 5 sites total). refresh() bumps only refreshGeneration (:538) and never touches rowGenerations — confirmed correct per the design. remove()'s post-await guard :952 keys on `rowGenerations[drop.id]`; redeem() guards both branches (:870 success, :875 catch). Tests :1170-1191 (refresh must NOT abort the delete) and :1196-1217 (redeem DOES supersede; abort branch entered via FlakyLocalStore delete gate) are both non-vacuous — the second still tombstones under a missing guard because removeTask captured the pre-mutation `drop` (receivedViaLink nil). CAVEAT (no finding): add() (:900-909) and update() (:925-932) bump their row epoch but do NOT re-check it after their `local.save` await; I could not construct a UI-reachable interleaving (AR live-edit and the Map/List delete paths are not concurrently interactive, and the local store actor orders the writes), so this is reported as a gap, not a defect."
+          },
+          {
+            "item": "exit-a3",
+            "status": "CLOSED",
+            "trace": "Sharing/ReceiveScreen.swift:58-68 — `.task(id: account.uid ?? \"-\")`, uid-nil path sleeps 10 s then re-guards `!Task.isCancelled, account.uid == nil, drop == nil, failure == nil` before setting the honest `.unknown` (:64), which renders the retryable copy + Try again (:146-151). Cancellation-safe: a uid arriving mid-sleep changes the task id, cancels, and re-runs into load(). Profile/ProfileScreen.swift:113 `account.uid == nil` now sits BELOW terminal (:81), unresolved deletes (:91) and localReadWarning (:102)."
+          },
+          {
+            "item": "exit-a4",
+            "status": "PARTIAL",
+            "trace": "BUILT and verified: acknowledgeIncident no longer rewrites the file (DropStore.swift:283-291 stores only the SHA-prefix digest to `.ackdigest`); the load path suppresses by digest (:224-236) and re-raises for changed bytes; FailableDrop captures the id (:171-190) and lostIDs flow into `.skippedRows` (:216-219); lostRowIDs ledger + persistence (:419, :480, :515-516, :1249-1266); destructive outcomes revoke the latch (:684, :691) and the local-read CATCH branch records the memory + revokes (:557-558). NOT closed: three ledger-completeness gaps found — F2 (rows whose id also fails to decode never enter the ledger and end at \"Synced\" with zero record), F3 (the refresh consumes lastLoadOutcome from a slot a non-mutator save can overwrite), F4 (acknowledgeLosses is undone by the next refresh). See findings."
+          },
+          {
+            "item": "exit-a5",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:863-892 — `try await local.save(drop)` (:869) precedes `drops.insert` (:872); the catch (:874-878) records lastPersistError and defers the rethrow; the staged-delete recall (:888-891) runs ABOVE `if let persistError { throw persistError }` (:892). Test :1222-1249 enters both branches via FlakyLocalStore.setFailSave (:1504,:1539-1545) and asserts no ghost row AND a second cloud save — non-vacuous against both the old memory-first insert and the old recall-below-rethrow."
+          },
+          {
+            "item": "exit-a6",
+            "status": "CLOSED",
+            "trace": "Ran `node web/rules-tests/drift-check.mjs` → exit 0, both locks green. appReactionKeys() (drift-check.mjs:34-55) matches `(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:var|let)\\s+(\\w+)` and throws below 3 parsed fields (:49-53 — fails closed). rules.test.mjs:18 imports appReactionKeys and :104 derives the payload from it. AugmentMeRealityTests/ReactionShapeTests.swift locks the encoded key set to id/emoji/uid/byName/at. Nit (not a finding, other lens): the on-device lock encodes with JSONEncoder while production writes through Firestore.Encoder — key names coincide, value shapes are not locked."
+          },
+          {
+            "item": "exit-b",
+            "status": "CLOSED",
+            "trace": "FlakyLocalStore gained setFailSave (:1510), setGateDeletes (:1511), parkedDeleteCount (:1512), releaseAllDeletes (:1514-1518) and parks INSIDE delete before the failure check (:1552-1554) — production's suspension point reproduced. All three formerly-unreachable branches are entered: remove abort (test :1196, via the delete gate), redeem persist-catch (test :1222 via setFailSave), redeem post-throw recall (same test, asserted by cloud.saved count ≥2 at :1242-1244). D3: none of the three passes with its target bug reverted."
+          },
+          {
+            "item": "exit-c",
+            "status": "PARTIAL",
+            "trace": "The ledger and the rung exist (ProfileScreen.swift:148-164, with a Clear button wired to acknowledgeLosses) and the rung IS above both \"Checking sync status…\" (:165) and \"Synced\" (:172). But it is the ONLY surface for lostRowIDs in the whole app (grep: single call site), and the exclusive if/else chain places it BELOW `account.uid == nil` \"Connecting…\" (:113) and BELOW `uploadingCount > 0` \"Uploading N…\" (:136) — an unknown and a progress rung, both of which can persist indefinitely, hide the permanent loss record. See F1."
+          },
+          {
+            "item": "exit-d",
+            "status": "PARTIAL",
+            "trace": "COUNSEL-WAVE-C-LOG.md:76 asserts \"(d) residuals re-stated\", but the log's canonical list (COUNSEL-WAVE-C-LOG.md:35, \"Recorded residuals\") is still the round-8 list and does not carry the two the exit condition named explicitly (own-1 reap redesign — now one tap away; serverTimestamp watermark in the exact declaration form the drift lock misses), nor the round-10/12 additions (probe-cap rotation, durable delete attempt budget, listener re-attach backoff, ux-5, merge field-mask, single-field stamp). They survive only in counsel-archives/wave-c-round13-verdict.json. Documentation gap, no runtime harm — not filed as a finding, but the stale list invites the next round to re-report residuals as findings."
+          },
+          {
+            "item": "seams-3-fold",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:808-827 — `firstPassThisSession = !authReadyRan` (:810), instance-scoped flag set immediately (:811), revalidation gated on `changed || firstPassThisSession` (:817). The latch reset stays uid-change-only (:813-815), so the round-12 regression is not reintroduced. `accountDidChange` has zero code references (grep across all .swift: only the explanatory comment at :807 and RootView.swift:164); RootView.swift:162-169 calls authDidBecomeReady and nothing else. Revalidation cannot trip the pending/tombstone assert: remove() clears terminal (:962) before markPendingDelete (:977)."
+          },
+          {
+            "item": "flows-5-fold",
+            "status": "CLOSED",
+            "trace": "ReactionService.swift:81-89 `sharedDrops(in:myUid:)` is the single definition; listenKey (:100-106) keys on the FULL shared set, watchedDrops (:92) applies the 10-cap for attachment only, and the prune (:122-129) uses the uncapped set — so a drop leaving the newest-10 window no longer kills its listener, and a change anywhere in the shared set re-invokes the pass (RootView.swift:155)."
+          },
+          {
+            "item": "surf-4-fold",
+            "status": "CLOSED",
+            "trace": "Sharing/ReceiveScreen.swift:122-126 — the copy is now \"Only people with this link can find it · your camera stays private\"; no \"One-time link\" string remains (grep: 0 hits repo-wide)."
+          },
+          {
+            "item": "seams-6-fold",
+            "status": "CLOSED",
+            "trace": "web/rules-tests/deployed-rules.test.mjs:63 'owner-scoped LIST allowed under v2 (the refresh query shape)' — the deployed-v2 suite now pins the query shape the refresh actually issues; the v3 suite carries both the owner-scoped allow (rules.test.mjs:73) and the unscoped-list denial (:75)."
+          },
+          {
+            "item": "copy-fold",
+            "status": "CLOSED",
+            "trace": "Profile/ProfileScreen.swift:107-112 — the read-warning rung reads \"Some saved drops couldn't be read\" with no claim about sync being paused; the comment at :105-106 records the SURF-lens-5 correction."
+          },
+          {
+            "item": "git-process",
+            "status": "CLOSED",
+            "trace": "`git config core.hooksPath` → .githooks; .githooks/pre-commit runs `set -e` + `node web/rules-tests/drift-check.mjs`, which performs BOTH locks (verified by running it: emoji + reaction-key checks, exit 0). .gitignore excludes Secrets.plist, GoogleService-Info.plist, node_modules, emulator logs and the local .incident/.ackdigest artifacts; `git ls-files` shows only Secrets.sample.plist and Config/Info.plist — no secrets tracked. The full npm + device gate remains documented (not hooked), as stated."
+          }
+        ],
+        "findings": [
+          {
+            "id": "state-14-1",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Profile/ProfileScreen.swift",
+            "line": 148,
+            "title": "The loss ledger's only surface is masked by the \"Connecting…\" and \"Uploading N…\" rungs",
+            "trace": "lostRowIDs has exactly one consumer in the app (grep over AugmentMeReality/**: ProfileScreen.swift:148 only — DropsListScreen's banner block, :37-79, does not render it). The ladder is one exclusive if/else chain: terminal (:81) → unresolved deletes (:91) → localReadWarning (:102) → `account.uid == nil` \"Connecting…\" (:113) → unpushable pending (:117) → lastSyncError (:132) → `uploadingCount > 0` \"Uploading N drops…\" (:136) → lostRowIDs (:148). Round 14 moved \"Connecting…\" below the three problem rungs for exactly this reason but placed the NEW permanent-problem rung below both it and a progress rung, contradicting the ladder's own stated doctrine at :74-76 (\"problems outrank progress, progress outranks unknown\"). Both maskers are unbounded in time: uploadingCount counts pendingSyncIDs with loadable rows (DropStore.swift:522-524) and stays >0 for the whole offline period; uid stays nil for the whole session if anonymous sign-in fails (AccountService never retries in-session — the same fact that forced the ReceiveScreen bounded wait, ReceiveScreen.swift:52-57).",
+            "harm": "A drop was destroyed by corruption and recorded in the durable ledger. The user dismisses the read banner (which is now digest-suppressed for those bytes, DropStore.swift:224-226, so it never returns) and then goes offline with one unsynced drop. The ladder shows \"Uploading 1 drop…\"; the loss record is invisible on every screen for as long as the upload stays pending. Same outcome all session when sign-in stalls (\"Connecting…\"). The ledger exists precisely because banners are dismissible and journals are unreliable — masked by a spinner rung it delivers nothing exit condition (c) promised.",
+            "fix": "Move the `!library.lostRowIDs.isEmpty` rung up to the problem block — directly after the unresolved-deletes rung and above `account.uid == nil` — or render it as a persistent row of its own outside the exclusive chain (it is a permanent fact, not a state in the sync ladder). Mirroring it in DropsListScreen's banner stack would also remove the single-surface dependency."
+          },
+          {
+            "id": "state-14-2",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 216,
+            "title": "Losses whose row id cannot be decoded leave no ledger entry at all, and the file rewrite then erases every other trace",
+            "trace": "LocalDropStore.loadDrops builds the ledger input as `rows.filter { $0.drop == nil }.compactMap(\\.id)` (:216) — a row whose id ALSO fails to decode contributes to `skipped` but not to `lostIDs` (FailableDrop.init, :177-189, sets both drop and id to nil when the keyed container or the UUID decode fails — the id-less row class counsel round 2/C9 explicitly anticipated). refresh() then destructures only the ids (:679-688) and discards the `loaded`/`skipped` counts, so nothing durable records that N rows died. Meanwhile persist() (:360-365) writes back only the DECODED rows, so the first subsequent add()/update()/remove()/redeem() — each of which calls save/delete → loadDrops + persist (:347-358) — silently drops the unreadable row from drops.json. The next load is then `.clean`, which sets incidentMemoryKey to false (:698) and lets the latch be re-earned (:711-725). The journaled incident (:325-327) is the only survivor, and it is cleared by the user's Dismiss (:289).",
+            "harm": "A schema/type corruption garbles one row's id (or the row is written without one). Launch: banner \"1 saved drop couldn't be read (original kept on disk)\", lostRowIDs stays EMPTY. The user taps Dismiss, then creates any new drop — that save rewrites drops.json without the bad row. Next refresh: `.clean`, incident memory retired, latch earned, ladder shows \"Synced — the server has confirmed your drops\". The drop is gone, permanently, with zero record anywhere in the app: exactly the \"loss that leaves no record\" the ledger was built to close, for the corruption class most likely to be unrecoverable.",
+            "fix": "Record the loss even when the identity is unknown: carry `skipped` into the ledger as a durable count (e.g. a `lostRowCount` companion to lostRowIDs, incremented by `skipped - lostIDs.count`) and render the rung from `lostRowIDs.count + lostRowCount`. Separately, make persist() non-destructive of unreadable rows (round 14's \"rows are never deleted\" promise currently holds only for the Dismiss path) by re-appending the preserved sidecar bytes or refusing to rewrite while an unacknowledged skip is outstanding."
+          },
+          {
+            "id": "state-14-3",
+            "severity": "LOW",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 567,
+            "title": "refresh() consumes lastLoadOutcome from a shared slot that a non-mutator save can overwrite without bumping the refresh generation",
+            "trace": "`lastOutcome` is a single mutable slot on the store actor (:145), rewritten by EVERY load — including the loads that save()/delete() perform internally (:347, :355). refresh() reads it through a separate await (:567) whose only protection is `refreshGeneration` (:568). Every user-facing mutator bumps refreshGeneration at entry (add :898, update :917, remove :936, redeem :851), so those interleavings abort the refresh safely — but performCloudSync's server-stamped write-back, `try await local.save(stamped)` (:1079), is NOT a library mutator and bumps nothing. It also rewrites drops.json through persist(), dropping the unreadable rows. Two such stamped saves landing inside refresh's read window (the first rewrites the file, the second's internal load sets `.clean`) leave refresh consuming a `.clean` verdict that belongs to a different load than the one that produced `merged`.",
+            "harm": "During the auth-ready reconcile several first-time uploads ack back-to-back and each writes the stamped ownerUid to disk. If two land while a refresh is between its local load and its outcome read, the refresh records no loss (:679-688 never runs), clears incidentMemoryKey (:698), and earns hasCompletedCleanRefresh (:724) over a load that skipped rows — a false all-clear plus a missing ledger entry, with only the dismissible journal left. Narrow timing window (two actor round-trips), machine-driven rather than user-driven, hence LOW; the consequence is identical to state-14-2.",
+            "fix": "Make the verdict travel with the read instead of living in a slot: have the diagnostics seam return the outcome for a specific load (e.g. `loadDrops` returns `(rows, LocalLoadOutcome)` or stamps a monotonic loadID that refresh captures at call time and re-checks), so a refresh can only consume the verdict of its own load. Alternatively route the stamp write-back through a path that bumps refreshGeneration."
+          },
+          {
+            "id": "state-14-4",
+            "severity": "LOW",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 1263,
+            "title": "acknowledgeLosses() is silently undone by the next refresh while the unreadable bytes remain on disk",
+            "trace": "LocalDropStore.loadDrops sets `lastOutcome = .skippedRows(...)` (:217-219) BEFORE the acknowledged-digest check (:224), so an acknowledged incident still reports `.skippedRows` on every load. refresh() re-runs `for id in lostIDs { markLost(id) }` unconditionally on that outcome (:688). Round 14 also removed the round-12 rewrite-on-acknowledge, so nothing in the Dismiss path ever removes the bad bytes — the outcome recurs on every load until some unrelated write rewrites the file (:360-365). Refreshes fire on scene-active (AugmentMeRealityApp.swift:52), the Sent tab's refresh button (DropsListScreen.swift:26) and the map (MapScreen.swift:106). D3: the ledger test asserts `lostRowIDs.isEmpty` immediately after acknowledgeLosses (DropStoreTests.swift:1319-1320) and never refreshes again, so it passes identically whether or not the clear is durable.",
+            "harm": "The user taps Clear on \"1 drop was lost to a storage problem\"; the rung disappears and returns on the next foreground, every time, for as long as the user does not create/edit/delete something. A user-facing control that reverts itself teaches the user the surface is broken — and the same recurrence keeps hasCompletedCleanRefresh false (:684), so the ladder can never reach any other state either.",
+            "fix": "Give the ledger the same digest-scoped suppression the banner got: record the acknowledged content digest alongside acknowledgeLosses and skip re-marking ids that came from already-acknowledged bytes (or have LocalDropStore report an `.skippedRowsAcknowledged` outcome for digest-matched content, keeping the latch revocation but not the re-mark)."
+          },
+          {
+            "id": "state-14-5",
+            "severity": "LOW",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 880,
+            "title": "redeem() retires a durable loss record on in-memory presence, which is not evidence the row is persisted",
+            "trace": "redeem()'s else-branch — taken when `drops.contains(where: { $0.id == drop.id })` (:863) — calls `clearLost(drop.id)` (:880) and performs NO disk write. After round 12's additive phase-1 publish (:578-582) and the cloud merge (:611-623, uid-scoped so all of the owner's rows return, FirebaseDropStore.swift:64-66), `drops` routinely holds rows that are NOT on local disk: a stale published copy that survived a quarantine, or a cloud-sourced row that refresh never writes back locally. Retiring a durable loss record is a positive claim (\"this row is no longer lost\") earned here from evidence a cache/memory copy satisfies — the pattern binding rules 1 and 3 forbid.",
+            "harm": "An unacked drop is edited offline, the store file is then quarantined (its id is recorded lost at :695), and the stale server copy returns in the next cloud read so `drops` contains the id. The user opens their own link for that drop: redeem takes the else-branch, clears the loss record, and writes nothing to disk. Because the quarantine leaves an ABSENT file, the `.skippedRows` re-mark that would normally repair the record never happens — the loss record is gone permanently while the destroyed local row is not restored. In the `.skippedRows` variant the wrongful retirement self-heals on the next refresh, so harm is bounded to the quarantine path.",
+            "fix": "Gate clearLost on durable evidence: in the else-branch, persist the row (or verify it is present in the last local load's decoded rows) before retiring the ledger entry; retire on the ack path only when the row is also known to be on disk."
+          }
+        ],
+        "testCases": [
+          {
+            "name": "testLossRungOutranksConnectingAndUploading",
+            "findingId": "state-14-1",
+            "asserts": "Extract the ladder's rung selection into a pure function (e.g. `SyncLadder.rung(library:uid:) -> Rung`) and assert that with lostRowIDs non-empty the result is .lostRows for (uid == nil) and for (uploadingCount == 2, uid non-nil, no other problem).",
+            "failsWhen": "Fails today: the current chain returns .connecting and .uploading respectively, so the durable loss record renders nowhere."
+          },
+          {
+            "name": "testUnidentifiableLostRowsStillLeaveADurableRecord",
+            "findingId": "state-14-2",
+            "asserts": "Write a store file containing one valid row plus a row with no decodable id (e.g. {\"heightAboveGround\":\"3\"}); refresh; assert the library exposes a durable loss record (count > 0). Then add() a new drop (rewriting the file), refresh again, and assert the record still stands and hasCompletedCleanRefresh is not silently re-earned over it.",
+            "failsWhen": "Fails today: lostIDs is empty for id-less rows, so nothing is recorded, and the post-rewrite `.clean` load retires the incident memory and earns the latch."
+          },
+          {
+            "name": "testStampWriteBackCannotLaunderASkippedRowLoad",
+            "findingId": "state-14-3",
+            "asserts": "With a local-store double whose lastLoadOutcome slot is rewritten by save() (production's shape), start a refresh gated inside its local read, land two ownerUid-stamp saves through performCloudSync, release, and assert the refresh recorded the loss from ITS OWN load and did not set hasCompletedCleanRefresh.",
+            "failsWhen": "Fails today: refresh consumes the post-rewrite `.clean` outcome, records no loss, clears the incident memory and earns the latch."
+          },
+          {
+            "name": "testClearingTheLedgerSurvivesTheNextRefresh",
+            "findingId": "state-14-4",
+            "asserts": "After the round-14 ledger scenario, call acknowledgeIncident + acknowledgeLosses, then refresh again with the same bad bytes still on disk; assert lostRowIDs is still empty.",
+            "failsWhen": "Fails today: refresh re-marks the same id from the recurring `.skippedRows` outcome, so the user's Clear is undone."
+          },
+          {
+            "name": "testRedeemDoesNotRetireALossWithoutPersistingTheRow",
+            "findingId": "state-14-5",
+            "asserts": "Seed lostRowIDs with id A, publish A into `drops` from the cloud read only (never on local disk), then redeem(A); assert either that A is now readable from the local store or that A is still in lostRowIDs.",
+            "failsWhen": "Fails today: the else-branch clears the loss record with no disk write, so A is neither persisted nor recorded."
+          }
+        ],
+        "cleanAreas": [
+          "Per-row epochs (exit a2): rowGenerations is bumped by exactly the four mutators and by nothing else; refresh() correctly does NOT bump it, so the round-12 abandon-the-delete defect is genuinely closed. remove()'s guard, redeem()'s two guards and the supersede semantics behave correctly under every interleaving I could construct from reachable UI flows.",
+          "Tombstone suppression is state-based, not ordering-based (DropStore.swift:580-581 phase 1, :642-643 phase 2), so a cloud read that resurrects a row mid-remove cannot outrace the tombstone regardless of which continuation lands first.",
+          "cloudProven predicate (a1): sound in both directions — ownerUid is only ever server-sourced, and the capture is correctly below the received-drop return so viewer copies cannot leak unclearable durable entries.",
+          "redeem() end to end (a5): disk-before-memory, generation-guarded on both branches, tombstone/attempt/task teardown before the await, recall above the rethrow. The persist-failure path leaves no ghost and genuinely retries.",
+          "authDidBecomeReady (seams-3): firstPassThisSession is instance-scoped and set before the awaits; the latch reset stays uid-change-only so the round-12 'pinned at Checking…' regression is not reintroduced; revalidation cannot violate the pending/tombstone assert because remove() clears terminal before tombstoning; accountDidChange is fully deleted with no residual references.",
+          "Latch revocation vs sticky evidence (state-2): the destructive-outcome revocation cannot be re-earned in the same pass — localProvablyClean is false for every destructive outcome, and the `.absentFile` arm still requires both a nil warning and a false incident memory. The read-failure early return now records the memory and revokes before returning (flows-lens-4).",
+          "Loss ledger's quarantine input (pendingSyncIDs) is defensible: pending ids are always disk-backed at mark time (add/update persist before enqueuing), and the deliberate under-inclusion of acked rows is covered by the uid-scoped (not geo-scoped) cloud read plus the journaled incident.",
+          "Test doubles (exit b): FlakyLocalStore parks inside delete before its failure check and fails save deterministically — production's isolation, suspension point and failure modes all reproduced. None of the five round-14 tests is vacuous with respect to its target bug (the one gap is coverage, not vacuity: the ledger test never refreshes after Clear — see state-14-4).",
+          "Drift protection and process: both locks run green from the pre-commit hook (core.hooksPath verified), the reaction-key parser fails closed below 3 fields, the emulator payload derives from the app's own struct, and no secrets are tracked."
+        ]
+      },
+      {
+        "lens": "surfaces — final audit (ladder order/reachability/copy-honesty incl. the new loss rung + relocated Connecting rung; ReceiveScreen bounded-wait UX; non-destructive Dismiss comprehension; MemoryScreen/ShareDropSheet final states)",
+        "closureVerdicts": [
+          {
+            "item": "exit-a1",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:966 `guard cloud != nil, drop.receivedViaLink != true else { return }` precedes DropStore.swift:974 `if drop.ownerUid != nil || ackedCloudIDs.contains(drop.id) { markCloudProven(...) }` — terminal clause gone, capture below the viewer early return. Test DropStoreTests.swift:1254 testTerminalRefusalIsNotProofTheServerHoldsTheDocument is non-vacuous: with the terminal clause restored, markCloudProven fires and performCloudDelete:1174 routes to markUnresolvedDelete, breaking the :1275 assertion."
+          },
+          {
+            "item": "exit-a2",
+            "status": "CLOSED",
+            "trace": "rowGenerations declared DropStore.swift:447; bumped in add():899, update():918, redeem():852-853, remove():937-938. remove()'s post-await guard DropStore.swift:952 keys on rowGenerations[drop.id], not refreshGeneration; redeem()'s post-await publishes guard at :870 and :875. Tests :1170 (refresh must NOT abort — non-vacuous: under the round-12 global guard the refresh at :1182 supersedes and pendingDeleteIDs never fills) and :1196 (abort branch entered via the FlakyLocalStore delete gate). OBSERVATION for state/flows lens, not a surfaces finding: update() bumps its row epoch but does NOT re-check it after `try await local.save` (DropStore.swift:925-932); if a remove() of the same id completes during that suspension, update()'s continuation calls enqueueCloudSync → markPending on a tombstoned id → the invariant assert at :1188 traps (Debug) / the pending∧tombstone invariant breaks (Release). I could not construct a user-reachable interleaving (update() callers are the share sheet and the AR editor, neither co-present with the Sent-tab delete), so I am not filing it."
+          },
+          {
+            "item": "exit-a3",
+            "status": "PARTIAL",
+            "trace": "Mechanism built: ReceiveScreen.swift:58-68 — `.task(id: account.uid ?? \"-\")`, nil-uid path sleeps 10 s then `guard !Task.isCancelled, account.uid == nil, drop == nil, failure == nil` before setting `.unknown`; cancellation-safe and it auto-recovers when the uid lands (the task id changes → load() runs, ReceiveScreen.swift:167 clears `failure`). ProfileScreen.swift:113 'Connecting…' now sits below terminal(:81)/unresolved(:91)/localReadWarning(:102). NOT fully honest at the destination: the retry offered at ReceiveScreen.swift:147 calls load() → DropSharingService.swift:65-74 getDocument(source:.server), which under a nil uid can only be denied → `.unknown` again, and AccountService.start() (AugmentMeRealityApp.swift:30) is the only sign-in attempt per process (AccountService.swift:31-40 catch → 'retrying on next launch'). See finding SURF-14-3. Also: the 10 s wait renders a bare unlabelled ProgressView (ReceiveScreen.swift:41-44) — claims nothing false, so not filed."
+          },
+          {
+            "item": "exit-a4",
+            "status": "PARTIAL",
+            "trace": "Non-destructive Dismiss: LocalDropStore.acknowledgeIncident DropStore.swift:283-291 writes only the content digest to `.ackdigest`; the load path DropStore.swift:224 suppresses the banner for exactly those bytes and still sets lastOutcome=.skippedRows(:217) so the latch stays revoked; rows are never rewritten. lostIDs captured via FailableDrop.id DropStore.swift:171-190 + :216. Ledger DropStore.swift:419, persisted key :480, recorded :688 (skippedRows) and :695 (quarantine→pendingSyncIDs), retired by redeem :873/:880 and by a late ack :1064, wholesale by acknowledgeLosses :1263. state-2 revocation at :684 and :691; flows-lens-4 read-failure memory at :557-558. Test :1285 non-vacuous for the store半 (with the round-12 rewrite the :1313 raw-file assertion fails). PARTIAL because the surfaced rung is defeated by two lower-value rungs (SURF-14-1) and its Clear button is undone by the next refresh (SURF-14-2)."
+          },
+          {
+            "item": "exit-a5",
+            "status": "CLOSED",
+            "trace": "redeem() DropStore.swift:868-878 — `try await local.save(drop)` precedes `drops.insert` and the persist error is captured, not thrown inline; the staged-delete recall DropStore.swift:888-891 runs above `if let persistError { throw persistError }` at :892. Test :1222 non-vacuous on both branches (memory-first ordering breaks the :1238 no-ghost assertion; an early rethrow breaks the :1242 二-save wait)."
+          },
+          {
+            "item": "exit-a6",
+            "status": "CLOSED",
+            "trace": "drift-check.mjs appReactionKeys() regex `^\\s*(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:var|let)\\s+(\\w+)\\s*[:=]` matches var/let with attribute prefixes and throws below 3 fields (fail-closed). rules.test.mjs:18 imports appReactionKeys and :104-108 throws on an unknown field. ReactionShapeTests.swift locks the ENCODER keys to id/emoji/uid/byName/at. Executed: `node web/rules-tests/drift-check.mjs` → exit 0, 'emoji drift check OK: ❤️ 😂 🥹 🤯' + 'reaction key drift check OK: id, emoji, uid, byName, at'. The residual this was aimed at (@ServerTimestamp commitAt) would now parse."
+          },
+          {
+            "item": "exit-b",
+            "status": "CLOSED",
+            "trace": "FlakyLocalStore DropStoreTests.swift:1495-1563 is an actor with setFailSave(:1510), setGateDeletes(:1511), parkedDeleteCount(:1512), releaseAllDeletes(:1514) and parks inside delete() at :1552. All three branches are ENTERED: remove-abort (:1196 via the gate), redeem persist-catch (:1233 setFailSave(true)), redeem post-throw recall (:1242 waits for the second cloud save). D3 note: testRedeemDuringRemoveSupersedesTheDelete (:1196) is a coverage test, not a regression lock — the round-12 global-generation code also aborts there (redeem bumps refreshGeneration), so it passes with and without the target bug; the real lock is its sibling at :1170."
+          },
+          {
+            "item": "exit-c",
+            "status": "PARTIAL",
+            "trace": "The ledger and the rung exist (DropStore.swift:419, ProfileScreen.swift:148-164, Clear → acknowledgeLosses at :162). 'ABOVE Synced' is literally satisfied (:148 precedes :165/:172). It is BELOW 'Connecting…' (:113) and BELOW 'Uploading N…' (:136) — a progress rung outranks the permanent-loss record — and the Clear button does not survive the next refresh. Findings SURF-14-1 and SURF-14-2. The rung is also Profile-only: DropsListScreen's banner block (DropsListScreen.swift:37-79) renders terminal/lastSyncError/lastPersistError/localReadWarning but not lostRowIDs, so after a Dismiss the Sent tab can show ContentUnavailableView 'No drops yet' (:84-88) with no trace of the loss — the exact state the :12-14 comment forbids."
+          },
+          {
+            "item": "exit-d",
+            "status": "NOT_CLOSED",
+            "trace": "COUNSEL-WAVE-C-LOG.md:76 asserts '(d) residuals re-stated' but no round-14 residual enumeration exists in the file (89 lines total; the last enumerated list is round 8's at :35, and round 10's deferred list is inline in a table cell at :18). Neither of the two items (d) named by risk-change is re-stated: own-1 reap redesign, and the serverTimestamp watermark declaration form. Compounding doc rot: the Build/verify gate at :87-88 still reads '90/90 as of round 8' and 'drift lock + 28 emulator assertions … Green as of round 8' against an actual 112/112 + 30 v3 + 6 deployed-v2; cross-cutting rule 6 at :84 still reads 'isolation and suspension points' and was never widened to include the failure modes that were round 14's whole coverage lesson. See finding SURF-14-5."
+          },
+          {
+            "item": "seams-3-fold",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:808-827 authDidBecomeReady: `firstPassThisSession = !authReadyRan` (:810), revalidation gate `if changed || firstPassThisSession` (:817), evidence reset only on a real uid change (:813). authReadyRan declared :451. accountDidChange() is gone — repo-wide grep finds only the comment at DropStore.swift:807; RootView.swift:162-169 is the single caller of authDidBecomeReady."
+          },
+          {
+            "item": "flows-5-fold",
+            "status": "CLOSED",
+            "trace": "ReactionService.swift:81-87 sharedDrops(in:myUid:) is the single definition; listenKey (:100-105) keys on the FULL shared set, watchedDrops (:91-93) applies the 10-cap only to attachment, and the prune at :122-129 uses the uncapped set. RootView.swift:155 `.task(id: ReactionService.listenKey(for: library.drops, myUid: account.uid))` — a change anywhere in the shared set re-invokes the pass, so the uncapped prune is reachable."
+          },
+          {
+            "item": "surf-4-fold",
+            "status": "CLOSED",
+            "trace": "ReceiveScreen.swift:124 now reads 'Only people with this link can find it · your camera stays private'; repo-wide grep for 'one-time' hits only the explanatory comment at ReceiveScreen.swift:123. The remaining claim is backed by the deployed rules: deployed-rules.test.mjs asserts a stranger CAN get a link drop by id while rules.test.mjs:75 asserts unscoped list is denied — i.e. the id is the secret, finding requires the link."
+          },
+          {
+            "item": "seams-6-fold",
+            "status": "CLOSED",
+            "trace": "deployed-rules.test.mjs:63-64 'owner-scoped LIST allowed under v2 (the refresh query shape)' → assertSucceeds(getDocs(query(collection(owner,'drops'), where('ownerUid','==',OWNER)))) — the exact shape DropLibrary.refresh issues each pass."
+          },
+          {
+            "item": "copy-fold",
+            "status": "CLOSED",
+            "trace": "ProfileScreen.swift:107-112 renders only 'Some saved drops couldn't be read'; no 'sync is on hold' string survives anywhere in the app (grep clean). Truthful: the refresh continues to sync the readable rows (DropStore.swift:563-645 runs the cloud pass on a skippedRows outcome)."
+          },
+          {
+            "item": "git-process",
+            "status": "CLOSED",
+            "trace": "git repo present, HEAD 5bb6ea5. .githooks/pre-commit exists, mode 0755, runs `node web/rules-tests/drift-check.mjs` under `set -e`; `git config --get core.hooksPath` → .githooks. Executed the hook's command: exit 0. Caveat folded into SURF-14-5: core.hooksPath is local (.git/config) and untracked, so a fresh clone silently has NO drift lock until someone re-runs the config command; .git/hooks contains only *.sample."
+          }
+        ],
+        "findings": [
+          {
+            "id": "SURF-14-1",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Profile/ProfileScreen.swift",
+            "line": 148,
+            "title": "The permanent-loss rung is outranked by 'Uploading N…' (progress) and 'Connecting…' — the ledger goes silent in exactly the states it was built for",
+            "trace": "Ladder order as built: terminal(:81) → unresolvedDeletes(:91) → localReadWarning(:102) → uid==nil 'Connecting…'(:113) → unpushablePending(:117) → lastSyncError(:132) → 'Uploading N drops…'(:136) → lostRowIDs(:148) → 'Checking sync status…'(:165) → 'Synced'(:172). The round-14 rung's own comment (:150-153) claims it must survive 'the reap, the banner dismissal and the evidence latch', and the ladder's charter comment (:73-77) states 'problems outrank progress' — but the new rung was placed one branch BELOW a pure progress rung and two below an unknown-state rung. uploadingCount (DropStore.swift:522) is durable: pendingSyncIDs is persisted (:474/:1193) and an unacked write stays pending indefinitely while offline (performCloudSync's ackTimedOut path, :1088). Walkthrough: drops.json holds R1 (pending upload) + R2 (corrupt body, id decodable) → refresh records markLost(R2) (DropStore.swift:688) and revokes the latch (:684) → the user sees rung 3 on the Sent tab and taps Dismiss (DropsListScreen.swift:66) → acknowledgeIncident writes the ackdigest (DropStore.swift:283) so localReadWarning is nil from the next load (:224) → back on Profile the ladder now stops at :136 and reads 'Uploading 1 drop…'. The permanent loss of R2 is stated nowhere in the app (DropsListScreen.swift:37-79 never renders lostRowIDs either).",
+            "harm": "After the user dismisses the read banner — the flow round 14 explicitly made safe to dismiss — a permanently destroyed drop is invisible on every surface for as long as any upload is pending (indefinitely, offline) or sign-in has not landed. The only status line the user is shown is a reassuring progress message. This is the charter's 'a loss that leaves no record' state re-created by rung precedence, one round after it was closed.",
+            "fix": "Move the `!library.lostRowIDs.isEmpty` branch up into the problem block — directly after the localReadWarning rung at :102 and above the `account.uid == nil` rung at :113 (a storage loss is uid-independent and permanent, so nothing transient may mask it). Mirror the rung in DropsListScreen.banners so the 'No drops yet' empty state can never render loss-free. Extract the ladder into a `DropLibrary.statusRung` enum so the order is unit-testable rather than living inline in the View."
+          },
+          {
+            "id": "SURF-14-2",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 1263,
+            "title": "'Clear' on the loss rung does not clear — the next automatic refresh re-arms the ledger from the same unreadable rows",
+            "trace": "acknowledgeLosses() (:1263-1266) empties lostRowIDs and persists the empty set, but records no acknowledgement. refresh()'s skippedRows arm (:679-688) calls markLost(id) unconditionally for every lostID on EVERY pass, and the unreadable rows are never removed from disk (that is round-14's non-destructive-Dismiss guarantee, LocalDropStore.acknowledgeIncident :283-291 stores only a digest). Refresh is automatic and frequent: AugmentMeRealityApp.swift:52 on every scenePhase .active, RootView.swift:168 at auth-ready, MapScreen.swift:106, DropsListScreen.swift:26. So: tap Clear → the rung disappears → background/foreground the app → the identical rung is back. Contrast the banner beside it, which round 14 gave exactly the missing mechanism (digest-keyed suppression that re-raises only for NEW bad bytes, :224). D3: testLostRowsAreRecordedDurablyAndDismissDestroysNothing (DropStoreTests.swift:1285) passes with this defect present — it asserts lostRowIDs.isEmpty at :1320 and never refreshes again.",
+            "harm": "The only user control over a permanent, unfixable rung is inert: the loss rung cannot be retired for the life of the install, so the Profile status line is pinned to it. Worse for the charter: once the user has cleared it and it returns anyway, a genuinely NEW loss (different rows, a later incident) is indistinguishable from the re-armed old one — the ledger stops carrying information exactly the way an undismissable banner does. The rung's copy ('N drops were lost to a storage problem') also contradicts the banner's 'original kept on disk' for the same rows, with no guidance about what Clear does or what remains recoverable.",
+            "fix": "Give the ledger the same acknowledgement mechanism the banner got: persist an `acknowledgedLostRowIDs` set (or the acknowledged content digest) in acknowledgeLosses(), and skip markLost for ids already acknowledged — so a NEW lost id still raises the rung while a cleared one stays cleared. Add the copy the rung is missing ('the unreadable rows are still on this device' + what Clear discards)."
+          },
+          {
+            "id": "SURF-14-3",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Sharing/ReceiveScreen.swift",
+            "line": 147,
+            "title": "After the bounded wait, 'Try again' can never succeed while the uid is nil — one sign-in attempt per process, and the copy sends the user to check a connection that is not the cause",
+            "trace": "ReceiveScreen.swift:58-66: uid nil → sleep 10 s → failure = .unknown. The failed view (:132-156) shows 'This link can't be opened right now' / 'It may still be waiting — check your connection and try again in a moment.' and a 'Try again' CTA that calls load() directly (:147-149), bypassing the uid guard. load() → DropSharingService.fetchSharedDrop (:65-74) → getDocument(source: .server); with no signed-in user the deployed rules deny it → catch → .unknown. AccountService.start() is invoked exactly once, from AugmentMeRealityApp.swift:30's root .task, and its failure path (AccountService.swift:36-39) only sets statusText 'retrying on next launch' — nothing re-attempts sign-in on scenePhase .active or on demand. So for the whole process lifetime every Try again reproduces the same screen, even after the network returns. (Auth.auth().currentUser is Keychain-persisted, so this is the never-yet-signed-in install — i.e. the first-launch-from-a-link acquisition path this exit condition exists to protect.)",
+            "harm": "A recipient opening a magic link on a fresh install with flaky network gets a 10-second unlabelled spinner, then a retry loop that cannot terminate and copy that points them at their connection. The one surface that names the real cause ('Couldn't reach the account service — retrying on next launch', ProfileScreen.swift:188-190) is behind a tab this sheet covers. The user's only working action — force-quit and relaunch — is never stated.",
+            "fix": "On the bounded-wait timeout, distinguish the cause: render an account-connection state ('We couldn't set up your account on this device — reopen the app to try again') rather than the generic link-unknown copy, and make Try again re-kick AccountService.start() (make start() idempotent/re-entrant) before re-issuing the fetch. Optionally surface account.statusText inside ReceiveScreen when uid is nil."
+          },
+          {
+            "id": "SURF-14-4",
+            "severity": "LOW",
+            "file": "AugmentMeReality/Profile/ProfileScreen.swift",
+            "line": 114,
+            "title": "'Connecting…' claims an in-flight attempt after sign-in has terminally given up for the session",
+            "trace": "ProfileScreen.swift:113-116 renders 'Connecting…' for the whole `account.uid == nil` state. AccountService.swift:31-40 makes one signInAnonymously attempt per process; on failure it sets statusText 'Couldn't reach the account service — retrying on next launch' and stops. Nothing is connecting after that point, yet the rung keeps saying so for the rest of the session. The contradicting truth is rendered two lines below in the same Section (:188-190), so the composite surface shows a progress claim and its own refutation simultaneously. Cross-cutting rule 1 (defaults/fallthroughs resolve to UNKNOWN) is what this rung falls through on: a nil uid is three states (not started, in flight, failed) collapsed into the most optimistic one.",
+            "harm": "A user whose account never came up reads the sync line as 'still working on it' and waits; the state is terminal until relaunch. Low because the honest statusText line is adjacent and no data claim is made.",
+            "fix": "Publish a tri-state on AccountService (`.connecting` / `.failed(reason)` / `.ready`) and render the failed case as its own rung ('Not connected — reopen the app to retry'), reserving 'Connecting…' for an actually in-flight attempt."
+          },
+          {
+            "id": "SURF-14-5",
+            "severity": "LOW",
+            "file": "COUNSEL-WAVE-C-LOG.md",
+            "line": 87,
+            "title": "The documented pre-deploy gate states a stale baseline and the drift hook does not survive a clone — the checklist under-reports what must be green",
+            "trace": "COUNSEL-WAVE-C-LOG.md:87 '90/90 as of round 8' and :88 'drift lock + 28 emulator assertions … Green as of round 8' vs the round-14 header at :75 ('112/112 device, 30 v3 + 6 deployed-v2, 2 drift locks'). Cross-cutting rule 6 at :84 still reads 'isolation and suspension points', never widened to the failure modes that were round 13/14's coverage lesson (and which FlakyLocalStore now implements). Exit condition (d) at :71 is asserted as done at :76 with no residual enumeration anywhere in the 89-line file. Separately, the drift lock is wired via `git config core.hooksPath .githooks`, which lives in untracked .git/config — .git/hooks holds only *.sample, so a fresh clone commits with no lock until someone re-runs the config by hand.",
+            "harm": "The log is the deploy gate of record for a SECURITY-gated v3 rules deploy (:74). An operator following it verifies fewer assertions than exist, cannot tell which residuals were consciously carried out of the wave, and a clone of the repo silently loses the emoji/reaction-key drift protection whose absence turns the first post-deploy reaction into a terminal verdict.",
+            "fix": "Update :87-88 to 112/112 + 30 v3 + 6 deployed-v2 + 2 drift locks; widen rule 6 at :84 to include failure modes; add the round-14 'Recorded residuals' block actually enumerating the carried items (incl. own-1 reap redesign and the serverTimestamp watermark, each with its current risk); commit a `scripts/install-hooks.sh` (or a `make setup`) that sets core.hooksPath, and reference it from the Build/verify block."
+          }
+        ],
+        "testCases": [
+          {
+            "name": "testPermanentLossOutranksUploadProgressAndConnectingOnTheLadder",
+            "findingId": "SURF-14-1",
+            "asserts": "Extract the ProfileScreen ladder into a `DropLibrary.statusRung` enum, then: with lostRowIDs = [X] and pendingSyncIDs = [Y] where Y is present in drops (uploadingCount == 1), statusRung == .lostRows(1); and with lostRowIDs = [X] and uid == nil, statusRung == .lostRows(1), never .connecting or .uploading.",
+            "failsWhen": "the lostRowIDs branch sits below the uploadingCount or uid==nil branches (the round-14 order, ProfileScreen.swift:113/:136/:148)."
+          },
+          {
+            "name": "testClearedLossesStayClearedButNewLossesStillRaise",
+            "findingId": "SURF-14-2",
+            "asserts": "Load a drops.json with one undecodable row (id L1) → refresh → lostRowIDs == [L1]; acknowledgeLosses(); refresh() again over the SAME bytes → lostRowIDs is empty. Then append a second undecodable row (id L2) and refresh → lostRowIDs == [L2].",
+            "failsWhen": "markLost is called unconditionally from the skippedRows arm (DropStore.swift:688) with no acknowledged-losses record — the second refresh re-raises L1."
+          },
+          {
+            "name": "testReceiveRetryUnderNilUidNamesTheAccountCauseAndReattemptsSignIn",
+            "findingId": "SURF-14-3",
+            "asserts": "With AccountService reporting a terminal sign-in failure (uid nil, statusText set), the ReceiveScreen bounded-wait timeout renders the account-connection state (not the generic 'check your connection' link copy), and invoking the retry action calls AccountService.start() before DropSharingService.fetchSharedDrop.",
+            "failsWhen": "the timeout maps to the generic .unknown copy and the retry calls load() directly (ReceiveScreen.swift:61-65, :147)."
+          },
+          {
+            "name": "testConnectingRungRequiresAnInFlightSignIn",
+            "findingId": "SURF-14-4",
+            "asserts": "AccountService exposes a connection tri-state: after signInAnonymously throws, connection == .failed and the ladder rung reads the not-connected copy; while the call is in flight, connection == .connecting and the rung reads 'Connecting…'.",
+            "failsWhen": "the rung is derived from `account.uid == nil` alone (ProfileScreen.swift:113), which cannot distinguish in-flight from given-up."
+          },
+          {
+            "name": "hook-install-check.sh (repo check, run in CI and by the deploy gate)",
+            "findingId": "SURF-14-5",
+            "asserts": "`git config --get core.hooksPath` == .githooks, .githooks/pre-commit is executable, `node web/rules-tests/drift-check.mjs` exits 0, and the counts quoted in COUNSEL-WAVE-C-LOG.md Build/verify match the actual device-test and emulator-assertion counts.",
+            "failsWhen": "run in a fresh clone (core.hooksPath unset → no drift lock) or after the suite grows without the log being updated."
+          }
+        ],
+        "cleanAreas": [
+          "MemoryScreen final states — myReactionStatus/myReactionBadge (MemoryScreen.swift:179-195) render delivered/queued/failed/sending distinctly; the nil case cannot present a stale 'Sending…' because ReactionSession.startWatching (ReactionSession.swift:29-36) clears sentEmoji and delivery together and didReact (:55-63) sets both, so `myReaction != nil ⟹ delivery != nil`. The recap (:67-86) renders an explicit UNKNOWN rung when serverAnswered is false and asserts no cause; firstReactionLabel (:197-205) is gated on a server-confirmed row. Nothing on the screen fabricates a receipt.",
+          "ShareDropSheet final states — the terminal-failure caption (ShareDropSheet.swift:137-145) outranks the pending caption which outranks the neutral one; sendLink (:195-209) refuses to present the activity sheet for a known-terminal drop and kicks retrySync(id:) instead; the sheet stays open on a terminal failure (:168-174); every preview reads liveDrop (:184-186). One sub-finding-grade note deliberately not filed: the header NightChip 'READY' (:41) is unconditional and is not suppressed for a terminal or pending drop — it is contradicted in place by the caption above the CTA and no dead link can be handed out, so I judged it style rather than a charter defect.",
+          "Dismiss non-destructiveness itself — LocalDropStore.acknowledgeIncident (DropStore.swift:283-291) writes only a digest sidecar; the load path (:211-245) re-derives .skippedRows every pass so the evidence latch stays revoked even while the banner is suppressed, and changed bad content re-raises. The rows on disk are provably untouched (DropStoreTests.swift:1313-1317).",
+          "Receive-flow verdict mapping — DropSharingService.SharedDropFetch (:51-59) with .absent produced only by a served `snapshot.exists == false` (:75), decode failure and every error mapped to .unknown (:73, :92); ReceiveScreen renders .gone vs .unknown with retry only on .unknown (:132-153). The bounded wait is cancellation-safe and self-heals when the uid lands.",
+          "Ladder rungs 1-3 (terminal / unresolved deletes / local read warning) — reachable, correctly ordered above the transient rungs, copy backed by durable per-drop state (ProfileScreen.swift:81-112); the 'Synced' rung remains unreachable without hasCompletedCleanRefresh, which every destructive outcome now revokes (DropStore.swift:684, :691, :558).",
+          "RootView surface wiring — the global lastPersistError banner (RootView.swift:132-149) with an explicit OK acknowledgement covers persist failures fired from the Map and receive flows; the receive path routes through redeem() and announces a failed save in AR (:64-72)."
+        ]
+      },
+      {
+        "lens": "end-to-end flows, final audit: corruption lifecycle (skipped rows → banner → Dismiss → ledger → Clear → new corruption), quarantine → ledger → relaunch, delete/redeem/refresh interleavings under the new per-row epochs, first-launch link-open with slow sign-in, terminal revalidation on session start, and whether the three previously-unreachable branches are genuinely entered",
+        "closureVerdicts": [
+          {
+            "item": "exit-a1",
+            "status": "CLOSED",
+            "trace": "Services/DropStore.swift:974 — predicate is now exactly `if drop.ownerUid != nil || ackedCloudIDs.contains(drop.id)`; the terminalSyncFailureIDs clause is gone (grep over the file: terminalSyncFailureIDs appears only at :395, :663, :821, :1202, :1207-1210 — never in a provenance predicate). The capture sits BELOW the received-drop early return at :966 (`guard cloud != nil, drop.receivedViaLink != true else { return }`), so a viewer copy can never enter cloudProvenIDs. Downstream give-up at :1174 keys on cloudProvenIDs || ackedCloudIDs only. Test testTerminalRefusalIsNotProofTheServerHoldsTheDocument (DropStoreTests.swift:1254-1279) EXECUTED and passed. D3 caveat: because clearTerminal now runs at :962 (above the predicate), re-inserting the clause AT :974 would be dead code and the test would still pass — but the round-12 bug shape (capture at :886-890, above the clears per counsel-archives/wave-c-round13-verdict.json) does fail this test, so it is a valid regression lock. The researcher's specified extra assertion (defaults['cloudProvenDropIDs'] does not contain the id) was not written."
+          },
+          {
+            "item": "exit-a2",
+            "status": "CLOSED",
+            "trace": "rowGenerations declared DropStore.swift:447; bumped in add() :899, update() :918, redeem() :852, remove() :937 — all four mutators. remove()'s post-await guard at :952 reads `rowGenerations[drop.id] == rowGeneration` (NOT refreshGeneration); refreshGeneration is untouched by refresh() for row epochs, so a concurrent refresh cannot abandon a delete. redeem()'s two post-await publishes are epoch-guarded at :870 and :875. Tests testRefreshDuringRemoveDoesNotAbandonTheDelete (:1170) and testRedeemDuringRemoveSupersedesTheDelete (:1196) both EXECUTED and passed; the first is non-vacuous (with the global-counter guard the refresh at :1182 bumps refreshGeneration and both assertions fail). See finding F3 for a residual gap in the abort branch."
+          },
+          {
+            "item": "exit-a3",
+            "status": "CLOSED",
+            "trace": "Sharing/ReceiveScreen.swift:58-68 — `.task(id: account.uid ?? \"-\")`; uid-nil path sleeps 10 s (`try? await Task.sleep(nanoseconds: 10_000_000_000)`) then re-checks `!Task.isCancelled, account.uid == nil, drop == nil, failure == nil` before setting `failure = .unknown` — cancellation-safe, and the `.task(id:)` key means a uid arriving at any point cancels the waiter and re-enters `load()` automatically (end-to-end: 10 s fall-through → 'This link can't be opened right now' + Try again at :146-151 → sign-in arrives → task id changes → load() runs → success). Retry is bounded because DropSharingService.swift:71 uses getDocument(source: .server), which errors rather than hanging when offline. ProfileScreen.swift:113 'Connecting…' now sits below terminal (:81), unresolved (:91) and localReadWarning (:102) — the three problem rungs named by round 13."
+          },
+          {
+            "item": "exit-a4",
+            "status": "PARTIAL",
+            "trace": "NON-DESTRUCTIVE DISMISS CLOSED: LocalDropStore.acknowledgeIncident (DropStore.swift:283-291) writes only a SHA-256 prefix digest sidecar (:293-305) and clears the journal; no rewrite, no removeItem on the store file. Load path suppresses by digest at :224-226 and re-raises for any changed bytes (:227-236); the `.clean` arm retires the ackdigest at :240. LEDGER RECORDED CLOSED: LoadOutcome.skippedRows carries lostIDs (:112, built at :216 from FailableDrop's id-only decode at :176-189); refresh records at :679-688 (skippedRows) and :689-696 (quarantine → pendingSyncIDs); durable key 'lostRowIDs' at :480, rehydrated :515-516; retired per-id by redeem restore (:873, :880) and by a late save ack (:1064). state-2 revocation CLOSED (:684, :691). flows-lens-4 CLOSED (:557-558 in the local-read catch). Test testLostRowsAreRecordedDurablyAndDismissDestroysNothing (:1285) EXECUTED and passed, including the raw-file assertion that the bad bytes survive Dismiss. NOT CLOSED: the wholesale user retirement the condition specifies does not stick — see finding F1."
+          },
+          {
+            "item": "exit-a5",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:863-878 — `try await local.save(drop)` precedes `drops.insert(drop, at: 0)`; the catch at :874-878 records persistError and does NOT insert, so a failed persist leaves no ghost and the next redeem re-enters the same branch. The staged-delete recall at :888-891 runs ABOVE `if let persistError { throw persistError }` at :892. Test testRedeemPersistFailureLeavesNoGhostAndStillRecallsTheDelete (:1222-1249) EXECUTED and passed; it enters both branches via FlakyLocalStore.setFailSave and asserts cloud.saved count >= 2 (the recall) plus absence of the memory-only row."
+          },
+          {
+            "item": "exit-a6",
+            "status": "CLOSED",
+            "trace": "web/rules-tests/drift-check.mjs:43-51 — regex `^\\s*(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:var|let)\\s+(\\w+)\\s*[:=]` matches var/let with optional attribute/property-wrapper prefixes (so a future `@ServerTimestamp var commitAt` parses); fail-closed at :52-56 (`keys.length < 3` throws). rules.test.mjs:99-115 derives the emulator payload FROM appReactionKeys() and throws an explicit error on an unknown field. AugmentMeRealityTests/ReactionShapeTests.swift:12-21 locks the ENCODER output to {id,emoji,uid,byName,at}. I RAN `node web/rules-tests/drift-check.mjs` (exit 0) and the ReactionShapeTests case on-device (passed)."
+          },
+          {
+            "item": "exit-b",
+            "status": "CLOSED",
+            "trace": "FlakyLocalStore (DropStoreTests.swift:1495-1563) gained setFailSave (:1510), setGateDeletes (:1511), parkedDeleteCount (:1512), releaseAllDeletes (:1514-1518); delete parks on a CheckedContinuation at :1552-1554 and save throws at :1540-1545 — production's failure modes, on an actor, with real suspension points (binding rule 6). All three previously-unreachable branches are ENTERED by tests I executed: remove()'s abort at DropStore.swift:952 via testRedeemDuringRemoveSupersedesTheDelete; redeem()'s persist-catch at :874 and its post-throw recall at :888 via testRedeemPersistFailureLeavesNoGhostAndStillRecallsTheDelete. 112 unique test functions exist in the bundle (matches the claimed 112/112); the 54 in DropLibraryTests+LocalDropStoreTests+ReactionShapeTests+ReactionListenKeyTests all pass."
+          },
+          {
+            "item": "exit-c",
+            "status": "PARTIAL",
+            "trace": "The ledger exists (DropStore.swift:419, :1249-1266) and the rung exists at ProfileScreen.swift:148-164 with a Clear button. It IS above 'Synced' (:172) and above 'Checking sync status…' (:165). But it sits BELOW the 'Uploading N drops…' PROGRESS rung (:136) and BELOW the 'Connecting…' UNKNOWN rung (:113), contradicting the ladder's own documented discipline at :72-77 ('problems outrank progress, progress outranks unknown') and the round-14 a3 principle applied 35 lines above it. See finding F2."
+          },
+          {
+            "item": "exit-d",
+            "status": "NOT_CLOSED",
+            "trace": "COUNSEL-WAVE-C-LOG.md:76 asserts '(d) residuals re-stated', but no round-14 residual statement exists in the file. The only residual list is the round-8 one at :35; the two residuals round 13 named explicitly ('own-1 reap redesign — now one tap away'; 'serverTimestamp watermark — now the exact declaration form the drift lock misses') appear nowhere after :72. Both underlying RISKS were in fact reduced in code (Dismiss is non-destructive at DropStore.swift:283-291; the drift regex now matches attribute prefixes at drift-check.mjs:46-48) — the code work happened, the carry-forward record did not. The Build/verify block (:87-88) is also stale: '90/90 as of round 8' and '28 emulator assertions … Green as of round 8' against an actual 112 tests and 36 assertions. See finding F4."
+          },
+          {
+            "item": "seams-3-fold",
+            "status": "CLOSED",
+            "trace": "DropStore.swift:808-827 — `let firstPassThisSession = !authReadyRan` (:810), `authReadyRan = true` (:811), revalidation gate `if changed || firstPassThisSession` (:817). Session-scoped instance flag, so it is true exactly once per process. accountDidChange() is DELETED: grep over all .swift finds only the comment references at DropStore.swift:807 and DropStoreTests.swift:840-841 — no declaration, no caller. End-to-end: RootView.swift:162-169 `.task(id: account.uid ?? \"-\")` returns early while uid is nil and calls authDidBecomeReady on the first non-nil uid; AccountService.swift:27-29 attaches synchronously when a cached anonymous user exists, so the first pass fires on a warm launch. terminalSyncFailureIDs is rehydrated in init (:507-508) and `drops` is populated by the awaited refresh at :816 before the loop reads it at :821-822. No dedicated test asserts the first-pass path (testAuthReadyPassKeepsTheEvidenceItEarns/:931 and testAuthReadyResetsOnlyOnARealUidChange/:944 cover the latch, not the revalidation) — mechanism verified by reading; round 13 did not require a test for items 7–12."
+          },
+          {
+            "item": "flows-5-fold",
+            "status": "CLOSED",
+            "trace": "ReactionService.swift:81-87 new `sharedDrops(in:myUid:)`; watchedDrops (:91-93) is `sharedDrops(...).prefix(10)`; listenKey (:100-105) maps over `sharedDrops(...)` — the FULL set, not the capped window; the prune at :122-125 uses the same `sharedDrops` set. One definition, three consumers, so the uncapped prune is reachable when a drop leaves the shared set. RootView.swift:155 keys the `.task` on listenKey. ReactionListenKeyTests (5 cases) EXECUTED and passed."
+          },
+          {
+            "item": "surf-4-fold",
+            "status": "CLOSED",
+            "trace": "ReceiveScreen.swift:122-126 — the copy is now 'Only people with this link can find it · your camera stays private'. Grep for 'One-time' across all .swift returns nothing. The claim matches the rules: web/firestore.rules:56-59 allows get to any signed-in holder of the exact doc id for visibility in ['link','public'], with no single-use semantics — so the copy no longer asserts access control the rules don't implement."
+          },
+          {
+            "item": "seams-6-fold",
+            "status": "CLOSED",
+            "trace": "web/rules-tests/deployed-rules.test.mjs:68-70 — 'owner-scoped LIST allowed under v2 (the refresh query shape)' asserting getDocs(query(collection(owner,'drops'), where('ownerUid','==',OWNER))). That is exactly the shape FirebaseDropStore.swift:64-66 issues every refresh. I RAN the suite against the emulator: all 6 deployed-v2 assertions pass, and all 30 v3 assertions pass."
+          },
+          {
+            "item": "copy-fold",
+            "status": "CLOSED",
+            "trace": "ProfileScreen.swift:102-112 — the read-warning rung reads 'Some saved drops couldn't be read' with no sync claim; grep for 'on hold' across all .swift returns nothing. DropsListScreen.swift:58-69 renders the store's own warning string (built at DropStore.swift:230-233), which likewise makes no sync assertion, and the 'original kept on disk' half is emitted only when preserveUnreadable() actually returned true (:228-234)."
+          },
+          {
+            "item": "git-process",
+            "status": "CLOSED",
+            "trace": "Repo is git (commit 5bb6ea5, 111 tracked files, clean tree). `git config core.hooksPath` = .githooks; .githooks/pre-commit is executable (0755), `set -e`, runs `node web/rules-tests/drift-check.mjs` — which covers BOTH locks (emoji at drift-check.mjs:69-78 and reaction keys at :80-88). .gitignore excludes Secrets.plist, GoogleService-Info.plist, node_modules, and even the *.incident/*.ackdigest device artifacts; `git ls-files` confirms only Secrets.sample.plist and Config/Info.plist are tracked — no secrets. One gap folded into F4: core.hooksPath lives in .git/config, which is not versioned, so a fresh clone silently has no hook and nothing in the log tells the next operator to set it."
+          }
+        ],
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 688,
+            "title": "acknowledgeLosses() is undone by the very next refresh — the loss rung's Clear button can never retire the ledger while the unreadable rows remain on disk",
+            "trace": "LocalDropStore.loadDrops sets `lastOutcome = .skippedRows(loaded:skipped:lostIDs:)` at DropStore.swift:217-219 BEFORE the acknowledged-digest check at :224 — the digest only nils `pendingReadWarning`, it never changes the machine-checkable outcome. So every subsequent load of the same bad file still reports `.skippedRows` with the same lostIDs. refresh() then re-runs `for id in lostIDs { markLost(id) }` at :688 unconditionally. acknowledgeLosses() (:1263-1266) only empties the set and rewrites the defaults key; it records no suppression of any kind (contrast acknowledgeIncident at :283-291, which DOES persist a content digest). Refresh is not rare: AugmentMeRealityApp.swift:34 (launch) and :52 (every scenePhase .active), MapScreen.swift:106, DropsListScreen.swift:26, DropStore.swift:789 (after banner dismissal), and authDidBecomeReady (:816).",
+            "harm": "User with one unreadable row in drops.json: dismisses the banner (digest ack), sees 'N drops were lost to a storage problem' with a Clear button, taps Clear — the rung disappears. They background the app and return (or pull-to-refresh, or switch to Explore): the rung is back, unchanged, forever. The only thing that actually stops it is creating or deleting a drop, which rewrites drops.json without the bad rows — a non-obvious action nothing in the UI suggests. The affordance the round-13 exit condition specified ('retired … wholesale by the user') is a no-op the user can never satisfy, and once it is permanently up the ledger can no longer signal a NEW loss (a second corruption just changes a count on a rung that was already showing).",
+            "fix": "Give the ledger the same suppression discipline the banner got: persist an acknowledged-losses set (or per-id acknowledged flags) alongside lostRowIDs, and have markLost skip ids already acknowledged; clear the acknowledgement for an id only when its row genuinely comes back (redeem restore / late ack) or when new lostIDs appear that are not in the acknowledged set. Alternatively make acknowledgeLosses store the same content digest LocalDropStore already computes, and gate the :688 re-mark on `digest != acknowledgedLossDigest`. Extend testLostRowsAreRecordedDurablyAndDismissDestroysNothing with a post-acknowledgeLosses refresh assertion."
+          },
+          {
+            "id": "F2",
+            "severity": "MEDIUM",
+            "file": "AugmentMeReality/Profile/ProfileScreen.swift",
+            "line": 148,
+            "title": "The new loss rung is placed below a PROGRESS rung and below the 'Connecting…' UNKNOWN rung, so the charter's permanent loss record is maskable",
+            "trace": "The ladder is a single else-if chain: terminal :81 (problem) → unresolved :91 (problem) → localReadWarning :102 (problem) → `account.uid == nil` :113 (unknown, 'Connecting…') → unpushable :117 → lastSyncError :132 → `uploadingCount > 0` :136 (PROGRESS) → `!lostRowIDs.isEmpty` :148 (PROBLEM, new in round 14) → 'Checking sync status…' :165 → 'Synced' :172. The file's own header comment at :72-77 states the discipline: 'problems outrank progress, progress outranks unknown'. lostRowIDs is a purely local, uid-independent storage fact (DropStore.swift:679-696), yet it is gated behind both a progress rung and an unknown rung. This is the same class round 13 raised as the seams-1 tail and round 14 fixed for the other three rungs 35 lines above.",
+            "harm": "Two reachable maskings. (1) Progress: user has a recorded loss and one drop pending upload while offline — uploadingCount stays > 0 for the whole offline period (DropStore.swift:522-524 counts pendingSyncIDs ∩ drops), so 'Uploading 1 drop…' hides 'N drops were lost to a storage problem' indefinitely. (2) Unknown: AccountService.start() (AccountService.swift:31-40) never retries anonymous sign-in within a session, so an offline cold launch leaves account.uid nil for the entire session; if the corruption banner was dismissed on an earlier run (localReadWarning nil), the ladder shows 'Connecting…' and the loss record is invisible until the next successful sign-in. In both cases the app's only surface for permanently destroyed drops is hidden — lostRowIDs is rendered nowhere else (grep: ProfileScreen.swift:148/156/162 are its only view references; DropsListScreen's banner stack at :39-69 has no loss rung).",
+            "fix": "Move the `!library.lostRowIDs.isEmpty` branch up into the problem block — directly after the localReadWarning rung at :102 and above the `account.uid == nil` rung at :113. Consider also surfacing it in DropsListScreen.banners (the tab where drops are actually managed), since that is where a user notices rows are missing."
+          },
+          {
+            "id": "F3",
+            "severity": "LOW",
+            "file": "AugmentMeReality/Services/DropStore.swift",
+            "line": 952,
+            "title": "A superseded remove() leaves a memory-only row: the disk row is already destroyed, no tombstone is written, no cloud delete is issued — and the round-14 test asserts this state as correct",
+            "trace": "remove() destroys the disk row at :942 (`try await local.delete(drop)`), then at :952 aborts the entire remainder if another mutator bumped the row epoch. redeem()'s row-exists branch (:879-881) does NO disk write — it assumes an in-memory row implies a disk row. update(_:persist:false) (:916-924) likewise inserts/updates `drops` with no persist. So the interleaving remove→(epoch bump by redeem or a non-persisting update)→remove-resume ends with the id present in `drops`, absent from local storage, with no pendingDeleteIDs entry and no launchCloudDelete. testRedeemDuringRemoveSupersedesTheDelete (DropStoreTests.swift:1196-1217) drives exactly this sequence and asserts only `library.drops.contains{...}` at :1216 — it never asserts the disk row, so it would pass identically whether or not redeem re-persists.",
+            "harm": "For a link-received drop (the case the test itself uses, receivedViaLink = true at :1207) the cloud refresh is owner-scoped (FirebaseDropStore.swift:64-66), so nothing restores it: the drop is visible in the library for the rest of the session and then silently vanishes at the next refresh's phase-2 replace (DropStore.swift:641-645) or on relaunch. That is a silent loss of a redeemed drop — the exact class exit condition a5 was written to close on the other branch. Reachability is genuinely narrow: it needs a redeem (or a non-persisting AR live-edit Task) for the SAME id to land inside the single local-file-write window of remove(), i.e. a same-instant cross-surface double action by one user; I could not construct a sequential UI path that reaches it. Reported at LOW on that basis, not dismissed, because the test currently locks in the wrong invariant.",
+            "fix": "In redeem()'s row-exists branch (:879-881), persist the row (or re-persist the merged row) rather than assuming disk parity — the same disk-first discipline :863-878 already uses. Additionally, in remove()'s abort branch at :952-955, re-assert disk state for the surviving row instead of returning silently. Strengthen testRedeemDuringRemoveSupersedesTheDelete to assert the row is on disk after releaseAllDeletes (read back through the local store), which is what makes the assertion meaningful."
+          },
+          {
+            "id": "F4",
+            "severity": "LOW",
+            "file": "COUNSEL-WAVE-C-LOG.md",
+            "line": 76,
+            "title": "Exit condition (d) is claimed but not performed: no round-14 residual restatement exists, and the Build/verify block the pre-deploy gate depends on is stale",
+            "trace": "COUNSEL-WAVE-C-LOG.md:76 ends with '(d) residuals re-stated.' Reading :62-90, no residual statement follows: the last residual list in the file is the round-8 one at :35, and the two items round 13 named explicitly at :71 ('own-1 reap redesign — now one tap away'; 'serverTimestamp watermark — now the exact declaration form the drift lock misses') are not restated anywhere after :72. Separately, :87 says '90/90 as of round 8' against 112 actual test functions, and :88 says '28 emulator assertions … Green as of round 8' against the 30 v3 + 6 deployed-v2 I executed. :84 still states cross-cutting rule 6 as 'isolation and suspension points', omitting the 'AND failure modes' amendment that exit condition (b) rests on. And `git config core.hooksPath` (= .githooks) lives in .git/config, which is not versioned — nothing in the log tells the next operator to set it after a clone, so the pre-commit drift lock silently does not exist on a fresh checkout.",
+            "harm": "The log is the artifact that carries residuals into Wave A; the two residuals whose risk profile round 13 flagged as CHANGED are the ones that dropped out of the record, so the next wave inherits no note about the reap redesign or the serverTimestamp declaration form. The stale Build/verify block is the documented pre-deploy gate for a rules deploy the log itself calls a SECURITY gate (:73) — an operator following it would under-run the suite and could read '28 assertions, green as of round 8' as current. The unversioned hooksPath means the enforcement the round-14 process item claims is machine-local.",
+            "fix": "Add a ROUND 14 RESIDUALS block restating the carried-forward list, explicitly including own-1 reap redesign (with the note that Dismiss is now non-destructive so it is no longer one tap from 'Synced') and the serverTimestamp/commitAt watermark (with the note that drift-check.mjs:46-48 now parses attributed declarations). Update :87-88 to 112 device tests and 30 + 6 emulator assertions with the round-14 date. Restate rule 6 with 'failure modes'. Document `git config core.hooksPath .githooks` as a post-clone step (or move the check into the npm gate as well)."
+          }
+        ],
+        "testCases": [
+          {
+            "name": "testClearingTheLossLedgerSurvivesTheNextRefresh",
+            "findingId": "F1",
+            "asserts": "Build the ledger fixture exactly as testLostRowsAreRecordedDurablyAndDismissDestroysNothing does (good row + `{\"id\":\"<lostID>\",\"heightAboveGround\":\"3\"}`), refresh, assert lostRowIDs contains lostID, call local.acknowledgeIncident() and library.acknowledgeLosses(), then call `await library.refresh(near: nil)` again and assert `library.lostRowIDs.isEmpty`.",
+            "failsWhen": "Fails today: DropStore.swift:688 re-runs markLost from the unchanged .skippedRows outcome (LocalDropStore still reports it at :217-219 regardless of the acknowledged digest at :224). Passes once acknowledgeLosses persists a suppression the :688 re-mark honors. Note the existing test at DropStoreTests.swift:1319-1320 asserts acknowledgeLosses only synchronously, with no refresh after it, which is why the defect is not caught."
+          },
+          {
+            "name": "testLossRungOutranksUploadingAndConnecting",
+            "findingId": "F2",
+            "asserts": "Pure ladder-ordering test over DropLibrary state (no view host needed if the rung selection is extracted into a testable function; otherwise a ViewInspector-style assertion): with lostRowIDs = [X], uploadingCount = 1, and account.uid = nil, assert the selected rung is the lost-rows rung — not 'Uploading 1 drop…' and not 'Connecting…'.",
+            "failsWhen": "Fails today: ProfileScreen.swift's else-if chain reaches `account.uid == nil` at :113 and `uploadingCount > 0` at :136 before `!lostRowIDs.isEmpty` at :148. Passes once the loss branch is hoisted above :113. This also exposes that the ladder has no testable seam at all — extracting the rung choice into a pure function over DropLibrary would make every future ordering claim assertable instead of eyeballed."
+          },
+          {
+            "name": "testSupersededRemoveLeavesNoRowOnlyInMemory",
+            "findingId": "F3",
+            "asserts": "Reuse testRedeemDuringRemoveSupersedesTheDelete's setup but with a real LocalDropStore behind a gate (or extend FlakyLocalStore with a rows() accessor): after releaseAllDeletes and removeTask completion, assert BOTH `library.drops.contains { $0.id == drop.id }` AND that the row is present in the local store's own load (`try await local.loadDrops(near: nil, radius: 0)` contains the id).",
+            "failsWhen": "Fails today: redeem()'s row-exists branch (DropStore.swift:879-881) writes nothing to disk while remove()'s already-issued local.delete destroys the row, so the second assertion is false. Passes once redeem re-persists on the row-exists branch. The existing test at DropStoreTests.swift:1216 asserts only the in-memory half, so it passes with and without the defect — this is the D3 vacuity note for exit condition a2."
+          },
+          {
+            "name": "n/a — documentation",
+            "findingId": "F4",
+            "asserts": "No code test. The checkable artifact is the log itself: COUNSEL-WAVE-C-LOG.md must contain a round-14 residual block naming own-1 reap redesign and the serverTimestamp/commitAt watermark, and the Build/verify block must state 112 device tests and 30 + 6 emulator assertions.",
+            "failsWhen": "Fails today: grep of COUNSEL-WAVE-C-LOG.md:62-90 finds no residual restatement after :72, and :87-88 still read '90/90 as of round 8' / '28 emulator assertions … Green as of round 8'."
+          }
+        ],
+        "cleanAreas": [
+          "Corruption lifecycle end to end — I traced every arm. Bad bytes B1 → skippedRows → sidecar preserved under the content digest (DropStore.swift:312-323, deduped by digest so relaunches never accumulate copies) → banner (:230-235) + journal (:325-327) → Dismiss writes the digest (:283-291), destroys nothing (verified by the raw-file assertion in the executed test at DropStoreTests.swift:1313-1317) → the same bytes stay silenced (:224-226) → any changed bytes re-raise the incident (:227-236) → a genuinely clean load retires the ackdigest (:240) but never the journaled incident (:241-244, round-10 own-1 discipline intact).",
+          "Quarantine lifecycle — whole-file failure moves the file to a timestamped .corrupt- sidecar (:252-257), the backup claim is checked not asserted (:257, :263-265), incidentMemory is set durably (:690) independently of the journal, hasCompletedCleanRefresh is revoked (:691), and the nameable losses (pendingSyncIDs — provably never fully uploaded) go into the ledger (:695). Across a relaunch the ledger rehydrates from defaults (:515-516) and the absent file the quarantine left behind still earns nothing (:715-719 requires localReadWarning == nil AND !incidentMemory), which the executed testDismissedQuarantineDoesNotEarnSyncedViaAbsentFile pins.",
+          "Delete/redeem/refresh interleavings under the new epochs — I drove all four sequences. refresh-during-remove: refresh never touches rowGenerations, so the delete completes (executed test, non-vacuous). remove-during-redeem: redeem's :870/:875 guards abort its publishes and remove's bookkeeping wins, producing exactly one tombstone. double-remove of one id: the first aborts, the second completes — one tombstone, correct. redeem-during-remove: remove aborts as designed (finding F3 covers the residual disk/memory divergence, not the epoch logic).",
+          "First-launch link-open with slow sign-in — 10 s bounded wait, cancellation-safe, falling to the honest non-causal .unknown + Try again; a uid arriving at any moment re-keys the .task and auto-retries without user action; a permanently failed sign-in yields a retryable state rather than an unlabelled spinner; the retry itself is bounded because the fetch is source:.server. The tri-state fetch remains total and .absent remains unfabricable client-side (DropSharingService.swift:66/:73/:75/:92).",
+          "Terminal revalidation on session start — the firstPassThisSession gate is a session-scoped instance flag that fires exactly once per process, after the awaited refresh so `drops` is populated, and the caller-less accountDidChange() is genuinely gone from the codebase. The revalidation cannot trip the pending/tombstone invariant assert (remove() clears terminal at :962 before tombstoning at :977, so no id is ever both), and it does not revoke the terminal verdict — only a server ack at :1055 does, which is binding rule 4 held correctly.",
+          "The evidence latch — localProvablyClean (:711-722) still requires a positive .clean, or an absent file with neither a live warning nor a remembered incident; the destructive arms revoke before the re-earn check, so a skipped-rows or quarantined library can never converge to 'Synced'. The cache-served read still earns nothing (:723 requires cloudReadServerServed) and still cannot revoke a server-issued lastSyncError (:627).",
+          "Per-row acked provenance and the delete taxonomy — FirebaseDropStore.swift:81-83 excludes hasPendingWrites rows from serverConfirmedIDs; the attempt budget is spent only on non-retryable refusals (DropStore.swift:1154-1157); the give-up verdict keys on positive provenance only; retirement still requires a server-sourced per-document answer, capability-gated and capped (:737-765).",
+          "Reaction plumbing — sharedDrops/watchedDrops/listenKey are one definition with three consumers, so the uncapped prune is reachable; the primed-listener watermark is structural (no client clock); the recap carries provenance and excludes own rows for counting but not for timing. Drift protection is real and executable: the Node lock parses the Swift source fail-closed, the emulator payload is derived from it, and the on-device test locks the encoder output — three independent locks on the same shape.",
+          "Rules and process — I executed `npm test` against the emulator with JAVA_HOME set: 30 v3 assertions and 6 deployed-v2 assertions, all green, including the new owner-scoped LIST assertion that matches the exact refresh query shape, and the deliberately-passing pin that production v2 still permits the hijack (the SECURITY gate residual is honestly recorded, not hidden). Git hygiene is sound: no secrets tracked, clean tree, executable pre-commit hook covering both drift locks."
+        ]
+      }
+    ],
+    "research": {
+      "ownFindings": [],
+      "priorityOrder": [
+        "exit-d-doc (F4/SURF-14-5) — the ONLY unmet exit condition; ~15 lines of COUNSEL-WAVE-C-LOG.md, no code, no build round",
+        "LEDGER-CLEAR-INERT (F1 = F-SEAMS-14-2 = state-14-4 = SURF-14-2) — 4-way convergence, confirmed empirically, D3-vacuous test",
+        "LADDER-ORDER (F2 = state-14-1 = SURF-14-1) — 3-way convergence; the ledger's only surface is maskable by a progress rung",
+        "SURF-14-3 — bounded-wait retry cannot succeed while uid is nil; acquisition path",
+        "state-14-2 — id-less unreadable rows leave no record and converge to 'Synced'",
+        "F-SEAMS-14-3 — quarantine destroys link-received rows with no ledger entry",
+        "F-SEAMS-14-4 — core.hooksPath is machine-local; a clone has no drift lock",
+        "F-SEAMS-14-1 — drift regex fails open on access-modifier-prefixed fields (3rd lock catches it)",
+        "SURF-14-4 — 'Connecting…' claims an in-flight attempt after sign-in gave up",
+        "state-14-3 — lastOutcome slot can be overwritten by a non-mutator save inside refresh's read window",
+        "F3 / state-14-5 — redeem's row-exists branch assumes memory implies disk (no user-reachable path; test locks the weaker invariant)"
+      ],
+      "selfAudit": "I re-derived every contested claim from source at 5bb6ea5 rather than from the briefing, and I ran the executable parts myself.\n\nRAN: `node web/rules-tests/drift-check.mjs` → exit 0 (emoji ❤️ 😂 🥹 🤯; keys id, emoji, uid, byName, at). Extracted the exact round-14 regex `/^\\s*(?:@\\w+(?:\\([^)]*\\))?\\s+)*(?:var|let)\\s+(\\w+)\\s*[:=]/gm` into a standalone Node harness and fed it nine fixture bodies: baseline 5; `private var`→5; `public var`→5; `private(set) var`→5; `lazy var`→5; `static let`→5; plain `let schema: Int = 2`→6; `@ServerTimestamp var commitAt: Date?`→6; computed `var summary: String { emoji }`→6. That empirically confirms F-SEAMS-14-1 (fail-open on declaration modifiers) AND that round 14's two stated widenings genuinely work AND that the computed-property false positive fails in the safe direction. Counted 112 `func test` in AugmentMeRealityTests — the 112/112 claim is real.\n\nREAD AND TRACED (file:line): DropStore.swift:966/974 (cloudProven predicate — terminal clause absent, capture below the receivedViaLink return); all six `ownerUid =` assignment sites (GeoDrop.swift:123 decode, DropStore.swift:1076 post-ack stamp, DropSharingService.swift:86/95, FirebaseDropStore.swift:38/74/113) — every one server-sourced, so the predicate is sound in both directions; rowGenerations DropStore.swift:447 bumped at :852/:899/:918/:937 and nowhere else, remove()'s guard at :952 on ITS row; redeem() :863-892 disk-before-memory with the recall above the rethrow; LocalDropStore.swift lines 195-245 (lastOutcome set BEFORE the digest check — the mechanical basis of the Clear-inertness finding), :283-291 (ack writes only the digest), :344-365 (save→loadDrops→persist silently drops undecodable rows); refresh()'s memory switch :678-700; markLost/clearLost/acknowledgeLosses :1249-1266; ProfileScreen.swift:81-176 (full ladder, order verified line by line); ReceiveScreen.swift:57-68 and :132-156; DropSharingService.swift:65-105; AccountService.swift:27-40; AugmentMeRealityApp.swift:35-54 (scenePhase .active refreshes the LIBRARY, never re-calls accountService.start() — this is what makes both the \"Connecting…\" masking and the Try-again dead end real); ReactionService.swift:81-129 (one sharedDrops definition, three consumers); DropStore.swift:808-827 (firstPassThisSession); grep for accountDidChange → three comments, zero declarations/callers; firestore.rules:47-84; DropStoreTests.swift:1160-1330; .githooks/pre-commit + `git config --get core.hooksPath` + `ls .git/hooks` (samples only) + grep of the whole tree for any bootstrap → none; COUNSEL-WAVE-C-LOG.md in full (89 lines).\n\nWHAT I REFUTED OR DOWNGRADED, and why I did not pad: I looked for own findings in four places and filed none, because each candidate collapsed into an already-filed finding or into no harm. (1) The `.readFailed` arm of refresh()'s memory switch (DropStore.swift:693) is dead code — loadDrops throws on read failure so refresh takes the :548 catch — harmless, not a finding. (2) The unpushable-pending PROBLEM rung (ProfileScreen.swift:117) is gated on `hasCompletedCleanRefresh`, which round 14's state-2 revocation now sets false on every skipped-rows refresh, so that rung becomes unreachable exactly when unreadable rows exist; I traced the fallthrough and it lands on the loss rung or on \"Checking sync status…\" — an honest UNKNOWN, no false claim, so no finding. (3) acknowledgeIncident re-reads fileURL and could digest bytes newer than the ones that produced the outcome; I traced both interleavings and persist() only ever writes decoded rows, so the digest can only ever cover clean bytes — self-correcting, no finding. (4) The over-inclusion of pendingSyncIDs in the quarantine ledger arm (rows that will still flush from Firestore's mutation queue) self-retires via clearLost at DropStore.swift:1064 — no finding. I also declined to file the root-cause framing (a `.clean` load retiring `hadLocalReadIncident` while save() silently drops the unreadable rows) as a separate own finding, because it is the shared mechanism behind state-14-2 and F-SEAMS-14-3 and both reviewers' fix sections already reach it; filing it again would be double-counting, which is exactly the D4 defect.\n\nResidual discipline (D5): nothing on the recorded-residual list was made more dangerous by round 14. The two residuals round 13 re-priced both moved in the SAFE direction in code — own-1's reap is no longer one tap from \"Synced\" (Dismiss is non-destructive and the latch is revoked on every destructive outcome), and the serverTimestamp/commitAt declaration form now parses (`@ServerTimestamp var commitAt: Date?` → 6 keys, verified above). Their risk went down; only the written record of them is missing, which is finding F4, not a residual escalation.",
+      "shipVerdict": "SHIP the round-14 build. This is a clean round in the sense that matters: all four round-13 blockers (two CRITICAL) are genuinely fixed at the mechanism level, with non-vacuous, branch-entering tests, and I could not construct a data-loss or fabricated-success path through any of the six priority items as built. Zero CRITICAL and zero HIGH findings survive verification across four reviewers plus my own audit — the highest-severity confirmed defect is a MEDIUM UI-honesty pair, and the only unmet exit condition is a documentation edit.\n\nNothing here blocks the build. The deploy gate is unchanged and remains what it was: the v3 rules deploy is still the SECURITY gate (production today lets any signed-in stranger overwrite any drop, honestly pinned as PASSING by deployed-rules.test.mjs), and the full `npm test` + 112-test device suite remain the pre-deploy requirement — which matters concretely here, because the device suite's ReactionShapeTests is the lock that still catches the drift class F-SEAMS-14-1's regex misses.\n\nFix before any public listing (not before wave close, and not as a counsel round): the two MEDIUM honesty defects — the Clear button that undoes itself on the next foreground, and the loss rung sitting below a progress rung — plus the hook bootstrap. Those are ~20 lines and one shell script between them.",
+      "waveCloseRuling": "WAVE C CLOSES. Exactly one thing blocks recording it closed, and it is not code: exit condition (d).\n\nPer-condition ruling, verified independently:\n(a1) MET — DropStore.swift:966 guard precedes :974 predicate; terminal clause absent; all six ownerUid writes are server-sourced.\n(a2) MET — rowGenerations:447 bumped at :852/:899/:918/:937 only; remove()'s :952 guard keys on its own row; refresh() never touches it. testRefreshDuringRemoveDoesNotAbandonTheDelete is the discriminating regression lock for the round-12 CRITICAL.\n(a3) MET as specified — ReceiveScreen.swift:58-68 bounded, cancellation-safe, self-healing on uid arrival; ProfileScreen.swift:113 below the three problem rungs.\n(a4) MET as specified — acknowledgeIncident writes only a digest, rows provably untouched, lostIDs flow to a durable ledger, destructive outcomes revoke the latch, the read-failure catch records the memory.\n(a5) MET — disk before memory at :869/:872; recall at :888 above the rethrow at :892.\n(a6) MET as specified — regex widened to var/let + attributes (verified: `let` and `@ServerTimestamp var` both parse now), fail-closed below 3, emulator payload derived from appReactionKeys(), on-device encoder lock present.\n(b) MET — FlakyLocalStore is an actor with a real continuation-based delete gate and an on-demand save failure; all three previously-unreachable branches are entered.\n(c) MET literally — the ledger and the Clear-able rung exist and sit above \"Synced\".\n(d) NOT MET — COUNSEL-WAVE-C-LOG.md:76 asserts \"(d) residuals re-stated\" and the file contains no round-14 restatement. Verified by reading all 89 lines: the last residual list is round 8's at :35; neither item round 13 named by changed risk (own-1 reap redesign, serverTimestamp watermark) appears after :72. Compounding rot in the same file: :87 \"90/90 as of round 8\" against 112 actual test functions, :88 \"28 emulator assertions\" against 30 v3 + 6 deployed-v2, and :84 still states cross-cutting rule 6 without the \"AND failure modes\" clause that exit condition (b) was written against and that FlakyLocalStore now implements.\n\nRound 13 ruled \"Wave C can close after one more build round; a seventh review round is not warranted.\" The build round happened and it landed. Do NOT open round 16. The correct close sequence is: write the round-14 residual block into COUNSEL-WAVE-C-LOG.md (naming own-1 reap redesign — risk REDUCED, Dismiss is now non-destructive — and the serverTimestamp/commitAt watermark — risk REDUCED, the regex now parses attributed declarations), correct :87-88 to 112/112 + 30 v3 + 6 deployed-v2 + 2 drift locks, restate rule 6 with failure modes, add the eleven confirmed findings below as the carried residual list, and commit `scripts/install-hooks.sh` (`git config core.hooksPath .githooks`) referenced from the Build/verify block. That is a documentation commit, and the wave is closed at the owner gate on it.\n\nEverything else goes to residuals, carried into Wave A / pre-launch: LEDGER-CLEAR-INERT and LADDER-ORDER (both MEDIUM, both fix before public listing), SURF-14-3, state-14-2, F-SEAMS-14-3, F-SEAMS-14-4, F-SEAMS-14-1, SURF-14-4, state-14-3, F3/state-14-5. None is CRITICAL, none is HIGH, and none re-opens a mechanism this wave settled.",
+      "verdicts": [
+        {
+          "findingId": "F1 / F-SEAMS-14-2 / state-14-4 / SURF-14-2 (one defect, four reviewers)",
+          "verdict": "CONFIRMED",
+          "reasoning": "Four-way convergence, and the mechanism is exactly as described. LocalDropStore.loadDrops sets `lastOutcome = .skippedRows(loaded:skipped:lostIDs:)` at DropStore.swift:217-219 BEFORE the acknowledged-digest check at :224, and the digest only nils `pendingReadWarning` — it never changes the machine-checkable outcome. So every subsequent load of the same bad bytes still reports .skippedRows with identical lostIDs, and refresh()'s memory switch re-runs `for id in lostIDs { markLost(id) }` unconditionally at :688. acknowledgeLosses() (:1263-1266) empties the published set and rewrites the defaults key and records NOTHING — contrast acknowledgeIncident (:283-291), which round 14 deliberately gave a durable content digest. Round 14 also stopped Dismiss rewriting the file, so the bad rows persist indefinitely; the only thing that removes them is an unrelated save (LocalDropStore.save :344-351 reloads, drops undecodable rows, persists survivors), which nothing in the UI prompts. I verified the refresh cadence myself: AugmentMeRealityApp.swift:51 fires `Task { await dropLibrary.refresh(...) }` on EVERY scenePhase .active, plus :33 at launch, plus MapScreen/DropsListScreen pull-to-refresh. So: tap Clear, background, foreground, rung is back — permanently. D3 CONFIRMED: testLostRowsAreRecordedDurablyAndDismissDestroysNothing (DropStoreTests.swift:1319-1320) calls acknowledgeLosses(), asserts isEmpty, and the test ENDS — it passes identically with and without the defect. Charter class: a user control whose advertised effect the mechanics cannot back, same family as the copy defects this wave spent six rounds closing. Severity MEDIUM — no data is lost, but the surface stops carrying information (once permanently up, a genuinely NEW loss is indistinguishable from the re-armed old one).",
+          "industrialSolution": "Give the ledger the same acknowledgement discipline the banner got in this very round — the fix is already designed, just not applied to the second surface. Persist `acknowledgedLostRowIDs` (a second defaults set alongside lostRowIDs) in acknowledgeLosses(); have markLost skip ids present in it; have clearLost remove the id from BOTH sets so a genuine restore re-arms the ability to record a future loss of the same id. That keeps the two properties that matter: a cleared loss stays cleared, and a NEW lost id still raises the rung. The alternative shape — have LocalDropStore report a distinct `.skippedRowsAcknowledged` outcome for digest-matched content — is worse here, because the latch revocation at :684 SHOULD keep firing (the file genuinely still has unreadable rows), and splitting the outcome invites someone to skip the revocation too. Then extend DropStoreTests.swift:1319 with `await library.refresh(near: nil); XCTAssertTrue(library.lostRowIDs.isEmpty)` plus a second undecodable row appended afterwards asserting it DOES raise — that pair is the non-vacuous lock. This is standard iOS 'user dismissal must be durable, keyed to the content it dismissed' practice: the same reason NSUserNotification dismissals are keyed by identifier rather than by category."
+        },
+        {
+          "findingId": "F2 / state-14-1 / SURF-14-1 (one defect, three reviewers)",
+          "verdict": "CONFIRMED",
+          "reasoning": "I read the whole ladder at ProfileScreen.swift:69-176 and the order is exactly as reported: terminal :81 → unresolvedDeletes :91 → localReadWarning :102 → `account.uid == nil` 'Connecting…' :113 → unpushablePending :117 → lastSyncError :132 → `uploadingCount > 0` 'Uploading N drops…' :136 → `!lostRowIDs.isEmpty` :148 → 'Checking sync status…' :165 → 'Synced' :172. The file's own charter comment at :72-76 states 'problems outrank progress, progress outranks unknown', and the round-14 comment at :77-79 records that the Connecting rung was moved down for precisely this reason — then the new permanent-problem rung was placed one branch below a pure progress rung and two below an unknown rung. Both maskers are genuinely unbounded: uploadingCount (DropStore.swift:522-524) counts pendingSyncIDs with loadable rows and stays >0 for an entire offline period; and I verified in AugmentMeRealityApp.swift:20-55 that scenePhase .active refreshes the LIBRARY but never re-calls accountService.start(), while AccountService.start() (AccountService.swift:27-40) makes exactly one signInAnonymously attempt per process and on failure only sets statusText — so uid stays nil for the whole session. I also confirmed the single-surface dependency: grep shows ProfileScreen.swift:148/156/162 are the only view references to lostRowIDs; DropsListScreen's banner stack does not render it. Reachable walkthrough with no exotic timing: one pending upload + one corrupt-but-id-decodable row → loss recorded, user dismisses the read banner (which round 14 made safe to dismiss and digest-suppresses forever), goes offline → the only status line in the app reads 'Uploading 1 drop…' while a permanently destroyed drop has no surface anywhere. Severity MEDIUM: it re-creates the charter's 'loss with no visible record' state by rung precedence, one round after the ledger closed it.",
+          "industrialSolution": "Two changes. First, hoist the `!library.lostRowIDs.isEmpty` branch into the problem block — directly after the localReadWarning rung at :102 and above `account.uid == nil` at :113. A storage loss is uid-independent, permanent, and local; nothing transient may outrank it, which is the ladder's own stated rule. Second, and this is the durable fix: the ordering is currently an un-testable if/else chain inside a SwiftUI View, which is why three rounds of ladder-ordering findings have all been caught by eyeball rather than by CI. Extract it into a pure `enum SyncRung` + `static func rung(for: DropLibrary, uid: String?) -> SyncRung` on the model side and have the View render the enum. Then every ordering claim this counsel has made across six rounds becomes a unit assertion (`rung(lostRowIDs:[X], uploadingCount:1, uid:nil) == .lostRows(1)`), which is the only reason to do the refactor. Optionally mirror the rung in DropsListScreen.banners so the 'No drops yet' empty state can never render loss-free — that screen is where a user actually notices rows are missing."
+        },
+        {
+          "findingId": "SURF-14-3",
+          "verdict": "CONFIRMED",
+          "reasoning": "Traced end to end and it holds. ReceiveScreen.swift:57-68: uid nil → 10 s sleep → `failure = .unknown`. The failed view (:132-156) renders 'This link can't be opened right now' / 'It may still be waiting — check your connection and try again in a moment.' with a Try again CTA at :146-149 that calls `load()` directly, bypassing the uid guard entirely. load() (:163-172) → DropSharingService.fetchSharedDrop (:65-105) → `getDocument(source: .server)`; firestore.rules:52-54 requires `signedIn()` for get, so with no current user the read is permission-denied → the catch at :72-74 returns .unknown → the same screen. And the uid cannot arrive: AccountService.start() is called exactly once, from AugmentMeRealityApp.swift:29's root .task, and I confirmed the scenePhase .active handler (:35-54) re-warms AR and refreshes the library but never re-invokes start(); the failure path (AccountService.swift:36-38) only sets 'Couldn't reach the account service — retrying on next launch'. So for the whole process lifetime, every Try again reproduces the same screen even after the network returns. Because Auth.auth().currentUser is Keychain-persisted, this is specifically the never-yet-signed-in install — i.e. first-launch-from-a-link, the exact acquisition path exit condition (a3) exists to protect. Charter class: a retry affordance and a causal instruction ('check your connection') that the mechanics cannot back. NOT an exit-condition failure — round 14 built precisely what round 13 specified (bounded wait → honest .unknown + Try again) — this is a new finding about the honesty of the state it now reliably reaches. Severity MEDIUM on the acquisition path.",
+          "industrialSolution": "Make the retry re-attempt the thing that is actually broken. Two parts, both small. (1) Make AccountService.start() idempotent and re-entrant — guard on an `isSigningIn` flag rather than on call-site discipline — and call it from the scenePhase .active handler alongside the library refresh; that alone converts 'terminal until force-quit' into 'self-heals on the next foreground', which is the standard iOS anonymous-auth pattern (Firebase's own guidance is to re-attempt on app-foreground, since the SDK does not retry a failed signInAnonymously). (2) Distinguish the cause at the bounded-wait timeout: when uid is nil, render an account-connection state ('We couldn't set up your account on this device') and wire Try again to `await account.start()` before re-issuing the fetch. Surfacing account.statusText inside ReceiveScreen when uid is nil is a cheap partial that at least stops the copy blaming the network — today the one line that names the real cause (ProfileScreen.swift:187-189) is behind a tab this sheet covers."
+        },
+        {
+          "findingId": "state-14-2",
+          "verdict": "CONFIRMED",
+          "reasoning": "Verified against the decoder. FailableDrop (DropStore.swift:170-189) sets BOTH `drop` and `id` to nil when the keyed container or the UUID decode fails, and loadDrops builds the ledger input as `rows.filter { $0.drop == nil }.compactMap(\\.id)` at :216 — so a row whose id ALSO fails to decode raises `dropped` but contributes nothing to lostIDs. refresh() destructures only the ids at :679-688 and discards the loaded/skipped counts. Then the erasure completes: LocalDropStore.persist (:360-365) writes back only the DECODED rows, so the first subsequent add/update/remove/redeem — each of which routes through save/delete → loadDrops + persist (:344-358) — silently drops the unreadable row from drops.json. The next load is `.clean`, which at :698 sets incidentMemoryKey false; localProvablyClean (:711-722) then returns true, hasCompletedCleanRefresh is re-earned at :724, lostRowIDs is empty, and ProfileScreen.swift:172-176 renders 'Synced — the server has confirmed your drops'. The journaled incident (:325-327) is the only survivor and the user's Dismiss clears it (:289). That is a complete, traced path from a destroyed drop to an affirmative all-clear with zero record in the app — the exact charter hole the ledger was built to close, left open for the corruption class where the identity itself is garbled (a byte flip in the id field, a row written as a non-object, a future schema change to the id type). Note this class is NOT covered by the round-10 own-1 discipline the code comment at :247-250 claims, because that discipline governs the journal, not the machine-checkable memory. Severity MEDIUM: real silent loss, but requires the id specifically to be undecodable.",
+          "industrialSolution": "Two independent hardenings; do the first, consider the second. (1) Record the loss even when the identity is unknown: add a durable `lostRowCount` companion to lostRowIDs, incremented by `skipped - lostIDs.count` in the skippedRows arm, and render the rung from `lostRowIDs.count + lostRowCount`. This is the minimum that satisfies the charter — 'we destroyed N rows and cannot name them' is an honest record; 'Synced' is not. It also closes F-SEAMS-14-3 with the same mechanism (see that verdict). (2) The stronger, more industrial fix is to stop persist() from silently completing the destruction: a store that rewrites a file it could not fully parse is a lossy round-trip, which is why production Codable pipelines either preserve unknown/undecodable payload verbatim (keep the raw JSONValue for failed rows and re-emit them on write) or refuse to rewrite while an unacknowledged skip is outstanding. The first option makes round 14's 'rows are never deleted' promise true for ALL paths rather than only for Dismiss, and it makes the loss recoverable rather than merely recorded. Test: seed `[good, {\"heightAboveGround\":\"3\"}]` (no id at all), refresh, assert a durable record exists; add() a drop; refresh; assert the record still stands and hasCompletedCleanRefresh was not silently re-earned."
+        },
+        {
+          "findingId": "F-SEAMS-14-3",
+          "verdict": "CONFIRMED",
+          "reasoning": "Mechanically exact. DropStore.swift:692-696 marks only `pendingSyncIDs` on the quarantine arm. I verified link-received rows are in neither escape hatch: redeem() persists them to disk (:869) but enqueueCloudSync returns early for them (:1027 `guard drop.receivedViaLink != true else { return }`), so they are never pending; and I grepped every local-store write in the file (lines 544, 869, 901, 926, 942, 1079) to confirm refresh NEVER writes cloud rows back to disk — combined with the owner-scoped cloud query (FirebaseDropStore.swift:64-66), a received row destroyed by a quarantine is unrecoverable by the library. The convergence to a false all-clear is real and I walked it: quarantine → loadDrops returns [] (:266) → incidentMemory true, latch revoked (:690-691), journal raises the banner → user taps Dismiss (for .quarantinedWholeFile the `if case .skippedRows?` guard at :284 skips the digest write and just clears the journal at :289) → subsequent loads return .absentFile, which cannot earn the latch because localProvablyClean requires `!defaults.bool(forKey: incidentMemoryKey)` (:715-719) → the user creates ONE new drop → save writes a fresh file → next load is .clean → :698 sets incidentMemory false → :724 earns the latch → 'Synced — the server has confirmed your drops', with the received drops permanently gone and no rung, no banner, no ledger entry. One correction to the finding's fix, which I checked and it does not fully work: capturing the published id set before the phase-2 replace (:641) only helps if those rows were published in THIS session — on a cold launch into a corrupt file, `drops` is empty and nothing can name them. Severity MEDIUM. Note this is not an exit-condition failure: round 13 specified the quarantine arm record pendingSyncIDs and round 14 built exactly that; the gap is in the spec, which is what a final audit is for.",
+          "industrialSolution": "The same `lostRowCount` mechanism state-14-2 needs also closes this, and closes the cold-launch case the id-capture fix cannot. On the .quarantinedWholeFile arm: union pendingSyncIDs into lostRowIDs as today, AND set a durable un-nameable-loss flag whose retirement requires explicit user acknowledgement — never a later `.clean` load. That is the round-10 own-1 discipline ('a clean load says nothing about the rows already destroyed') applied to the machine-checkable memory, which currently violates it at :698 by auto-retiring incidentMemoryKey on `.clean`. Concretely: split the durable memory into `hadLocalReadIncident` (auto-retired by .clean — fine, it gates the latch) and `unacknowledgedDestruction` (retired only by acknowledgeLosses), and gate the 'Synced' rung on the latter. Additionally, do capture the published id set before the phase-2 replace and markLost every captured id the completed cloud read did not return — that is a positive per-object check against serverConfirmedIDs, not a set-difference over a narrowed query (binding rule 2), and it upgrades the warm-session case from 'N unnamed' to named ids that clearLost can retire via redeem (:873/:880) or a late ack (:1064). Test: seed a receivedViaLink row plus an acked own row into a real LocalDropStore file, corrupt the file wholesale, refresh against a cloud store returning only the own drop, assert a durable loss record exists and that a subsequent clean load cannot reach 'Synced'."
+        },
+        {
+          "findingId": "F-SEAMS-14-4 / SURF-14-5 (hook half) / F4 (hook half)",
+          "verdict": "CONFIRMED",
+          "reasoning": "Verified directly. `git config --get core.hooksPath` returns `.githooks`; `ls .git/hooks` shows only the stock *.sample files, so without that setting git runs nothing on commit. .githooks/pre-commit IS tracked (git ls-files confirms it is the only tracked hook/script file — there is no Makefile, no scripts/ directory) and its body is correct and fail-closed (`set -e`; `node web/rules-tests/drift-check.mjs`, which resolves its Swift and rules paths from import.meta.url so it is cwd-robust; a missing node aborts the commit). But core.hooksPath lives in .git/config, which is not part of the repository, and I grepped every .md/.json/.sh in the tree for `hooksPath` or `githooks`: the only hit is COUNSEL-WAVE-C-LOG.md:76's claim that the repo has the hook. DECISIONS.md:1182 makes the same claim ('the repo is under version control with the drift locks as a pre-commit hook'). Both are true only of this one working copy. Severity LOW in isolation, but it is the precise failure mode round 13's researcher named at COUNSEL-WAVE-C-LOG.md:73 item 6 — 'a checklist run by memory is not a checklist' — reproduced one level down: the enforcement is now a machine-local git setting rather than a repo-carried artifact.",
+          "industrialSolution": "Commit `scripts/install-hooks.sh` containing `git config core.hooksPath .githooks`, reference it from COUNSEL-WAVE-C-LOG.md's Build/verify block as the post-clone step, and — the part that actually makes it robust — ALSO wire `node web/rules-tests/drift-check.mjs` into the `pretest` script of web/rules-tests/package.json. That way the lock runs from the npm gate regardless of hook installation, and the hook becomes an optimization rather than the sole enforcement point. This is the standard resolution for git's deliberate refusal to version hooks (the same problem Husky and pre-commit solve by having an install step plus a CI-side run); the durable half is always the CI/gate-side invocation, never the hook. Verify by cloning to a temp path, running the bootstrap, and confirming a deliberately drifted emoji commit is rejected."
+        },
+        {
+          "findingId": "F-SEAMS-14-1",
+          "verdict": "CONFIRMED",
+          "reasoning": "Confirmed empirically, not by inspection: I extracted the exact regex from drift-check.mjs:44-48 into a standalone harness and ran nine fixtures. `private var clientVersion: String = \"1\"` → 5 keys; `public var` → 5; `private(set) var` → 5; `lazy var` → 5. The optional prefix group accepts ONLY @-attributes, and `^\\s*` is immediately followed by a required attribute-or-var|let, so any bare declaration modifier kills the match. The fail-closed guard at :49 (`keys.length < 3`) cannot fire because the five known plain-`var` fields still parse. The consequence chain is real: appReactionKeys() returns the stale 5 names, so the pre-commit hook reports OK, and rules.test.mjs:104's `if (!(key in sampleValues)) throw` fail-closed guard never fires because it iterates the same stale 5 — so the suite writes the OLD payload and the comment claiming the payload is derived from the app's actual fields is false for this edit class. Swift's synthesized Codable encodes stored properties regardless of access level, so a `private var` DOES reach the wire and firestore.rules:78 `hasOnly(['id','emoji','uid','byName','at'])` would reject every reaction write. I DOWNGRADE severity from MEDIUM to LOW on one verified ground the finding acknowledges but underweights: ReactionShapeTests.swift:12 encodes with JSONEncoder, which also encodes private stored properties, and asserts the exact 5-key set — so the drift IS caught, by the device suite, which COUNSEL-WAVE-C-LOG.md:87 and the round-14 process note both document as required before any rules deploy. The harm chain therefore requires skipping the documented gate. Two useful confirmations for the record: round 14's stated widenings genuinely work (`let schema: Int = 2` → 6; `@ServerTimestamp var commitAt: Date?` → 6, which is exactly the residual a6 was aimed at), and the computed-property false positive (`var summary: String { emoji }` → 6) fails in the safe direction.",
+          "industrialSolution": "Widen the prefix group to non-@ declaration modifiers and exclude computed members, keeping static/class unmatched since Codable ignores type-level members: `/^\\s*(?:(?:@\\w+(?:\\([^)]*\\))?|private(?:\\(set\\))?|fileprivate(?:\\(set\\))?|internal|public|open|final|lazy|weak|unowned(?:\\((?:safe|unsafe)\\))?|nonisolated)\\s+)*(?:var|let)\\s+(\\w+)\\s*[:=](?![^\\n]*\\{\\s*$)/gm`. But the regex is the symptom; the structural point is that this parser has NO test of its own — neither of round 14's two widenings nor its fail-closed threshold is exercised anywhere, which is why the third widening it needed was never noticed. Export a pure `parseReactionKeys(source)` from drift-check.mjs and add a Node self-test asserting 6 keys for each modifier form, 5 for `static let`, and 5 for a computed property, plus a fixture that trips the <3 threshold. A lock without a test of the lock is the same class of defect this wave has been closing in the app. Longer term, the genuinely robust version of this check is to stop regexing Swift and derive the key list from the encoder output the app already produces — i.e. make ReactionShapeTests write its encoded key set to a checked-in fixture that the Node suite reads — which collapses three locks with three failure modes into one source of truth."
+        },
+        {
+          "findingId": "SURF-14-4",
+          "verdict": "CONFIRMED",
+          "reasoning": "Holds on the facts, and I confirmed the missing retry myself. ProfileScreen.swift:113-115 renders 'Connecting…' for the entire `account.uid == nil` state, which collapses three distinct conditions — not started, in flight, and terminally failed — into the most optimistic one. AccountService.swift:27-40 makes exactly one signInAnonymously attempt per process; on failure it sets statusText 'Couldn't reach the account service — retrying on next launch' and stops, and AugmentMeRealityApp.swift:35-54's scenePhase .active handler never re-invokes start(). So nothing is connecting, and the rung keeps claiming it for the rest of the session. This is a binding-rule-1 violation in the literal sense: a fallthrough resolving to the good/progress state rather than to UNKNOWN. Severity LOW, and I hold it there for a reason the finding states honestly: the contradicting truth is rendered in the SAME Section two lines below (ProfileScreen.swift:187-189 renders account.statusText in orange), so the composite surface shows both the optimistic claim and its refutation, and no data claim is made. The harm is a user who reads the sync line and waits for something that will never happen — real, but bounded and self-disclosed.",
+          "industrialSolution": "Publish a tri-state on AccountService rather than inferring connection state from a nil uid: `enum Connection { case idle, connecting, failed(String), ready }`, set to .connecting before the signInAnonymously await and to .failed in the catch. Render .failed as its own rung ('Not connected — reopen the app to retry') and reserve 'Connecting…' for an actually in-flight attempt. This is the same fix SURF-14-3 needs on the receive side, and doing both from one tri-state is the reason to do it: the two findings are one missing state machine observed from two screens. If start() is also made re-entrant and called on foreground (see SURF-14-3), the .failed rung becomes self-healing and the copy can honestly say 'Reconnecting…' on the next foreground."
+        },
+        {
+          "findingId": "state-14-3",
+          "verdict": "CONFIRMED",
+          "reasoning": "The mechanism is real and I verified every link. `lastOutcome` is a single mutable slot on the LocalDropStore actor (DropStore.swift:145), rewritten by EVERY load, including the loads that save() and delete() perform internally (:344, :355). refresh() reads it through a separate await at :567-569 whose only protection is `refreshGeneration`. I enumerated all six local-store write sites (lines 544, 869, 901, 926, 942, 1079) and confirmed the finding's key claim: five are user-facing mutators that bump refreshGeneration at entry (add :898, update :917, remove :936, redeem :851) and so abort a racing refresh safely — but performCloudSync's server-stamped write-back at :1079 (`try await local.save(stamped)`) is NOT a library mutator and bumps nothing. It also rewrites drops.json through persist(), which drops the unreadable rows. Two such stamped saves landing inside refresh's read window leave refresh consuming a `.clean` verdict belonging to a different load than the one that produced `merged`, so :679-688 never runs (no loss recorded), :698 clears incidentMemoryKey, and :724 earns hasCompletedCleanRefresh — a false all-clear over a load that skipped rows. Reachable in principle: refresh is @MainActor and awaits the actor three separate times, and the auth-ready reconcile can flush several first-time uploads back-to-back. LOW is the right severity — the window is two actor round-trips, it is machine-driven rather than user-driven, and it requires a simultaneously-unreadable file. The consequence is identical to state-14-2, which is the finding that carries the weight.",
+          "industrialSolution": "Make the verdict travel with the read instead of living in a slot — this is the standard fix for out-of-band diagnostics on a shared actor, and it is small. Change the seam so `loadDrops` returns `(rows, LocalLoadOutcome)` (or stamps a monotonic loadID the caller captures at call time and re-checks when reading the outcome), so a refresh can only ever consume the verdict of its own load. That also lets you delete the separate `lastLoadOutcome()` await entirely, removing one suspension point from refresh's critical section. The cheap interim — routing the stamp write-back through a path that bumps refreshGeneration — works but is worse: it makes a best-effort cache write able to abort a whole refresh pass, trading a rare false all-clear for frequent refresh cancellation. Test with a local-store double whose lastLoadOutcome slot is rewritten by save() (production's shape, per binding rule 6): gate a refresh inside its local read, land two ownerUid-stamp saves, release, and assert the refresh recorded the loss from ITS OWN load."
+        },
+        {
+          "findingId": "F3 (flows) / state-14-5 (state) — redeem's row-exists branch assumes memory implies disk",
+          "verdict": "PARTIAL",
+          "reasoning": "The mechanism is confirmed; the harm is thinner than either finding claims, and the two reviewers disagree about which consequence matters. Confirmed: redeem()'s else-branch (DropStore.swift:879-881) performs NO disk write — it calls clearLost and returns — and update(persist:false) (:916-924) likewise mutates `drops` without persisting. remove() destroys the disk row at :942 before its post-await epoch guard at :952. So the interleaving remove → (same-row epoch bump by redeem or a non-persisting update) → remove-resume ends with the id in `drops`, absent from disk, no tombstone, no cloud delete. And testRedeemDuringRemoveSupersedesTheDelete (DropStoreTests.swift:1196-1217) does drive exactly that sequence and asserts only `library.drops.contains` at :1216 — it never checks disk, so it would pass whether or not redeem re-persists. That test-invariant criticism is correct and is the durable half of this finding. Where I part company: all three reviewers who looked at this independently reported they could not construct a user-reachable interleaving (redeem's callers are the receive flow; update's are the share sheet and the AR editor; the Sent-tab delete is not co-present with either), and neither can I — it needs a same-instant cross-surface double action on one id inside a single local-file-write window. On state-14-5's variant (clearLost retiring a loss record on memory presence, violating rules 1 and 3), the rule-purity point is valid but the concrete harm is weak: in the quarantine scenario the row IS present in `drops`, IS held by the server, and IS re-published by every refresh — so 'the drop is no longer lost' is a true statement arrived at by a sloppy route, and what was actually lost (an offline edit's newer version) is something the id-keyed ledger never tracked. PARTIAL: mechanism CONFIRMED, test-vacuity CONFIRMED, claimed user-visible harm NOT demonstrated. LOW.",
+          "industrialSolution": "One line of code and one line of test, worth doing because it removes a latent invariant violation cheaply rather than because a user can hit it today. In redeem()'s row-exists branch, persist the row before clearing the ledger entry — `try await local.save(drop)` under the same epoch guard the insert branch uses at :870 — so both branches maintain the same disk/memory parity invariant and the loss retirement rests on a durable write rather than on cache/memory presence (binding rules 1 and 3). Then strengthen testRedeemDuringRemoveSupersedesTheDelete to read the row back through the local store after releaseAllDeletes, so the test locks the invariant that matters instead of the in-memory half. Separately, note for the record that redeem()'s row-exists branch is reachable in a second way nobody filed: because refresh never writes cloud rows to local disk, any cloud-sourced row in `drops` takes this branch, so 'memory implies disk' is false on the normal path too, not just under the racing interleaving — which is the real argument for the fix."
+        },
+        {
+          "findingId": "F4 / SURF-14-5 (documentation half) — exit condition (d)",
+          "verdict": "CONFIRMED",
+          "reasoning": "Verified by reading all 89 lines of COUNSEL-WAVE-C-LOG.md. Line 76 ends '(d) residuals re-stated.' and nothing follows it: the file's only enumerated residual list is the round-8 one at :35, and neither item round 13 named by CHANGED risk appears anywhere after :72 — not own-1's reap redesign, not the serverTimestamp watermark. Both underlying risks were in fact REDUCED by round 14's code (Dismiss is non-destructive at :283-291; the drift regex now parses `@ServerTimestamp var commitAt: Date?`, which I confirmed empirically returns 6 keys) — so the engineering happened and only the carry-forward record did not, which is exactly why this is a documentation finding and not a code one. The collateral rot is also confirmed: :87 reads '90/90 as of round 8' against 112 actual test functions (I counted them); :88 reads '28 emulator assertions … Green as of round 8' against 30 v3 + 6 deployed-v2; and :84 still states cross-cutting rule 6 as 'isolation and suspension points', omitting the 'AND failure modes' amendment that exit condition (b) rests on and that FlakyLocalStore now implements. This is the only exit condition that is materially unmet, and it is the reason the wave cannot simply be declared closed on this build alone. The harm is not hypothetical: this log is the deploy gate of record for a rules deploy the log itself (:73) calls a SECURITY gate, and it is the artifact that carries residuals into Wave A.",
+          "industrialSolution": "A documentation commit, not a build round — roughly fifteen lines. Add a ROUND 14 RESIDUALS block enumerating the carried list, with the two re-priced items stated WITH their new risk direction (own-1 reap redesign: risk reduced, Dismiss is now non-destructive and every destructive outcome revokes the latch, so it is no longer one tap from 'Synced'; serverTimestamp/commitAt watermark: risk reduced, drift-check.mjs:44-48 now parses attributed declarations), plus the round-10/12 additions that currently survive only in counsel-archives/wave-c-round13-verdict.json (probe-cap rotation, durable delete attempt budget, reaction-listener re-attach backoff, ux-5, merge field-mask, single-field ownerUid stamp), plus the eleven confirmed round-15 findings. Update :87-88 to '112/112 device, 30 v3 + 6 deployed-v2 emulator assertions, 2 drift locks, green as of round 14 (2026-08-17)'. Restate rule 6 with the failure-modes clause. The general practice worth adopting: the counts in a gate document should be generated, not typed — have the npm gate print the assertion count and the xcodebuild step print the test count, and paste those, so 'green as of round 8' cannot silently outlive six rounds of work."
+        }
+      ]
+    }
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Research"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "review:seam",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a18da51c65a454171",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "startedAt": 1786991615194,
+      "queuedAt": 1786991610653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "seams + harness — digest-suppression mechanism, derived emu…",
+      "promptPreview": "You are a staff-level software engineer on a five-member engineering counsel reviewing an iOS AR app called AugmentMeReality (Swift/SwiftUI, RealityKit/ARKit, Firebase Firestore backend). It is a benign consumer AR messaging app: users pin small 3D \"drops\" at real-world coordinates and share them by link; recipients watch in AR and send emoji reactions.\n\nRepo root: /Users/captiveon/Documents/techp…",
+      "lastProgressAt": 1786992319097,
+      "tokens": 145653,
+      "toolCalls": 38,
+      "durationMs": 703903,
+      "resultPreview": "{\"lens\":\"seams + harness — digest-suppression mechanism, derived emulator payload + fail-closed regex, encoder-shape test vacuity, pre-commit hook + gitignore, deployed-suite LIST assertion, cloudProven predicate final form\",\"closureVerdicts\":[{\"item\":\"exit-a1\",\"status\":\"CLOSED\",\"trace\":\"DropStore.swift:966 `guard cloud != nil, drop.receivedViaLink != true else { return }` precedes DropStore.swift…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "review:state",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "aa99e5469970aa526",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "startedAt": 1786991614400,
+      "queuedAt": 1786991610653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "DropLibrary state machines — final audit: rowGenerations ep…",
+      "promptPreview": "You are a staff-level software engineer on a five-member engineering counsel reviewing an iOS AR app called AugmentMeReality (Swift/SwiftUI, RealityKit/ARKit, Firebase Firestore backend). It is a benign consumer AR messaging app: users pin small 3D \"drops\" at real-world coordinates and share them by link; recipients watch in AR and send emoji reactions.\n\nRepo root: /Users/captiveon/Documents/techp…",
+      "lastProgressAt": 1786992503877,
+      "tokens": 150349,
+      "toolCalls": 30,
+      "durationMs": 889477,
+      "resultPreview": "{\"lens\":\"DropLibrary state machines — final audit: rowGenerations epochs across every mutator/await pair, loss-ledger lifecycle (record/retire/leak), latch revocation vs sticky evidence, authDidBecomeReady first-pass flag, redeem end-to-end. All claims traced against commit 5bb6ea5 source; drift locks executed locally.\",\"closureVerdicts\":[{\"item\":\"exit-a1\",\"status\":\"CLOSED\",\"trace\":\"Services/DropS…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "review:ux",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "ad4c4331ac6436e1b",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "startedAt": 1786991613791,
+      "queuedAt": 1786991610653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "surfaces — final audit (ladder order/reachability/copy-hone…",
+      "promptPreview": "You are a staff-level software engineer on a five-member engineering counsel reviewing an iOS AR app called AugmentMeReality (Swift/SwiftUI, RealityKit/ARKit, Firebase Firestore backend). It is a benign consumer AR messaging app: users pin small 3D \"drops\" at real-world coordinates and share them by link; recipients watch in AR and send emoji reactions.\n\nRepo root: /Users/captiveon/Documents/techp…",
+      "lastProgressAt": 1786992219847,
+      "tokens": 155395,
+      "toolCalls": 40,
+      "durationMs": 606056,
+      "resultPreview": "{\"lens\":\"surfaces — final audit (ladder order/reachability/copy-honesty incl. the new loss rung + relocated Connecting rung; ReceiveScreen bounded-wait UX; non-destructive Dismiss comprehension; MemoryScreen/ShareDropSheet final states)\",\"closureVerdicts\":[{\"item\":\"exit-a1\",\"status\":\"CLOSED\",\"trace\":\"DropStore.swift:966 `guard cloud != nil, drop.receivedViaLink != true else { return }` precedes Dr…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "review:flows",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a611fa774467ce370",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "startedAt": 1786991613376,
+      "queuedAt": 1786991610653,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "end-to-end flows, final audit: corruption lifecycle (skippe…",
+      "promptPreview": "You are a staff-level software engineer on a five-member engineering counsel reviewing an iOS AR app called AugmentMeReality (Swift/SwiftUI, RealityKit/ARKit, Firebase Firestore backend). It is a benign consumer AR messaging app: users pin small 3D \"drops\" at real-world coordinates and share them by link; recipients watch in AR and send emoji reactions.\n\nRepo root: /Users/captiveon/Documents/techp…",
+      "lastProgressAt": 1786992484558,
+      "tokens": 191820,
+      "toolCalls": 57,
+      "durationMs": 871182,
+      "resultPreview": "{\"lens\":\"end-to-end flows, final audit: corruption lifecycle (skipped rows → banner → Dismiss → ledger → Clear → new corruption), quarantine → ledger → relaunch, delete/redeem/refresh interleavings under the new per-row epochs, first-launch link-open with slow sign-in, terminal revalidation on session start, and whether the three previously-unreachable branches are genuinely entered\",\"closureVerdi…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "research:ruling",
+      "phaseIndex": 2,
+      "phaseTitle": "Research",
+      "agentId": "a401475c022b9d104",
+      "model": "claude-opus-5[1m]",
+      "state": "done",
+      "startedAt": 1786992507851,
+      "queuedAt": 1786992505529,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "I re-derived every contested claim from source at 5bb6ea5 r…",
+      "promptPreview": "You are a staff-level software engineer on a five-member engineering counsel reviewing an iOS AR app called AugmentMeReality (Swift/SwiftUI, RealityKit/ARKit, Firebase Firestore backend). It is a benign consumer AR messaging app: users pin small 3D \"drops\" at real-world coordinates and share them by link; recipients watch in AR and send emoji reactions.\n\nRepo root: /Users/captiveon/Documents/techp…",
+      "lastProgressAt": 1786992980315,
+      "tokens": 125583,
+      "toolCalls": 27,
+      "durationMs": 472464,
+      "resultPreview": "{\"ownFindings\":[],\"priorityOrder\":[\"exit-d-doc (F4/SURF-14-5) — the ONLY unmet exit condition; ~15 lines of COUNSEL-WAVE-C-LOG.md, no code, no build round\",\"LEDGER-CLEAR-INERT (F1 = F-SEAMS-14-2 = state-14-4 = SURF-14-2) — 4-way convergence, confirmed empirically, D3-vacuous test\",\"LADDER-ORDER (F2 = state-14-1 = SURF-14-1) — 3-way convergence; the ledger's only surface is maskable by a progress r…"
+    }
+  ],
+  "totalTokens": 768800,
+  "totalToolCalls": 192
+}
