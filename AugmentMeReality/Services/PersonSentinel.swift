@@ -18,7 +18,7 @@ final class PersonSentinel {
     /// hold to ONE buffer; the duration is now measured, not asserted.
     private let queue = DispatchQueue(label: "person-sentinel", qos: .userInitiated)
     private let lock = NSLock()
-    private var loggedLongHold = false
+    private var lastLongHoldLogAt = Date.distantPast
     private var request: VNDetectHumanRectanglesRequest?
     private var busy = false
     private var lastRunAt = Date.distantPast
@@ -42,21 +42,26 @@ final class PersonSentinel {
         lastRunAt = Date()
         lock.unlock()
 
+        // Round 3 (counsel RENDER-LENS-2): the clock starts at the CALL SITE
+        // — the buffer is retained from the enqueue, so the queue wait is
+        // part of the hold, and under thermal pressure the wait IS the
+        // failure mode the measurement exists to catch.
+        let holdStart = Date()
         queue.async { [weak self] in
             guard let self else { return }
-            let holdStart = Date()
             defer {
-                // RENDER-6: the "bounded hold" claim is measured. A hold past
-                // 100 ms means the pool is under real pressure — log once so
-                // field traces can attribute the fps sawtooth correctly.
+                // RENDER-6: the "bounded hold" claim is measured, throttled
+                // to once a minute — never latched off after one line (a
+                // sustained sawtooth must keep reporting).
                 let held = Date().timeIntervalSince(holdStart)
                 self.lock.lock()
                 self.busy = false
-                let shouldLog = held > 0.1 && !self.loggedLongHold
-                if shouldLog { self.loggedLongHold = true }
+                let shouldLog = held > 0.1
+                    && Date().timeIntervalSince(self.lastLongHoldLogAt) > 60
+                if shouldLog { self.lastLongHoldLogAt = Date() }
                 self.lock.unlock()
                 if shouldLog {
-                    os_log(.error, "PersonSentinel buffer hold exceeded 100 ms (%.0f ms) — capture pool under pressure", held * 1000)
+                    os_log(.error, "PersonSentinel buffer hold exceeded 100 ms (%.0f ms incl. queue wait) — capture pool under pressure", held * 1000)
                 }
             }
             let request: VNDetectHumanRectanglesRequest

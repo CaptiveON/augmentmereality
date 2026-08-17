@@ -397,3 +397,60 @@ final class PlanarPixelBufferCopyTests: XCTestCase {
         XCTAssertEqual(mismatches, 0, "every byte of both planes survives a stride-mismatched copy")
     }
 }
+
+/// Round 3 (the counsel's CALLER-CLOCK rule): every round-2 escape was a
+/// clock/timer/predicate coupling whose test handed the quantized input to
+/// the predicate as a literal. These drive the caller's clock arithmetic —
+/// Date pairs, not booleans.
+final class CallerClockTests: XCTestCase {
+    func testHeldGestureIsNeverAbandonedByTickSilence() {
+        // STATE-L1: a stationary finger sends no value ticks — the designed
+        // interaction the round-2 expiry misclassified as abandonment,
+        // letting the still-live gesture re-bind to a different drop.
+        let start = Date()
+        XCTAssertFalse(GeoARSessionManager.gestureAbandoned(
+            now: start.addingTimeInterval(10), lastTick: start, held: true
+        ), "10 s of stationary hold is a drag, not abandonment")
+        XCTAssertTrue(GeoARSessionManager.gestureAbandoned(
+            now: start.addingTimeInterval(31), lastTick: start, held: true
+        ), "the 30 s backstop covers a lost end event")
+        XCTAssertTrue(GeoARSessionManager.gestureAbandoned(
+            now: start.addingTimeInterval(2), lastTick: start, held: false
+        ), "an unheld capture is truly abandoned and expires fast")
+        XCTAssertFalse(GeoARSessionManager.gestureAbandoned(
+            now: start.addingTimeInterval(1.0), lastTick: start, held: false
+        ))
+    }
+
+    func testVisibilityGraceStrictlyOutlastsThePause() {
+        // ARPCFG-R2-1: for a hide-edge stamp at t, the grace must still hold
+        // at t + pauseGraceSeconds + a full tick of drift — the round-2
+        // window expired 0–400 ms BEFORE the pause it existed to cover, so
+        // half of tab flips still destroyed the mesh.
+        let hideEdge = Date()
+        let pauseMoment = hideEdge.addingTimeInterval(AppConfig.pauseGraceSeconds)
+        XCTAssertTrue(GeoARSessionManager.cameraRecentlyVisible(
+            now: pauseMoment, lastVisible: hideEdge
+        ), "the grace covers the pause moment itself")
+        XCTAssertTrue(GeoARSessionManager.cameraRecentlyVisible(
+            now: pauseMoment.addingTimeInterval(0.4), lastVisible: hideEdge
+        ), "…and a full 400 ms tick of drift past it")
+        XCTAssertFalse(GeoARSessionManager.cameraRecentlyVisible(
+            now: pauseMoment.addingTimeInterval(1.5), lastVisible: hideEdge
+        ), "well past the pause the grace releases honestly")
+    }
+
+    func testPassDetachBothConjunctsBind() {
+        // RENDER-LENS-1: the round-2 idle threshold dominated the attach
+        // term, making it dead code — both conjuncts must bind independently.
+        XCTAssertFalse(
+            GeoARSessionManager.passShouldDetach(idleFor: 6, attachedFor: 8),
+            "freshly attached: the min-attach dwell holds even when idle"
+        )
+        XCTAssertFalse(
+            GeoARSessionManager.passShouldDetach(idleFor: 4, attachedFor: 60),
+            "recent work holds the pass regardless of attach age"
+        )
+        XCTAssertTrue(GeoARSessionManager.passShouldDetach(idleFor: 6, attachedFor: 11))
+    }
+}

@@ -236,10 +236,17 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// the user was not touching, and leaked the first drop's id into
     /// `liveEditingDrops` forever, pinning the governor to `.full`).
     private var editingDropID: UUID?
-    /// Round 2 (counsel STATE-1): the last non-commit slider tick — a gesture
-    /// with no tick for 1.5 s is ABANDONED (cover torn down mid-drag) and
-    /// terminates without a commit.
+    /// Round 2 (counsel STATE-1): the last non-commit slider tick.
     private var lastLiveEditTickAt = Date.distantPast
+    /// Round 3 (counsel STATE-L1): TRUE while a finger is physically on a
+    /// slider (`onEditingChanged(true)` → `beginLiveEdit`). A stationary
+    /// finger sends no value ticks, so tick-recency alone misclassified a
+    /// held gesture as abandoned — the expiry then cleared the capture and
+    /// the still-live gesture re-bound to a DIFFERENT drop (a wrong-drop
+    /// persist to disk and Firestore). Expiry now applies only when no
+    /// gesture is held; a 30 s backstop covers an end event that never
+    /// arrives (view torn down mid-drag without the callback).
+    private var gestureHeld = false
     /// Round 2 (counsel ARPCFG-4): reconstruction keys on RECENT visibility so
     /// a sub-grace tab flip can't destroy and rebuild the LiDAR mesh.
     private var lastCameraVisibleAt = Date.distantPast
@@ -436,13 +443,58 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         statusText = "Paused"
     }
 
+    /// Round 3 (counsel STATE-L1): the gesture's TRUE start — ARScreen calls
+    /// this from `onEditingChanged(true)`, capturing the target while the
+    /// finger is provably down. Ticks and the commit resolve from this
+    /// capture; a tick arriving with NO capture and NO held gesture is stale
+    /// context and is refused (re-bind refusal).
+    func beginLiveEdit() {
+        gestureHeld = true
+        lastLiveEditTickAt = Date()
+        if editingDropID == nil { editingDropID = nearestDrop?.id }
+    }
+
     /// Round 2 (counsel STATE-1/FLOW-5): terminate an unfinished slider
     /// gesture WITHOUT committing — an abandoned drag is not an edit. Clears
     /// the nearest freeze and the governor's live-edit pin.
     func cancelLiveEdit() {
+        gestureHeld = false
         guard editingDropID != nil || !liveEditingDrops.isEmpty else { return }
         liveEditingDrops.removeAll()
         editingDropID = nil
+    }
+
+    /// Round 3 (counsel STATE-L1 + the caller-clock rule): abandonment as a
+    /// PURE function of the caller's clock — a held gesture is never
+    /// abandoned by tick recency (a stationary finger is a designed
+    /// interaction); an unheld capture expires after 1.5 s; a held gesture
+    /// whose end event never arrived expires after 30 s.
+    nonisolated static func gestureAbandoned(
+        now: Date, lastTick: Date, held: Bool
+    ) -> Bool {
+        let silent = now.timeIntervalSince(lastTick)
+        return held ? silent > 30 : silent > 1.5
+    }
+
+    /// Round 3 (counsel ARPCFG-R2-1 + the caller-clock rule): the visibility
+    /// grace as a pure function — STRICTLY outlasts the pause it exists to
+    /// cover (`pauseGraceSeconds` + one tick + margin), measured from the
+    /// TRUE hide edge, so no tab flip can destroy the mesh 0–400 ms before
+    /// the pause that made the destruction pointless.
+    nonisolated static func cameraRecentlyVisible(
+        now: Date, lastVisible: Date
+    ) -> Bool {
+        now.timeIntervalSince(lastVisible) < AppConfig.pauseGraceSeconds + 1.0
+    }
+
+    /// Round 3 (counsel RENDER-LENS-1): the detach decision, re-derived so
+    /// BOTH conjuncts bind — 5 s of no work AND 10 s attached. The round-2
+    /// form (15 s idle AND 10 s attached) was a dead conjunct: attach always
+    /// preceded idleness, so idle > 15 implied attached > 15.
+    nonisolated static func passShouldDetach(
+        idleFor: TimeInterval, attachedFor: TimeInterval
+    ) -> Bool {
+        idleFor > 5 && attachedFor > 10
     }
 
     /// Counsel ARP-4/SWE-2: resume is NOT a cold start. The pre-fix path
@@ -485,8 +537,12 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // resumes immediately; the per-frame ML streams re-earn their place
         // from fresh frames (the sentinel's evidence decayed over the pause),
         // so the common resume is exactly ONE run.
+        // Round 3 (counsel ARPCFG-R2-2): the visibility term the tick's plan
+        // carries — a warm-up resume with the camera still hidden must run
+        // the idle diet ONCE, not request mesh and shed it a tick later.
         let resumePlan = (
             reconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+                && cameraVisible
                 && renderPath == .pedestrian
                 && ProcessInfo.processInfo.thermalState != .critical,
             person: false,
@@ -511,6 +567,11 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// off-screen (pre-warm, other tabs) — the map tab must not cook the phone.
     func markCameraHidden() {
         cameraVisible = false
+        // Round 3 (counsel ARPCFG-R2-1): the TRUE hide edge is stamped here —
+        // the per-tick stamp was up to 400 ms stale, so the grace expired
+        // just before the 5 s pause it exists to cover and roughly half of
+        // tab flips still destroyed the mesh.
+        lastCameraVisibleAt = Date()
         // Round 2 (counsel FLOW-5): a drag can't outlive the surface it was
         // dragging on — abandon it now, never at the next commit that will
         // never come.
@@ -1082,11 +1143,14 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
     /// ADR-033: feed the governor the scene's actual demands, apply the verdict.
     private func updatePowerTier() {
-        // Round 2 (counsel STATE-1/FLOW-5): an ABANDONED gesture terminates —
-        // a drag whose cover was torn down mid-slide must not freeze nearest
-        // tracking and pin the governor to .full for the session.
+        // Round 2 (counsel STATE-1/FLOW-5) corrected in round 3 (counsel
+        // STATE-L1): abandonment never fires on a HELD gesture — a
+        // stationary finger is the panel's own designed interaction, and
+        // expiring it re-bound the still-live drag to a different drop.
         if editingDropID != nil,
-           Date().timeIntervalSince(lastLiveEditTickAt) > 1.5 {
+           Self.gestureAbandoned(
+               now: Date(), lastTick: lastLiveEditTickAt, held: gestureHeld
+           ) {
             cancelLiveEdit()
         }
         if cameraVisible { lastCameraVisibleAt = Date() }
@@ -1149,7 +1213,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             fullTier: tier == .full,
             cameraVisible: cameraVisible,
             cameraRecentlyVisible: cameraVisible
-                || Date().timeIntervalSince(lastCameraVisibleAt) < AppConfig.pauseGraceSeconds,
+                || Self.cameraRecentlyVisible(now: Date(), lastVisible: lastCameraVisibleAt),
             pedestrian: renderPath == .pedestrian,
             windowModeActive: windowModeActive,
             personLikely: personSentinel.personLikely,
@@ -1210,12 +1274,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // so attaching would burn an offscreen render + blit for nothing.
         let passNeeded = (Self.supportsCustomPersonOcclusion && appliedPerception.person)
             || semanticMatteArmed || midDepthActive
-        // Round 2 (counsel RENDER-1 step 1): a DWELL FLOOR on the callback
-        // slots — attach/detach is the one cross-thread mutation RealityKit's
-        // contract doesn't synchronize for us, so its frequency IS the race
-        // surface. Detach requires 15 s of no work AND 10 s since attach; a
-        // person walking in and out can no longer toggle the slots at
-        // seconds scale. (Step 2, the on-device TSan run, is a field task.)
+        // Round 2 (counsel RENDER-1 step 1) re-derived in round 3 (counsel
+        // RENDER-LENS-1): a DWELL FLOOR on the callback slots — their toggle
+        // frequency IS the race surface. Both conjuncts BIND now: 5 s of no
+        // work AND 10 s attached (the round-2 15 s idle term dominated the
+        // attach term, making it dead code and tripling the idle-attached
+        // heat window over ADR-035's measured 5 s). Step 2, the on-device
+        // TSan run, is a field task.
         if passNeeded {
             passIdleSince = nil
             if !(semanticPass?.callbacksActive ?? false) {
@@ -1223,8 +1288,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             }
             semanticPass?.setCallbacksActive(true)
         } else if let since = passIdleSince {
-            if Date().timeIntervalSince(since) > 15,
-               Date().timeIntervalSince(passAttachedAt) > 10 {
+            if Self.passShouldDetach(
+                idleFor: Date().timeIntervalSince(since),
+                attachedFor: Date().timeIntervalSince(passAttachedAt)
+            ) {
                 semanticPass?.setCallbacksActive(false)
             }
         } else {
@@ -1888,9 +1955,17 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // Wave D (counsel SWE-5): bind to the identity captured at gesture
         // start; `updateNearest()` is frozen while a drag is live, and a drop
         // removed mid-drag clears the capture via `removePerDropState`.
-        if editingDropID == nil { editingDropID = nearestDrop?.id }
+        // Round 3 (counsel STATE-L1, re-bind refusal): the capture happens at
+        // the gesture's TRUE start (`beginLiveEdit`). A tick with no capture
+        // and no held gesture is stale context from a terminated drag — it
+        // must NOT capture whatever `nearestDrop` is now.
+        if editingDropID == nil {
+            guard gestureHeld else { return }
+            editingDropID = nearestDrop?.id
+        }
         guard let id = editingDropID else { return }
         if !commit { lastLiveEditTickAt = Date() }
+        if commit { gestureHeld = false }
         // Round 2 (counsel STATE-4): resolve STRICTLY from owned state — the
         // old `nearestDrop` fallback was invariantly non-nil while a capture
         // existed (updateNearest is frozen), which made the vanish-guard dead
@@ -2034,7 +2109,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // assumed eye height. Without a real surface, the snap declines
         // honestly instead of committing fiction.
         guard let groundY else {
-            showPersistError("Couldn't find the ground here — move closer and try again")
+            // Round 3 (counsel UX-3): a declined snap is ADVICE, not a data
+            // emergency — the critical slot is reserved for persistence
+            // failures and must never be evicted by a convenience feature.
+            showPersistError(
+                "Couldn't find the ground here — move closer and try again",
+                critical: false
+            )
             return
         }
 
@@ -2406,14 +2487,19 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             // farther than that cannot be matted by this source, and running
             // the ANE for it is pure heat. ADR-031's 4–60 m ambition needs a
             // farther calibration reference first (Wave E: MATH-7).
-            let maxServiceable = AppConfig.midDepthLiDARBandMax
-                * AppConfig.midDepthSupportMargin
+            // Round 3 (counsel ARPCFG-R2-3/STATE-L4): the USE side shares the
+            // SAME predicate the request side uses (`midFieldServiceable`),
+            // and carries the capability term — without LiDAR scene depth no
+            // fit can ever publish, so loading the ~50 MB model there was
+            // pure memory and launch heat with a structurally-impossible
+            // consumer.
             let useful = renderPath == .pedestrian && !thermalSerious
                 && powerTier == .full
+                && ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
                 && placedHolders.values.contains {
-                    let distance = simd_length($0.position - camPosition)
-                    return distance > AppConfig.midDepthMinContentDistance
-                        && distance < maxServiceable
+                    Self.midFieldServiceable(
+                        distance: simd_length($0.position - camPosition)
+                    )
                 }
             if useful, let frame = arView.session.currentFrame {
                 // Lazy first load (ADR-035): the CoreML/ANE compile is a launch

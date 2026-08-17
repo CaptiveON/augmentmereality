@@ -82,6 +82,11 @@ struct RootView: View {
             .transition(.move(edge: .top).combined(with: .opacity))
             .task {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
+                // Round 3 (counsel UX-1): a cover transition tears this view
+                // down and CANCELS the sleep — falling through to clear would
+                // wipe a toast the user never saw. Only a completed 4 s
+                // display may clear.
+                guard !Task.isCancelled else { return }
                 reactionService.clearIncoming()
             }
         }

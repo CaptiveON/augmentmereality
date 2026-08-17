@@ -496,7 +496,13 @@ private struct ARScreenContent: View {
                     ),
                     in: -2...20
                 ) { editing in
-                    if !editing {
+                    if editing {
+                        // Round 3 (counsel STATE-L1): the gesture's TRUE start
+                        // — captures the target while the finger is down; a
+                        // stationary hold is a designed interaction, never
+                        // abandonment.
+                        manager.beginLiveEdit()
+                    } else {
                         manager.adjustNearestDrop(height: liveHeight, commit: true)
                     }
                 }
@@ -517,7 +523,13 @@ private struct ARScreenContent: View {
                     ),
                     in: 0.5...50
                 ) { editing in
-                    if !editing {
+                    if editing {
+                        // Round 3 (counsel STATE-L1): the gesture's TRUE start
+                        // — captures the target while the finger is down; a
+                        // stationary hold is a designed interaction, never
+                        // abandonment.
+                        manager.beginLiveEdit()
+                    } else {
                         manager.adjustNearestDrop(scale: liveScale, commit: true)
                     }
                 }
@@ -538,7 +550,13 @@ private struct ARScreenContent: View {
                     ),
                     in: 0...360
                 ) { editing in
-                    if !editing {
+                    if editing {
+                        // Round 3 (counsel STATE-L1): the gesture's TRUE start
+                        // — captures the target while the finger is down; a
+                        // stationary hold is a designed interaction, never
+                        // abandonment.
+                        manager.beginLiveEdit()
+                    } else {
                         manager.adjustNearestDrop(rotation: liveRotation, commit: true)
                     }
                 }
