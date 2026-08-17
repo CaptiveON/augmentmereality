@@ -1,0 +1,20 @@
+# Secrets — never commit the real key
+AugmentMeReality/Support/Secrets.plist
+
+# Xcode
+DerivedData/
+build/
+*.xcuserdatad/
+xcuserdata/
+.DS_Store
+GoogleService-Info.plist
+
+# Rules-test harness (round 14): dependencies + emulator artifacts
+web/rules-tests/node_modules/
+web/rules-tests/firestore-debug.log
+web/rules-tests/*.log
+.firebase/
+
+# Local store artifacts that may appear during device debugging
+*.incident
+*.ackdigest

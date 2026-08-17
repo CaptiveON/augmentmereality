@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// ============================================================================
+// THE RULESET CURRENTLY LIVE IN PRODUCTION (v2, README Wave 6.2) — verbatim.
+//
+// Round 10 (counsel seams-1a): rules are code, and the repo must know what is
+// actually deployed, not only what is drafted. This file exists so the
+// emulator suite (web/rules-tests/deployed-rules.test.mjs) can pin the
+// PRODUCTION behaviors the client must survive until the v3 deploy:
+//   - a GET on an ABSENT document DENIES (resource.data on null resource) —
+//     so serverConfirmsAbsent / probeAbsenceCapability answer "denied", and
+//     the client's capability probe + ackedCloudIDs machinery (not the rules)
+//     carry the delete lifecycle.
+//   - a DELETE of an ABSENT document DENIES — never-acked deletes must
+//     resolve client-side, not wait for a rules answer.
+//   - UPDATE only checks the INCOMING ownerUid (the PBS-1 hijack v3 fixes).
+//
+// DO NOT EDIT to "fix" these — this file mirrors production. The corrections
+// live in web/firestore.rules (v3), whose deploy is the Wave A release gate;
+// after deploying v3, replace this file's contents with v3 verbatim.
+// ============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    match /drops/{id} {
+      // Owner full control; link/public drops readable by any signed-in user.
+      allow read: if request.auth != null
+        && (resource.data.ownerUid == request.auth.uid
+            || resource.data.visibility in ['link', 'public']);
+      allow create, update: if request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow delete: if request.auth != null
+        && resource.data.ownerUid == request.auth.uid;
+      match /reactions/{rid} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.resource.data.uid == request.auth.uid;
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Round 14 (counsel own-2): the fast half of the test gate runs on every
+# commit — the drift locks (emoji + reaction keys vs firestore.rules) parse
+# in milliseconds and catch exactly the class of silent breakage the counsel
+# flagged. The FULL gate (`npm test` in web/rules-tests, plus the device
+# suite) is required before any rules deploy — see COUNSEL-WAVE-C-LOG.md.
+set -e
+node web/rules-tests/drift-check.mjs

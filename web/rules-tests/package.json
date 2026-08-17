@@ -1,0 +1,13 @@
+{
+  "name": "augmentmereality-rules-tests",
+  "private": true,
+  "type": "module",
+  "description": "Counsel B5/PBS-10: emulator verification of web/firestore.rules + emoji drift lock against ReactionSession.swift. MUST pass before any rules deploy (Wave A gate).",
+  "scripts": {
+    "test": "node drift-check.mjs && firebase emulators:exec --only firestore --project demo-amr-rules \"node rules.test.mjs && node deployed-rules.test.mjs\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0"
+  }
+}

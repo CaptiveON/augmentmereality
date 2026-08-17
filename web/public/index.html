@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A surprise is waiting for you</title>
+<meta property="og:title" content="🎁 A surprise is waiting for you">
+<meta property="og:description" content="Someone hid something in the real world for you. Open it in AR.">
+<style>
+  /* AugmentMeReality invite page — Night design language (Figma: Night tokens) */
+  :root {
+    --night: #0d0f16; --screen: #12151f; --glass: rgba(244,246,251,0.045);
+    --line: rgba(244,246,251,0.09); --ink: #f4f6fb; --ink2: rgba(244,246,251,0.62);
+    --ink3: rgba(244,246,251,0.38); --coral: #ff4d6d; --gold: #ffc857; --mint: #3ddc97;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100svh; display: grid; place-items: center;
+    background:
+      radial-gradient(420px 320px at 50% 18%, rgba(255,77,109,0.10), transparent 65%),
+      var(--screen);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    text-align: center; padding: 28px 22px;
+  }
+  main { max-width: 380px; width: 100%; display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  .time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+    letter-spacing: 0.2em; color: var(--ink3); }
+  .ring { width: 92px; height: 92px; border-radius: 50%; padding: 5px;
+    background: conic-gradient(var(--gold), var(--coral), var(--gold)); }
+  .ring .inner { width: 100%; height: 100%; border-radius: 50%; background: var(--screen);
+    display: grid; place-items: center; }
+  .ring .avatar { width: 68px; height: 68px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--coral), var(--gold));
+    display: grid; place-items: center; font-weight: 700; font-size: 24px; color: white; }
+  h1 { font-size: 27px; line-height: 1.12; font-weight: 800; letter-spacing: -0.01em; max-width: 13ch; }
+  h1 .glow { color: var(--coral); text-shadow: 0 0 28px rgba(255,77,109,0.4); }
+  .place { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink2);
+    border: 1px solid var(--line); background: var(--glass); padding: 7px 13px; border-radius: 999px; }
+  .place .beam { color: var(--mint); }
+  .gap { height: 16px; }
+  a.cta { display: block; width: 100%; padding: 15px; border-radius: 999px; text-decoration: none;
+    font-size: 15px; font-weight: 650; color: #1a0b10;
+    background: linear-gradient(100deg, var(--gold), var(--coral) 85%);
+    box-shadow: 0 10px 30px -8px rgba(255,77,109,0.55); }
+  .ghost { width: 100%; padding: 13px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--glass); color: var(--ink2); font-size: 13px; }
+  .fine { font-size: 11px; color: var(--ink3); max-width: 30ch; }
+  .brand { margin-top: 18px; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;
+    letter-spacing: 0.18em; color: var(--ink3); }
+  .brand .dot { color: var(--coral); }
+</style>
+</head>
+<body>
+<main>
+  <div class="time" id="time"></div>
+  <div class="ring"><div class="inner"><div class="avatar">🎁</div></div></div>
+  <h1>Someone left a <span class="glow">surprise</span> for you</h1>
+  <div class="place"><span class="beam">◉</span> It's hiding at a real place near you</div>
+  <div class="gap"></div>
+  <a class="cta" id="open" href="#">Reveal in AR</a>
+  <div class="ghost">Don't have the app yet? Ask the sender for a TestFlight invite — the App&nbsp;Store link is coming.</div>
+  <p class="fine">One-time link · your camera stays private · the session ends itself</p>
+  <div class="brand"><span class="dot">●</span>&nbsp; AUGMENTMEREALITY</div>
+</main>
+<script>
+  // Path: /d/<uuid> → deep link into the app via the custom scheme.
+  var parts = location.pathname.split("/").filter(Boolean);
+  var id = (parts[0] === "d" && parts[1]) ? parts[1] : "";
+  document.getElementById("open").href = "augmentme://drop/" + id;
+  var now = new Date();
+  document.getElementById("time").textContent =
+    String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
+</script>
+</body>
+</html>
