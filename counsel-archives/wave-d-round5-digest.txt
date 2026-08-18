@@ -1,0 +1,161 @@
+WAVE D — COUNSEL ROUND 5 DIGEST (2026-08-18, run wf_b99838f6-a8e, 5× Opus, 728k tokens, 210 tool uses)
+Build under audit: abe4f50 (evidence commit df0aa8a). Full verdicts: wave-d-round5-verdict.json.
+
+================================================================
+HEADLINE
+================================================================
+FOR THE FIRST TIME IN FIVE ROUNDS, THE ROUND'S OWN FIX SEEDED NO CODE BLOCKER.
+All five seats agree F-D4-01 is CLOSED at mechanism level, traced exhaustively:
+- applyEdit is now literally gesture-free (grep-verified: zero editingDropID /
+  heldGestures occurrences in its body); the deleted failure-arm clear is
+  PROVEN redundant (placedDrops removal happens at exactly two lines, both of
+  which atomically clear capture + counter in the same synchronous main-actor
+  body — the orphan state is unconstructible).
+- The round-4 two-thumb trace replayed line by line: B's tick binds to the
+  ORIGINAL capture after A commits; nearest stays frozen until the LAST finger
+  lifts; the ARScreen onChange(syncSliders) knob-jump is dead as a bonus.
+- The authored variant ("Place on ground" mid-drag): capture and counter
+  survive the snap; the deliberate-height override still clears the ground
+  lock on the gesture's own commit. Both halves of the round-4 harm are gone.
+- Reviewer A also PROVED :2051's unconditional re-capture is load-bearing
+  (remove it and F-D4-01 returns by another door) — the dead `capture == id`
+  conjunct in commitBookkeeping must stay, labelled, as its guard.
+Also CLOSED at mechanism level: TTFO re-arm (all orderings), detach log at the
+one choke point (all six sites, edge-only, cannot claim a refused toggle),
+visibilityTerm by-construction agreement (both call sites verified, no other
+composition exists), editTarget dead-param removal, MetricKit registration,
+leg 5 restored and pinned. Researcher: 10 CONFIRMED / 7 CORRECTED validations;
+RSCH4-03/04/07 closed; the crash-bar re-scope self-consistent.
+
+SHIP VERDICT (supervisor synthesis): NOT-as-recorded — one surgical desk pass
+(round 6) before the field sessions. The counsel split: the researcher ruled
+"two FIELDTESTS.md edits, no round 6, abe4f50 stays the field SHA"; reviewers
+A/D/sweep surfaced items the ruling under-weighted — two of them corrupt the
+exact artifacts the field sessions collect, and one is a wrong-drop persist
+reachable DURING those sessions. Supervisor resolution below, per finding.
+
+================================================================
+THE TWO SEAT-CONFLICTS, RESOLVED BY THE CODE
+================================================================
+(1) PROBE LIVENESS — reviewers D + sweep (F-D5-A1/F-D5-02, both HIGH) vs
+researcher ("RSCH4-01 CLOSED"). THE REVIEWERS WIN, by the file:
+`private weak var arView` (SemanticOcclusionPass.swift:76). The test passes a
+TEMPORARY ARView with no strong owner; unless RealityKit self-retains a
+window-less view (undocumented), the weak ref nils at end of statement and all
+4000 toggles return at `guard changed, let arView` — the round-4 vacuity, back
+by another door, and NOTHING asserts otherwise. The researcher himself
+CORRECTED the record's "2.3 s" (real read window: 0.5 s) and noted the probe
+creates no SECOND slot accessor (an idle ARView gives TSan no render thread),
+so leg 1's power is lock-discipline only — his own narrowing supports the
+reviewers. FIX (test-target only, counsel-converged): hold the view in a
+test-scope local; `XCTAssertNotNil(view.renderCallbacks.postProcess)` after
+setCallbacksActive(true) and nil after (false) — the probe now PROVES its own
+coverage (also retires F-R5-07); `withExtendedLifetime` around the join;
+re-run leg 1 on the new SHA.
+(2) LEG-3 WORDING — sweep F-D5-01 (HIGH) vs researcher ("RSCH4-04 CONFIRMED").
+THE REVIEWER WINS, by the file's own header: encode() acquires SemanticFeed.lock
+(:298) and MidFieldDepthFeed.lock (:323) while holding stateLock, and
+SemanticOcclusionPass.swift:68-69 states the real invariant verbatim. The
+round-5 restatement ("no in-app lock acquired while stateLock held") is FALSE
+and would misdirect a maintainer into re-introducing the RENDER-4 stall. FIX
+(one sentence): "stateLock is the OUTER lock of a strict two-level hierarchy:
+the only locks acquired while it is held are the leaf feed locks
+(SemanticFeed.lock, MidFieldDepthFeed.lock), which take no callouts and are
+never held while stateLock is acquired — no lock-order inversion is
+constructible."
+
+================================================================
+NEW FINDINGS — ROUND-6 SCOPE (supervisor-ranked)
+================================================================
+CODE (app target, ~10 lines total — changes the field SHA, deliberately):
+- F-D5-01(A) HIGH — the F-D4-SLIDER self-heal deletion. The HUD-hide tap and
+  fireworks-demo teardown remove the sliders mid-drag; SwiftUI never delivers
+  onEditingChanged(false); beginLiveEdit's increment LEAKS. Round 4's buggy
+  every-commit capture-clear was accidentally re-arming the system; round 5's
+  correct fix removed that self-heal, so a leaked counter now holds the
+  capture+freeze until the 30 s backstop — and a wrong-drop persist is
+  reachable in the field sessions themselves. FIX: one line —
+  `.onDisappear { manager.cancelLiveEdit() }` on adjustPanel (covers all four
+  teardown paths; a gesture whose control left the tree is by definition
+  abandoned).
+- F-D5-05 MEDIUM — TTFO false "0 ms" LOG LINE still emitted on failed-session
+  resume (the property re-arms, the metrics STREAM the debrief reads does
+  not). FIX: guard the latch + log on `!sessionFailed`; tag re-armed
+  measurements "TTFO (recovery)".
+- F-D5-HUD MEDIUM — the fps/p95/format HUD line is gated on
+  `timeToFirstObjectMs != nil`; round 5's re-arm added a third mid-session
+  nil path, so FT-28/31's "record the HUD line" instruction can go dark after
+  any cold restart. FIX: render the line whenever ANY part exists; TTFO
+  becomes one optional segment.
+- F-D5-03(sweep) MEDIUM — liveEditingDrops maintenance still inside applyEdit:
+  an authored commit removes the VPS never-fight-the-finger guard while a
+  finger is down (stationary hold = no re-inserting ticks). FIX (~4 lines):
+  insert on !commit / remove only when remainingHeld == 0, in
+  adjustNearestDrop; authored callers never touch it.
+TESTS (test target):
+- F-D5-A1/F-D5-02 probe repair as above + leg-1 re-run with the CORRECTED env
+  prefix (F-R5-06: `TEST_RUNNER_TSAN_OPTIONS=halt_on_error=1` — the round-5
+  run's SIMCTL_CHILD_ prefix probably never delivered; the grep-zero evidence
+  stands, the recorded configuration claim was wrong).
+FIELDTESTS.md (the researcher's two BLOCKING items):
+- F-R5-02 — a Wave D section carrying the full S1–S4 protocol: recorder ON for
+  every occlusion-bearing pass / OFF during FT-28's fps window and FT-31's
+  hour; p95 ≤ 40 ms added to FT-28's PASS line; FT-31 at 70 min with the
+  toggle-hammering pattern; the ADR-035 install-once heat re-measure; the
+  subsystem-scoped log-capture command; iOS Settings → Developer → Hang
+  Detection ON during S3/S4 (the free substitute for MXHangDiagnostic, which
+  does NOT deliver in Xcode-installed builds — F-R5-05).
+- F-R5-01 — FT-41 · TWO-THUMB EDIT, non-optional alongside FT-40/FT-3 (the
+  round-5 blocker fix has zero guard on its wiring; RSCH4-06 now counts three
+  unguarded blocker fixes). Also fold in F-D5-06: an FT-40 run that never
+  snaps is NOT a pass — "incomplete (declined ×N)", never "✓-decline".
+- F-D5-TOGGLE(b) — amend the FT-28 dwell assertion: the 10 s floor applies
+  only to tier-path toggles; interruption/suspend/failure detaches are
+  legitimate immediate detaches (or carry a reason: label in the log, (a)).
+RECORD (DECISIONS.md, with the closing ADR):
+- leg-3 two-level-hierarchy sentence (above); leg-1 narrowed (0.5 s window,
+  lock-discipline power only, no second slot accessor); leg-5 re-framed
+  floor-not-census with the exact count command + config (F-R5-03/04);
+  MetricKit delivery + denominator sentences (F-R5-05); TEST_RUNNER_
+  correction (F-R5-06); TTFO epoch disclosure (F-R5-10).
+WAVE E RESIDUALS: F-D5-03(A) caller-context seam (GestureBinding value type —
+asked twice now, deliberately deferred to keep rounds surgical); F-R5-07
+probe self-assertion (retired early if the round-6 probe fix lands);
+F-R5-08 dead conjunct labelled load-bearing-adjacent; F-R5-09 log-category
+drift note; F-D5-DIAGFILE filename-collision + silent-write nits;
+F-D5-TOGGLE(a) reason-labelled toggles if (b) proves noisy in the field.
+
+================================================================
+RESEARCHER'S EXIT RULING (verbatim spine, supervisor-annotated)
+================================================================
+Which bar each session measures: S1 desk gate = NO bar (precondition only;
+legs 1+5 + 149/149 — re-run cheap on the round-6 SHA). S2 device sanitizers =
+NO bar (correctness only; leg 2). S3 = bar 2 (≥30 fps with p95 ≤ 40 ms teeth)
++ bar 3 at 10 min + scrubbed video toward bar 4 + the three non-optional
+regression cases FT-40/FT-3/FT-41. S4 = bar 3 across the hour + bar 4 from ten
+scrubbed resume observations + leg 4. Bar 1 (99.5% crash-free) is measured by
+NO session — post-TestFlight fleet statistic, MUST NOT appear as met in the
+closing ADR. Still unmeasurable by construction: the renderCallbacks
+slot-assignment race ("mitigated, not proven"; dischargeable via the FB
+report once the owner files FEEDBACK-rendercallbacks.md — still unfiled;
+DECISIONS still reads "FB number goes here").
+
+================================================================
+ROUND-6 DEFINITION OF DONE (proposed to the owner)
+================================================================
+1. Four app-code fixes above (~10 lines) + probe repair + FT-41 + Wave D
+   FIELDTESTS section + FT-40/toggle wording + record corrections.
+2. Re-run on the round-6 SHA: device suite green; leg 1 with
+   TEST_RUNNER_TSAN_OPTIONS=halt_on_error=1, evidence = grep-zero AND the
+   probe's own slot assertions passing; leg-5 recount with the pinned command.
+3. Counsel round 6 = closure audit of exactly this list (converge-don't-pad).
+4. Then the owner's field sessions S2–S4 on the round-6 SHA, recorder rule in
+   force, FT-40 + FT-3 + FT-41 non-optional. Wave D closes on the researcher's
+   round-5 closure list with bar 1 explicitly re-scoped.
+
+SUPERVISOR'S NOTE: the round-5 researcher ruled "no round 6" — his own seat's
+findings (F-R5-01/02) plus reviewer A's HIGH and the two instrument-artifact
+mediums are why I am overruling that one line: three of the items corrupt or
+blind the field sessions' own evidence, and one is the wave's signature harm
+reachable during them. Ten lines of code is cheaper than one contaminated
+70-minute session.
