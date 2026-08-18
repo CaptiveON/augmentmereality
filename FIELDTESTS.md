@@ -238,4 +238,46 @@ Use a **geo drop you created yourself** (Create flow → placed outdoors) — NO
 - **Decline**: a banner reading "Couldn't find the ground here — move closer and try again" appears and the drop does NOT move → that is a designed PASS-decline (LiDAR found no surface); reposition with clear ground in view and try once more.
 - **Silence** — no movement AND no banner — **is the FAIL**. That is the round-3 dead-button CRITICAL; report it as FT-40 ✗(a) immediately.
 **PASS, all five:** (a) the content drops to the measured surface within a frame; (b) the height readout changes after syncSliders; (c) no persist-error toast; (d) after force-quit and relaunch the drop is STILL on the ground (proves `library.update(persist: true)` ran); (e) staying in-session five more minutes, the drop never moves again on its own (the orphaned-groundLock symptom).
-Report as "FT-40: ✓/✗ + which assertion failed" (or "✓-decline" if it declined and then snapped on retry).
+**A run that never produces a snap is NOT a pass** (round 6, counsel F-D5-06) — FT-40 is complete only when assertions (a)–(e) have been evaluated on an actual snap. Report a run that only ever declined as "FT-40: incomplete (declined ×N)" and repeat on a surface with clear ground (indoors on a hard floor is acceptable). Reserve "✓-decline" for exactly one thing: it declined, you repositioned, it snapped, and all five assertions then passed.
+Report as "FT-40: ✓ / ✓-decline / ✗(letter) / incomplete (declined ×N)".
+
+## FT-41 · TWO-THUMB EDIT (Wave D round 5 — NON-OPTIONAL, alongside FT-40 and FT-3)
+This is the only guard on the round-5 blocker fix (the shared gesture capture surviving until the last finger lifts). No unit test constructs the manager, so if this regresses, only this case catches it.
+**Setup:** create TWO geo drops 3–5 m apart — message them "A" and "B" so you can tell them apart. Stand nearer A; the HUD title should read A.
+**Steps, in order, without rushing:**
+1. Press and HOLD the height slider with one thumb (do not release). Drag a little — A moves.
+2. With a SECOND finger, press and drag the size slider. Both fingers are now down.
+3. Release the FIRST thumb (height). Keep the second finger down and still.
+4. Walk two or three steps toward B — far enough that B would normally become the nearest drop — while STILL holding the size slider.
+5. Drag the size slider some more, then release it.
+**PASS, all four:** (a) the size change landed on A — walk to both drops and look; (b) B never moved or resized; (c) the HUD title stayed "A" for the entire interaction — it must NOT flip to B while any finger was down; (d) after force-quit and relaunch, A keeps both edits and B is untouched.
+**Variant (e), the authored interleave:** hold the height slider on A with one thumb, tap "Place on ground" with another finger, then keep dragging the held slider. PASS: the held slider still edits A afterwards (no dead slider, no jump to another drop), and the tap's snap took effect until your drag overrode the height.
+**FAIL signatures:** the size jumping to B (wrong-drop edit — report ✗(a/b) with a video if possible); the HUD title flipping mid-hold (✗(c)); edits vanishing on relaunch (✗(d)).
+Report as "FT-41: ✓/✗(letter)".
+
+---
+
+# WAVE D FIELD PROTOCOL — the four sessions (round 6; run ALL on the round-6 build)
+The wave's four bars: (1) 99.5% crash-free — **measured by NO session**; it is a post-TestFlight fleet statistic and must not be claimed from these runs. (2) Sustained ≥30 fps — **p95 ≤ 40 ms is the teeth**; a 2-second mean alone cannot fail. (3) No thermal `.serious` at 10 minutes (and across the hour). (4) Zero draw-over-person frames — measurable ONLY from scrubbed video, never live.
+
+**Standing rules for every session:**
+- **Screen recorder** (Control Center → Screen Recording): ON for every occlusion-bearing pass (anything with a person in frame or content behind real objects) so bar 4 can be scrubbed frame by frame afterwards; OFF during FT-28's 10-minute fps window and FT-31's hour (recording costs fps and heat and would contaminate bars 2–3).
+- **Hang Detection**: Settings → Developer → Hang Detection → ON, threshold 250 ms, for S3 and S4. This is the substitute for MetricKit's hang instrument, which does not deliver in Xcode-installed builds. Report every on-screen hang banner with what you were doing.
+- **Log capture**: after each session, with the phone connected to the Mac, run:
+  `sudo log collect --device-name "Muhammad's iPhone" --last 2h --output ~/Desktop/ft-sN.logarchive`
+  and hand the archive over. (The debrief filters on subsystem `com.adnan.augmentmereality` and greps: `TTFO`, `Battery `, `Perception recon=`, `Semantic pass attached`, `Semantic pass detached`, `PersonSentinel buffer hold`, `MetricKit diagnostics`.)
+- **Dwell-floor assertion, corrected scope** (round 6, counsel F-D5-TOGGLE): the "no two toggles within 10 s" rule applies only to TIER-path toggles during steady use. A detach at a call banner, Control Center pull, app switch, or tab-flip-past-grace is a designed immediate detach — do not count those pairs.
+
+**S1 · Desk gate — already executed by the supervisor; re-verified on the round-6 SHA.** Device suite green; simulator TSan grep-zero; strict-concurrency audit counted. Measures no bar; it is the precondition.
+
+**S2 · Device sanitizer walk (≈20 min, correctness only).** In Xcode: Product → Scheme → Edit Scheme → Run → Diagnostics → check Address Sanitizer + Undefined Behavior Sanitizer (leave Thread Sanitizer unchecked — it cannot run on device). Run from Xcode onto the phone. Walk 10–15 minutes of ordinary use: place, edit, snap, tab-flip, take a call, background and return, let a person walk through frame. **Ignore fps and heat entirely** — ASan costs 2–3× CPU and every performance number under it is meaningless. PASS: zero sanitizer reports in Xcode's console and no crash. Then uncheck both boxes, run once more for 2 minutes to confirm the app behaves normally unsanitized.
+**S3 · The measured pass (≈40 min).** On the plain (unsanitized) build, in this order:
+  1. FT-40 (recorder ON — this is an occlusion-adjacent pass).
+  2. FT-41 including variant (e) (recorder ON).
+  3. FT-3 tab flip ×5 (recorder ON) — also confirm in the later log debrief: no "Perception recon=" line within ~1 s of a >10 s return (the double-run signature).
+  4. FT-28: recorder OFF, camera on 10 minutes of engaged use. Record the HUD metrics line VERBATIM ("first object … fps … p95 … format") at t=0, 2, 5, 10 min — screenshots are fine. PASS: fps ≥ 30 throughout AND **p95 ≤ 40 ms** AND no thermal banner. NOTE: after any mid-session restart the "first object" segment may show a recovery number — the log line will say "TTFO (recovery)"; that number is NOT a Killer-#1 cold-start figure.
+  5. Touched-path re-runs, recorder ON where a person or occlusion is in frame: FT-9, FT-25, FT-27, FT-29, FT-34, FT-35, FT-36, FT-30.
+**S4 · The hour (≈80 min).** FT-31: mild day, 70 minutes of mixed use (walking, editing, idling, pocketing the phone, two deliberate call-banner interruptions, three tab flips past the grace window). Recorder OFF for the hour. Record the HUD line + battery % + warmth every 10 minutes. Then, recorder ON: ten deliberate resume observations (background the app or flip tabs, return, watch the first two seconds) — these are scrubbed frame-by-frame for bar 4. PASS: no thermal banner across the hour; no draw-over frame in any scrubbed resume; the log's attach/detach timeline shows the dwell floor holding on tier-path toggles.
+**ADR-035 heat re-measure (rides inside S4, no extra time):** the attach/detach timeline plus the 10-minute thermal/battery readings from the hour are the inputs; the supervisor computes the attached-time vs heat delta from the logarchive to decide whether install-once is now affordable (the recorded ADR-035 number is stale).
+
+**Wave D closes on:** S1 re-verified on the final SHA · S2 zero reports · S3 with FT-40/FT-41/FT-3 all ✓ and FT-28 at p95 ≤ 40 ms with no banner · S4 hour clean with zero draw-over frames across all scrubbed video · bar 1 explicitly re-scoped in the closing ADR (never claimed from these sessions). A failure on FT-40, FT-41, or FT-3 re-opens the wave regardless of every other number.

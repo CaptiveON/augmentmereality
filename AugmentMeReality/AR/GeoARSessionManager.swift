@@ -645,7 +645,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     func markCameraVisible() {
         cameraVisible = true
         cameraVisibleAt = Date()
-        if !placedHolders.isEmpty {
+        ttfoEpochIsRecovery = false
+        // Round 6 (counsel F-D5-05): a FAILED session cannot claim a 0 ms
+        // pre-warm — its pre-failure holders are about to be destroyed by the
+        // cold recovery run, and the false "0 ms" line previously landed in
+        // the exact metrics stream the field debrief reads (the flattering
+        // direction, the one a field run cannot detect).
+        if !placedHolders.isEmpty, !sessionFailed {
             timeToFirstObjectMs = 0
             metricsLog.log("TTFO: 0 ms (pre-warmed; content already placed)")
         } else {
@@ -980,6 +986,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // cannot detect. attach() clears it on entry; this is the twin.
         timeToFirstObjectMs = nil
         cameraVisibleAt = Date()
+        ttfoEpochIsRecovery = true
     }
 
     /// VPS resolved (or refined) a drop's exact pose: glide to it once, then track
@@ -2049,7 +2056,14 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             capture: editingDropID, held: gestureHeld, nearest: nearestDrop?.id
         ) else { return }
         editingDropID = id
-        if !commit { lastLiveEditTickAt = Date() }
+        if !commit {
+            lastLiveEditTickAt = Date()
+            // Round 6 (counsel F-D5-03): the never-fight-the-finger guard is
+            // GESTURE state and lives here, not in the mutation — an authored
+            // commit ("Place on ground" mid-drag) must not strip the VPS
+            // guard and the governor pin from under a still-held finger.
+            liveEditingDrops.insert(id)
+        }
         if commit {
             // Round 5 (counsel F-D4-01): commit bookkeeping is PURE and lives
             // in the BINDING half — the shared capture survives until the
@@ -2058,20 +2072,23 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             (heldGestures, editingDropID) = Self.commitBookkeeping(
                 heldGestures: heldGestures, capture: editingDropID, committed: id
             )
+            // Round 6 (counsel F-D5-03): the finger guard releases with the
+            // LAST finger, same rule as the capture.
+            if heldGestures == 0 { liveEditingDrops.remove(id) }
         }
         applyEdit(to: id, height: height, scale: scale, rotation: rotation, commit: commit)
     }
 
     /// Round 4 (counsel F-D3-01): the MUTATION, split from gesture binding —
     /// programmatic (authored) callers commit to an explicit target with no
-    /// gesture state read or written. Round 5 (counsel F-D4-01): that
-    /// contract is now actually TRUE — the round-4 body still cleared the
-    /// shared `editingDropID` capture in two places, so the first commit of
-    /// a two-thumb interaction (or an authored snap mid-drag) un-froze
-    /// `updateNearest` under a still-held finger. Capture teardown lives in
-    /// `adjustNearestDrop` via `commitBookkeeping`; the only gesture-adjacent
-    /// state touched here is `liveEditingDrops`, which is per-DROP render
-    /// state (governor pin + VPS never-fight-the-finger), not per-gesture.
+    /// gesture state read or written. Round 5 (counsel F-D4-01) made that
+    /// true for the capture; round 6 (counsel F-D5-03) finished it for the
+    /// finger guard — `liveEditingDrops` maintenance moved to the binding
+    /// half too (insert on tick, release with the LAST finger), so an
+    /// authored snap mid-drag can no longer strip the VPS
+    /// never-fight-the-finger guard from under a held thumb. This function
+    /// now touches NO gesture or finger state of any kind; a vanished
+    /// captured drop is handled at the removal site (`removePerDropState`).
     private func applyEdit(
         to id: UUID, height: Double? = nil, scale: Double? = nil,
         rotation: Double? = nil, commit: Bool
@@ -2083,10 +2100,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // (A vanished CAPTURED drop is handled by `removePerDropState`, which
         // clears the capture and zeroes the counter at the removal site.)
         guard let resolved = placedDrops[id] ?? roomDrops[id]
-            ?? demoDrops.first(where: { $0.id == id }) else {
-            liveEditingDrops.remove(id)
-            return
-        }
+            ?? demoDrops.first(where: { $0.id == id }) else { return }
         var drop = resolved
         let oldHeight = drop.heightAboveGround
         if let height { drop.heightAboveGround = height }
@@ -2095,10 +2109,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         placedDrops[id] = drop
         // An authored edit of a non-nearest target must not clobber nearest.
         if nearestDrop == nil || nearestDrop?.id == id { nearestDrop = drop }
-
-        if !commit {
-            liveEditingDrops.insert(id)
-        }
 
         if let holder = placedHolders[id] {
             if let height {
@@ -2149,7 +2159,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
 
         if commit {
-            liveEditingDrops.remove(id)
             if height != nil {
                 // A deliberate height choice overrides any previous ground lock.
                 groundLockBaseY[id] = nil
@@ -2356,13 +2365,23 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
     }
 
+    /// Round 6 (counsel F-D5-05/F-R5-10): a measurement epoch that began at
+    /// `resetPlacements` (mid-session cold restart, failed-session recovery)
+    /// is a RECOVERY number, not a Killer-#1 cold-start number — the field
+    /// debrief must be able to tell them apart in the metrics stream.
+    private var ttfoEpochIsRecovery = false
+
     /// Killer-#1 metric: measure, then claim (BRIEF bar: median ≤ 400 ms).
     private func recordTTFOIfNeeded() {
         if timeToFirstObjectMs == nil, !placedHolders.isEmpty,
            let reference = cameraVisibleAt ?? attachedAt {
             let ms = Int(Date().timeIntervalSince(reference) * 1000)
             timeToFirstObjectMs = ms
-            metricsLog.log("TTFO: \(ms) ms from camera visible to first rendered object")
+            if ttfoEpochIsRecovery {
+                metricsLog.log("TTFO (recovery): \(ms) ms from session restart to first rendered object")
+            } else {
+                metricsLog.log("TTFO: \(ms) ms from camera visible to first rendered object")
+            }
         }
     }
 

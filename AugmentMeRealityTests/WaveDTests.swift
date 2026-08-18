@@ -576,9 +576,22 @@ final class SemanticPassCrossThreadTests: XCTestCase {
             labelStructure: 3, personOcclusionEnabled: false, midDepthFeed: nil
         )
         // RSCH4-01 leg (2): the probe must EXECUTE the slot assignment the
-        // honest unknown is about — prepare(on:) gives setCallbacksActive a
-        // real ARView so the `guard changed, let arView` path runs through.
-        pass.prepare(on: ARView(frame: .zero))
+        // honest unknown is about. Round 6 (counsel F-D5-02): the pass holds
+        // the view WEAKLY — a temporary passed inline can be gone by the
+        // first toggle, silently reverting this probe to the round-4 vacuity
+        // — so the view is a test-scope strong local, and the probe PROVES
+        // its own coverage before the hammering starts (also F-R5-07: this
+        // assertion fails if prepare(on:) or the slot writes ever rot).
+        let view = ARView(frame: .zero)
+        pass.prepare(on: view)
+        pass.setCallbacksActive(true)
+        XCTAssertNotNil(
+            view.renderCallbacks.postProcess,
+            "the probe must actually execute the renderCallbacks slot assignment"
+        )
+        XCTAssertNotNil(view.renderCallbacks.prepareWithDevice)
+        pass.setCallbacksActive(false)
+        XCTAssertNil(view.renderCallbacks.postProcess, "detach must clear the slot")
         let started = DispatchSemaphore(value: 0)
         let group = DispatchGroup()
         group.enter()
@@ -600,7 +613,9 @@ final class SemanticPassCrossThreadTests: XCTestCase {
             reads += 1
             if pass.callbacksActive { observedActive += 1 }
         }
-        group.wait()
+        // F-D5-02: the view must outlive the toggler, or the weak ref nils
+        // mid-run and the remaining toggles exercise nothing.
+        withExtendedLifetime(view) { group.wait() }
         pass.setCallbacksActive(false)
         // The sanitizer is the real assertion; these prove the probe RAN
         // (reader iterated against a live toggler), not that it is safe.

@@ -289,6 +289,16 @@ private struct ARScreenContent: View {
             if manager.nearestDrop != nil, manager.renderedDropCount > 0, !demoing {
                 adjustPanel
                     .padding(.bottom, 8)
+                    // Round 6 (counsel F-D5-01): a gesture whose control left
+                    // the view tree is by definition abandoned — SwiftUI never
+                    // delivers onEditingChanged(false) when the panel is torn
+                    // down mid-drag (HUD-hide tap, demo start, drop removal),
+                    // so beginLiveEdit's counter LEAKED and held the capture +
+                    // nearest freeze until the 30 s backstop. Round 4's buggy
+                    // every-commit clear was accidentally healing this; the
+                    // round-5 fix removed the accident, so the leak needs its
+                    // real terminator. One site covers all teardown paths.
+                    .onDisappear { manager.cancelLiveEdit() }
             }
 
             if let drop = manager.nearestDrop,
@@ -453,10 +463,18 @@ private struct ARScreenContent: View {
                     .foregroundStyle(.cyan)
             }
 
-            if let ttfo = manager.timeToFirstObjectMs {
-                Text(metricsLine(ttfo: ttfo))
+            // Round 6 (counsel F-D5-HUD): the live metrics (fps/p95/format)
+            // are DECOUPLED from the one-shot TTFO — the round-5 re-arm nils
+            // timeToFirstObjectMs mid-session (resetPlacements), and gating
+            // the whole line on it blinded FT-28/31's "record the HUD line"
+            // instruction after any cold restart. TTFO is one optional
+            // segment; the tint stays keyed on it when present.
+            if let line = metricsLine() {
+                Text(line)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(ttfo <= 400 ? .mint : .yellow)
+                    .foregroundStyle(
+                        (manager.timeToFirstObjectMs ?? 0) <= 400 ? .mint : .yellow
+                    )
             }
 
             if let correction = manager.vpsCorrectionCm, correction > 0 {
@@ -648,10 +666,12 @@ private struct ARScreenContent: View {
             .background(color.opacity(0.7), in: Capsule())
     }
 
-    private func metricsLine(ttfo: Int) -> String {
-        var parts = ["first object: \(ttfo) ms"]
+    private func metricsLine() -> String? {
+        var parts: [String] = []
+        if let ttfo = manager.timeToFirstObjectMs { parts.append("first object: \(ttfo) ms") }
         if let fps = manager.renderFPS { parts.append("\(fps) fps") }
         if let p95 = manager.frameP95Ms { parts.append("p95 \(p95) ms") }
+        guard !parts.isEmpty else { return nil }
         parts.append(manager.videoFormatDescription) // ADR-034 heat evidence
         return parts.joined(separator: " · ")
     }
