@@ -232,6 +232,10 @@ model codability/color fallbacks, store corruption-quarantine, and geo-radius fi
 **v0.8: 21/21 passed on Muhammad's iPhone (2026-07-07).**
 
 ## FT-40 · GROUND-SNAP (Wave D round 4 — the case whose absence let a CRITICAL live a full round)
-Place a drop, raise it with the height slider and release, then tap **"Place on ground"** once with no slider touched.
+Use a **geo drop you created yourself** (Create flow → placed outdoors) — NOT the demo drop and NOT a room drop: only the geo drop exercises the persist path assertion (d) exists to prove. Stand where the camera can see real ground (pavement, floor), place the drop, raise it with the height slider and RELEASE the slider, then tap **"Place on ground"** once with no slider touched.
+**Two distinct outcomes — know which you saw (round 5, counsel F-D4-FT40):**
+- **Snap**: the content moves to the surface → run assertions (a)–(e).
+- **Decline**: a banner reading "Couldn't find the ground here — move closer and try again" appears and the drop does NOT move → that is a designed PASS-decline (LiDAR found no surface); reposition with clear ground in view and try once more.
+- **Silence** — no movement AND no banner — **is the FAIL**. That is the round-3 dead-button CRITICAL; report it as FT-40 ✗(a) immediately.
 **PASS, all five:** (a) the content drops to the measured surface within a frame; (b) the height readout changes after syncSliders; (c) no persist-error toast; (d) after force-quit and relaunch the drop is STILL on the ground (proves `library.update(persist: true)` ran); (e) staying in-session five more minutes, the drop never moves again on its own (the orphaned-groundLock symptom).
-Report as "FT-40: ✓/✗ + which assertion failed".
+Report as "FT-40: ✓/✗ + which assertion failed" (or "✓-decline" if it declined and then snapped on retry).

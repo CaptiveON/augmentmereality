@@ -1,4 +1,5 @@
 import CoreVideo
+import RealityKit
 import XCTest
 @testable import AugmentMeReality
 
@@ -459,98 +460,188 @@ final class CallerClockTests: XCTestCase {
 /// escapes were correct pure functions evaluated against wrong caller state.
 final class Round4BindingTests: XCTestCase {
     func testEditTargetBindsInBothDirections() {
-        let authored = UUID()
         let captured = UUID()
         let nearest = UUID()
-        // An authored edit binds with NO finger down and overrides everything
-        // — the round-3 gate refused it, killing "Place on ground".
-        XCTAssertEqual(
-            GeoARSessionManager.editTarget(
-                capture: nil, held: false, authored: authored, nearest: nearest
-            ), authored
-        )
-        XCTAssertEqual(
-            GeoARSessionManager.editTarget(
-                capture: captured, held: true, authored: authored, nearest: nearest
-            ), authored, "authored targets outrank a live gesture's capture"
-        )
         // A live capture is never overridden by a moved nearest.
         XCTAssertEqual(
             GeoARSessionManager.editTarget(
-                capture: captured, held: true, authored: nil, nearest: nearest
+                capture: captured, held: true, nearest: nearest
             ), captured
         )
-        // An unheld tick with no capture is still refused (STATE-L1 holds).
+        // …and survives the finger-up race window (capture set, held gone) —
+        // the 1.5 s expiry, not the binding, retires it.
+        XCTAssertEqual(
+            GeoARSessionManager.editTarget(
+                capture: captured, held: false, nearest: nearest
+            ), captured
+        )
+        // An unheld tick with no capture is refused (STATE-L1 holds).
         XCTAssertNil(GeoARSessionManager.editTarget(
-            capture: nil, held: false, authored: nil, nearest: nearest
+            capture: nil, held: false, nearest: nearest
         ))
         // Finger provably down, no capture yet → binds to nearest.
         XCTAssertEqual(
             GeoARSessionManager.editTarget(
-                capture: nil, held: true, authored: nil, nearest: nearest
+                capture: nil, held: true, nearest: nearest
             ), nearest
         )
+        // Round 5 (counsel F-D4-DEADPARAM): the round-4 `authored:` rows are
+        // gone WITH the parameter — they guarded a branch that was a literal
+        // nil at the one call site. Authored edits never bind: ground snap
+        // and relocate carry their explicit target straight to applyEdit.
     }
 
-    func testResumeAndTickReconstructionCanNeverDisagree() {
-        // F-D3-02: ONE predicate, both sides — asserted across the full 2^4
-        // fact table so the resume plan and the tick plan cannot drift.
-        for supports in [false, true] {
-            for recent in [false, true] {
-                for pedestrian in [false, true] {
-                    for critical in [false, true] {
-                        let direct = GeoARSessionManager.reconstructionDesired(
-                            supportsSceneReconstruction: supports,
-                            cameraRecentlyVisible: recent,
-                            pedestrian: pedestrian,
-                            thermalCritical: critical
-                        )
-                        let viaPlan = GeoARSessionManager.perceptionPlan(
-                            tierAboveIdle: true, fullTier: true,
-                            cameraVisible: recent, cameraRecentlyVisible: recent,
-                            pedestrian: pedestrian, windowModeActive: false,
-                            personLikely: false, contentInViewRecently: false,
-                            midFieldServiceable: false, thermalSerious: critical,
-                            thermalCritical: critical,
-                            supportsCustomPersonOcclusion: true,
-                            supportsSceneReconstruction: supports,
-                            supportsSceneDepth: true,
-                            midFieldEnabled: false
-                        ).reconstruction
-                        XCTAssertEqual(
-                            direct, viaPlan,
-                            "diverged at supports=\(supports) recent=\(recent) pedestrian=\(pedestrian) critical=\(critical)"
-                        )
-                    }
-                }
-            }
-        }
+    func testVisibilityTermTable() {
+        // Round 5 (counsel F-D4-04): the round-4 "2^4 equality" test was a
+        // tautology — perceptionPlan DELEGATES to reconstructionDesired, so
+        // it asserted f(x) == f(x) sixteen ways while the real divergence
+        // surface (this composition, then inlined at two call sites) went
+        // unpinned. The composition is now ONE definition consumed by both
+        // the tick plan and the resume plan — agreement by construction —
+        // and this table pins the term's own truth, caller-clock style.
+        let hideEdge = Date()
+        // Camera visible NOW: true regardless of how stale the hide stamp is.
+        XCTAssertTrue(GeoARSessionManager.visibilityTerm(
+            cameraVisible: true, now: hideEdge.addingTimeInterval(9999),
+            lastVisible: .distantPast
+        ))
+        // Hidden, within the grace (the pause moment itself + tick drift).
+        XCTAssertTrue(GeoARSessionManager.visibilityTerm(
+            cameraVisible: false,
+            now: hideEdge.addingTimeInterval(AppConfig.pauseGraceSeconds + 0.4),
+            lastVisible: hideEdge
+        ), "a tab flip inside the grace must not read as hidden")
+        // Hidden, past the grace: honestly released.
+        XCTAssertFalse(GeoARSessionManager.visibilityTerm(
+            cameraVisible: false,
+            now: hideEdge.addingTimeInterval(AppConfig.pauseGraceSeconds + 1.5),
+            lastVisible: hideEdge
+        ))
     }
 }
 
-/// Round 4 (field protocol Session 1c): the cross-thread toggle probe — under
-/// simulator TSan this is the race detector for the pass's lock discipline;
-/// on device it exercises the same paths without assertion on timing.
+/// Round 5 (counsel F-D4-01): the commit tail as a table — the capture (and
+/// with it the nearest freeze) survives until the LAST finger lifts.
+final class CommitBookkeepingTests: XCTestCase {
+    func testCaptureSurvivesUntilTheLastFingerLifts() {
+        let capture = UUID()
+        // Two thumbs down, first commit: decrement, capture SURVIVES — the
+        // round-4 form cleared it here, un-freezing nearest under the still-
+        // held second thumb (the STATE-L1 wrong-drop persist, resurrected).
+        let first = GeoARSessionManager.commitBookkeeping(
+            heldGestures: 2, capture: capture, committed: capture
+        )
+        XCTAssertEqual(first.remainingHeld, 1)
+        XCTAssertEqual(first.capture, capture, "capture must outlive the first commit")
+        // Second commit (last finger): capture clears, next drag re-captures.
+        let last = GeoARSessionManager.commitBookkeeping(
+            heldGestures: first.remainingHeld, capture: first.capture, committed: capture
+        )
+        XCTAssertEqual(last.remainingHeld, 0)
+        XCTAssertNil(last.capture)
+        // A commit of a DIFFERENT id never clears someone else's capture.
+        let foreign = GeoARSessionManager.commitBookkeeping(
+            heldGestures: 1, capture: capture, committed: UUID()
+        )
+        XCTAssertEqual(foreign.capture, capture)
+    }
+
+    func testHeldGestureCounterFloorsAtZero() {
+        // Round 3 verdict's hygiene bar: a stray commit with no held gesture
+        // (lost begin event) must not drive the count negative — a negative
+        // count masked by a later clamp would hide a real begin/end imbalance.
+        let stray = GeoARSessionManager.commitBookkeeping(
+            heldGestures: 0, capture: nil, committed: UUID()
+        )
+        XCTAssertEqual(stray.remainingHeld, 0)
+        XCTAssertNil(stray.capture)
+        // And the floor composes: floor then decrement again stays floored.
+        let again = GeoARSessionManager.commitBookkeeping(
+            heldGestures: stray.remainingHeld, capture: nil, committed: UUID()
+        )
+        XCTAssertEqual(again.remainingHeld, 0)
+    }
+}
+
+/// Round 4 (field protocol Session 1c), rebuilt round 5 (counsel RSCH4-01):
+/// under simulator TSan this is the race detector for the pass's lock
+/// discipline. The round-4 form never executed the renderCallbacks slot
+/// assignment (no ARView → early return), had no rendezvous (a run with zero
+/// concurrency was a legal outcome), and asserted a tautology.
+@MainActor
 final class SemanticPassCrossThreadTests: XCTestCase {
     func testCallbackToggleIsSafeUnderConcurrentReads() {
         let pass = SemanticOcclusionPass(
             feed: SemanticFeed(), labelBuilding: 1, labelTree: 2,
             labelStructure: 3, personOcclusionEnabled: false, midDepthFeed: nil
         )
+        // RSCH4-01 leg (2): the probe must EXECUTE the slot assignment the
+        // honest unknown is about — prepare(on:) gives setCallbacksActive a
+        // real ARView so the `guard changed, let arView` path runs through.
+        pass.prepare(on: ARView(frame: .zero))
+        let started = DispatchSemaphore(value: 0)
         let group = DispatchGroup()
         group.enter()
         DispatchQueue(label: "toggler").async {
-            for index in 0..<2000 {
+            started.signal()
+            for index in 0..<4000 {
                 pass.setCallbacksActive(index % 2 == 0)
             }
             group.leave()
         }
+        // RSCH4-01 leg (1): rendezvous, then a DEADLINE-bounded reader — the
+        // toggler is provably running before the first read, and the reads
+        // span real wall-clock instead of racing a fixed count to the end.
+        started.wait()
+        let deadline = Date().addingTimeInterval(0.5)
+        var reads = 0
         var observedActive = 0
-        for _ in 0..<2000 where pass.callbacksActive {
-            observedActive += 1
+        while Date() < deadline {
+            reads += 1
+            if pass.callbacksActive { observedActive += 1 }
         }
         group.wait()
-        // The assertion IS the sanitizer/lock safety — the count is incidental.
+        pass.setCallbacksActive(false)
+        // The sanitizer is the real assertion; these prove the probe RAN
+        // (reader iterated against a live toggler), not that it is safe.
+        XCTAssertGreaterThan(reads, 0)
         XCTAssertGreaterThanOrEqual(observedActive, 0)
+    }
+}
+
+/// Round 5 (counsel RSCH4-01): the sentinel's cross-queue state (busy /
+/// lastRunAt / lastSeenAt / throttle stamp) had never been executed under the
+/// sanitizer at all — leg 1 claimed coverage the suite did not have.
+final class PersonSentinelCrossQueueTests: XCTestCase {
+    func testTwoQueueFeedersAndAReaderAreLockSafe() throws {
+        let sentinel = PersonSentinel()
+        var created: CVPixelBuffer?
+        CVPixelBufferCreate(nil, 64, 64, kCVPixelFormatType_32BGRA, nil, &created)
+        let buffer = try XCTUnwrap(created, "CVPixelBufferCreate failed")
+        let started = DispatchSemaphore(value: 0)
+        let group = DispatchGroup()
+        for name in ["sentinel-feeder-a", "sentinel-feeder-b"] {
+            group.enter()
+            DispatchQueue(label: name).async {
+                started.signal()
+                // hz high enough that most calls exercise the busy/throttle
+                // lock dance rather than Vision itself — the LOCKS are the
+                // subject; the detector result on a blank frame is noise.
+                for _ in 0..<300 {
+                    sentinel.update(pixelBuffer: buffer, hz: 1000)
+                }
+                group.leave()
+            }
+        }
+        started.wait()
+        started.wait()
+        let deadline = Date().addingTimeInterval(0.3)
+        var reads = 0
+        while Date() < deadline {
+            _ = sentinel.personLikely
+            reads += 1
+        }
+        group.wait()
+        XCTAssertGreaterThan(reads, 0, "the reader must overlap the feeders")
     }
 }

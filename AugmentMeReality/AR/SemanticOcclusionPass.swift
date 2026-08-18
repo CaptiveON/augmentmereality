@@ -200,9 +200,18 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             arView.renderCallbacks.postProcess = { [weak self] context in
                 self?.encode(context: context)
             }
+            // Round 5 (counsel F-D4-DETACH): the RSCH-4 instrument lives at
+            // THIS choke point — the one place that covers all six
+            // attach/detach sites (round 4 wired it at two of them, so
+            // disarmSemanticMatte's four production paths — detach, suspend,
+            // interruption, session failure — were invisible to the FT-28/31
+            // toggle count). Emitted AFTER the slot assignment, so it can
+            // never claim a toggle the `guard changed, let arView` refused.
+            log.log("Semantic pass attached")
         } else {
             arView.renderCallbacks.prepareWithDevice = nil
             arView.renderCallbacks.postProcess = nil
+            log.log("Semantic pass detached")
         }
     }
 

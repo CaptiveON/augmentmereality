@@ -487,6 +487,19 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         now.timeIntervalSince(lastVisible) < AppConfig.pauseGraceSeconds + 1.0
     }
 
+    /// Round 5 (counsel F-D4-04): the visibility term the reconstruction
+    /// predicate consumes, as ONE definition used by BOTH call sites (the
+    /// tick's plan and the resume plan). The round-4 equality test compared
+    /// `reconstructionDesired` against a `perceptionPlan` that DELEGATES to
+    /// it — f(x) == f(x), a tautology — while the real divergence surface,
+    /// this composition, lived inline at two call sites. Agreement is now by
+    /// construction; the table test pins this term's own truth instead.
+    nonisolated static func visibilityTerm(
+        cameraVisible: Bool, now: Date, lastVisible: Date
+    ) -> Bool {
+        cameraVisible || cameraRecentlyVisible(now: now, lastVisible: lastVisible)
+    }
+
     /// Round 4 (counsel F-D3-02): THE reconstruction predicate — the single
     /// definition consumed by BOTH the tick's plan and the resume plan, so
     /// the two can never disagree (the round-3 resume conjunct was evaluated
@@ -501,16 +514,33 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             && pedestrian && !thermalCritical
     }
 
-    /// Round 4 (counsel F-D3-01): WHO an edit binds to, as a pure decision.
-    /// An AUTHORED edit (ground snap, relocate) binds to its explicit target
-    /// with no gesture involved; a gesture tick binds to its capture; a tick
-    /// with no capture binds to nearest ONLY while a finger is provably down.
+    /// Round 4 (counsel F-D3-01): WHO a GESTURE edit binds to, as a pure
+    /// decision — a tick binds to its capture; with no capture it binds to
+    /// nearest ONLY while a finger is provably down. AUTHORED edits (ground
+    /// snap, relocate) never bind here — they carry their explicit target
+    /// straight to `applyEdit`. (Round 5, counsel F-D4-DEADPARAM: the
+    /// round-4 `authored:` parameter was a literal nil at the one call site
+    /// — a dead branch whose table rows guarded dead code — so it is gone.)
     nonisolated static func editTarget(
-        capture: UUID?, held: Bool, authored: UUID?, nearest: UUID?
+        capture: UUID?, held: Bool, nearest: UUID?
     ) -> UUID? {
-        if let authored { return authored }
         if let capture { return capture }
         return held ? nearest : nil
+    }
+
+    /// Round 5 (counsel F-D4-01): the commit tail as a pure decision — one
+    /// finger up decrements the count; the SHARED capture (and with it the
+    /// nearest freeze at `updateNearest`) clears only when the LAST finger
+    /// lifts. Round 4 cleared it from inside the mutation on the FIRST
+    /// commit, un-freezing nearest under a still-held second thumb — the
+    /// STATE-L1 wrong-drop persist, resurrected by the counter that fixed
+    /// F-D3-04 (round 3's boolean had refused those ticks harmlessly).
+    nonisolated static func commitBookkeeping(
+        heldGestures: Int, capture: UUID?, committed id: UUID
+    ) -> (remainingHeld: Int, capture: UUID?) {
+        let remaining = max(0, heldGestures - 1)
+        let captureClears = remaining == 0 && capture == id
+        return (remaining, captureClears ? nil : capture)
     }
 
     /// Round 3 (counsel RENDER-LENS-1): the detach decision, re-derived so
@@ -570,8 +600,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         let resumePlan = (
             reconstruction: Self.reconstructionDesired(
                 supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),
-                cameraRecentlyVisible: cameraVisible
-                    || Self.cameraRecentlyVisible(now: Date(), lastVisible: lastCameraVisibleAt),
+                cameraRecentlyVisible: Self.visibilityTerm(
+                    cameraVisible: cameraVisible, now: Date(),
+                    lastVisible: lastCameraVisibleAt
+                ),
                 pedestrian: renderPath == .pedestrian,
                 thermalCritical: ProcessInfo.processInfo.thermalState == .critical
             ),
@@ -940,6 +972,14 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         vpsCorrectionTotals.removeAll()
         vpsCorrectionCm = nil
         renderedDropCount = 0
+        // Round 5 (counsel F-D4-TTFO): re-arm the Killer-#1 instrument WHERE
+        // PLACEMENTS DIE, so no restorer call ordering can decide it. The
+        // round-4 reorder let a failed-session resume latch TTFO = 0 from
+        // pre-failure holders that this very reset then destroyed — the
+        // metric failed in the flattering direction, the one a field run
+        // cannot detect. attach() clears it on entry; this is the twin.
+        timeToFirstObjectMs = nil
+        cameraVisibleAt = Date()
     }
 
     /// VPS resolved (or refined) a drop's exact pose: glide to it once, then track
@@ -1243,8 +1283,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             tierAboveIdle: tier > .idle,
             fullTier: tier == .full,
             cameraVisible: cameraVisible,
-            cameraRecentlyVisible: cameraVisible
-                || Self.cameraRecentlyVisible(now: Date(), lastVisible: lastCameraVisibleAt),
+            cameraRecentlyVisible: Self.visibilityTerm(
+                cameraVisible: cameraVisible, now: Date(),
+                lastVisible: lastCameraVisibleAt
+            ),
             pedestrian: renderPath == .pedestrian,
             windowModeActive: windowModeActive,
             personLikely: personSentinel.personLikely,
@@ -1316,10 +1358,12 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             passIdleSince = nil
             if !(semanticPass?.callbacksActive ?? false) {
                 passAttachedAt = Date()
-                // Round 4 (counsel RSCH-4): the dwell floor is MEASURABLE in
-                // the field log — FT-28/31 assert no two toggles within 10 s.
-                metricsLog.log("Semantic pass attached")
             }
+            // Round 5 (counsel F-D4-DETACH): the attach/detach instrument
+            // lives INSIDE setCallbacksActive's changed-region — the round-4
+            // logs here covered 2 of 6 detach sites (disarmSemanticMatte's
+            // four production paths were silent, so the FT-28/31 toggle
+            // count and dwell histogram undercounted every interruption).
             semanticPass?.setCallbacksActive(true)
         } else if let since = passIdleSince {
             if semanticPass?.callbacksActive == true,
@@ -1328,7 +1372,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
                    attachedFor: Date().timeIntervalSince(passAttachedAt)
                ) {
                 semanticPass?.setCallbacksActive(false)
-                metricsLog.log("Semantic pass detached")
             }
         } else {
             passIdleSince = Date()
@@ -2003,22 +2046,32 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // round-3 gate wrongly refused (the flagship "Place on ground" was a
         // silent no-op with an orphaned ground lock).
         guard let id = Self.editTarget(
-            capture: editingDropID, held: gestureHeld,
-            authored: nil, nearest: nearestDrop?.id
+            capture: editingDropID, held: gestureHeld, nearest: nearestDrop?.id
         ) else { return }
         editingDropID = id
         if !commit { lastLiveEditTickAt = Date() }
         if commit {
-            // Round 4 (counsel F-D3-03, hoisted above the resolve): a failed
-            // resolve must not leave the gesture count stuck.
-            heldGestures = max(0, heldGestures - 1)
+            // Round 5 (counsel F-D4-01): commit bookkeeping is PURE and lives
+            // in the BINDING half — the shared capture survives until the
+            // LAST finger lifts. It stays hoisted above the resolve (round 4,
+            // F-D3-03: a failed resolve must not strand the count).
+            (heldGestures, editingDropID) = Self.commitBookkeeping(
+                heldGestures: heldGestures, capture: editingDropID, committed: id
+            )
         }
         applyEdit(to: id, height: height, scale: scale, rotation: rotation, commit: commit)
     }
 
     /// Round 4 (counsel F-D3-01): the MUTATION, split from gesture binding —
     /// programmatic (authored) callers commit to an explicit target with no
-    /// gesture state read or written.
+    /// gesture state read or written. Round 5 (counsel F-D4-01): that
+    /// contract is now actually TRUE — the round-4 body still cleared the
+    /// shared `editingDropID` capture in two places, so the first commit of
+    /// a two-thumb interaction (or an authored snap mid-drag) un-froze
+    /// `updateNearest` under a still-held finger. Capture teardown lives in
+    /// `adjustNearestDrop` via `commitBookkeeping`; the only gesture-adjacent
+    /// state touched here is `liveEditingDrops`, which is per-DROP render
+    /// state (governor pin + VPS never-fight-the-finger), not per-gesture.
     private func applyEdit(
         to id: UUID, height: Double? = nil, scale: Double? = nil,
         rotation: Double? = nil, commit: Bool
@@ -2027,9 +2080,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // old `nearestDrop` fallback was invariantly non-nil while a capture
         // existed (updateNearest is frozen), which made the vanish-guard dead
         // code and resurrected deleted drops into the library and the cloud.
+        // (A vanished CAPTURED drop is handled by `removePerDropState`, which
+        // clears the capture and zeroes the counter at the removal site.)
         guard let resolved = placedDrops[id] ?? roomDrops[id]
             ?? demoDrops.first(where: { $0.id == id }) else {
-            if editingDropID == id { editingDropID = nil }
             liveEditingDrops.remove(id)
             return
         }
@@ -2096,7 +2150,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
         if commit {
             liveEditingDrops.remove(id)
-            if editingDropID == id { editingDropID = nil } // gesture over; next drag re-captures
             if height != nil {
                 // A deliberate height choice overrides any previous ground lock.
                 groundLockBaseY[id] = nil

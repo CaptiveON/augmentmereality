@@ -16,6 +16,11 @@ struct AugmentMeRealityApp: App {
             FirebaseApp.configure()
         }
         _dropLibrary = StateObject(wrappedValue: DropLibrary())
+        // Round 5 (counsel RSCH4-02): register at launch — MetricKit delivers
+        // a pending crash/hang diagnostic on the NEXT launch, so a subscriber
+        // that registers late (or conditionally) drops the very payloads the
+        // 99.5% bar needs.
+        CrashDiagnostics.shared.start()
     }
 
     var body: some Scene {
