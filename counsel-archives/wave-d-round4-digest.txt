@@ -1,0 +1,184 @@
+WAVE D — COUNSEL ROUND 4 DIGEST (2026-08-18, run wf_def082e6-21d, 5× Opus, 550k tokens, 167 tool uses)
+Build under audit: 6d50ca4. Full verdicts: wave-d-round4-verdict.json.
+
+================================================================
+HEADLINE
+================================================================
+Both round-3 blockers are CLOSED AT MECHANISM LEVEL — unanimous, traced line by line:
+- F-D3-01 "Place on ground": snapNearestDropToGround → applyEdit(:2186) mutates,
+  persists (library.update persist:true), re-seats the disc, sets the ground lock
+  AFTER applyEdit's manual-override clear, updates the HUD for syncSliders. Every
+  link of tap-does-nothing → moves-by-itself → reverts-on-relaunch is dead.
+  No-surface decline correctly routed non-critical and cannot evict a data-loss toast.
+- F-D3-02 resume ordering: markCameraVisible precedes startIfNeeded in BOTH
+  restorers; resume visibility term TRUE on every reachable resume; one shared
+  reconstructionDesired predicate feeds both resume plan and tick plan. No new
+  ordering hazard from the reorder (visibility-mark-before-attach is benign).
+
+BUT: ship verdict NOT-this-build. One unanimous HIGH code defect (introduced by
+round 4 itself — the fourth consecutive round whose fix seeded the next blocker),
+plus three HIGH process findings from the researcher against the RSCH-1 amendment.
+
+================================================================
+F-D4-01 (HIGH, unanimous — reviewers A, B-lens, C): THE CAPTURE TEARDOWN
+================================================================
+applyEdit's commit tail (`if editingDropID == id { editingDropID = nil }` :2099,
+twin at :2032) ignores heldGestures and runs on the AUTHORED path too — directly
+contradicting applyEdit's own doc contract ("no gesture state read or written").
+Round 3's boolean made a surviving second gesture's ticks REFUSED (dead slider,
+safe). Round 4's counter makes them ACCEPTED: first commit of a two-thumb
+interaction (or a "Place on ground" tap mid-drag — the button sits directly under
+the sliders) nils the shared capture while heldGestures > 0, updateNearest's
+freeze (:1655) lifts on the next 400 ms tick, nearest flips, and the still-live
+gesture's next tick takes editTarget's `held ? nearest : nil` branch and re-binds
+to a DIFFERENT drop → wrong-drop live edit PERSISTED to disk and Firestore.
+The exact STATE-L1 harm round 3 killed, resurrected by the counter that fixed
+F-D3-04. Also drops the VPS "never fight the finger" guard mid-gesture.
+
+FIX (counsel-converged, ~5 lines): finish the split the round was named for —
+take ALL gesture bookkeeping out of the mutation half. Delete the editingDropID
+writes from applyEdit (:2032, :2099); in adjustNearestDrop's commit block:
+`if commit { heldGestures = max(0, heldGestures-1);
+  if heldGestures == 0, editingDropID == id { editingDropID = nil } }`.
+Authored path (snap) touches no gesture state — capture clears only when the
+LAST finger lifts. liveEditingDrops insert/remove stays in applyEdit (per-drop
+render state, not per-gesture).
+
+TEST (counsel-designed, caller-context): construct the REAL GeoARSessionManager
+with a recording stub DropLibrary + driveable location double, two drops X
+nearest then Y; beginLiveEdit ×2; commit gesture A; flip nearest to Y; pump one
+tick; commit gesture B with rotation. Assert: Y NEVER received an update, X got
+both edits, capture cleared only after the second commit. Requires the seam the
+counsel demands anyway (see F-D4-CTX below).
+
+================================================================
+RESEARCHER: RSCH-1 AMENDMENT — CORE CONFIRMED, FOUR REPAIRS ORDERED
+================================================================
+CONFIRMED from primary sources: TSan genuinely cannot run on physical iOS
+(Xcode 26.6 clang-21 ships tsan_iossim/_osx/_tvossim/_watchossim/_xros/_xrossim,
+NO libclang_rt.tsan_ios_dynamic.dylib; Apple docs concur) — voiding the device-
+TSan exit condition was correct and overdue. "Mitigated, not proven" is the right
+epistemic status for renderCallbacks; NO public synchronization point exists
+(ARView.RenderCallbacks docs give no threading contract; session.pause() is not
+quiescence — the app's own :2498 comment proves it). ASan/UBSan/Guard-Malloc on
+device are real. -34018 correctly diagnosed. 17.x-sim dyld abort mechanism
+plausible (runtime/toolchain mismatch), generation boundary unverifiable.
+
+RSCH4-01 (HIGH): Leg 1 is credited with coverage it does not have. The
+cross-thread probe builds the pass WITHOUT prepare(on:) → arView nil → the
+renderCallbacks assignment (:196-206) — the exact statement the honest unknown
+is about — NEVER RUNS under TSan. Its only assertion is a tautology
+(count >= 0). No rendezvous: the reader can finish before the toggler starts.
+PersonSentinel is never instantiated by any test. FIX (~30 lines): semaphore
+rendezvous + deadline-bounded reader; pass.prepare(on: ARView(frame:.zero));
+add a PersonSentinel two-queue probe.
+
+RSCH4-02 (HIGH): The amendment cites "field crash telemetry" that DOES NOT EXIST
+in the build (no Crashlytics product linked, no MetricKit anywhere; DECISIONS:713
+already says the bar is "currently unmeasurable" — the record contradicts itself
+489 lines apart). FIX: land MetricKit (~30 lines, first-party, no new package):
+MXMetricManagerSubscriber; MXCrashDiagnostic + MXHangDiagnostic — the hang
+diagnostic is the one instrument that would catch a main actor blocked behind
+stateLock, which renderFPS's 2-second mean smears away.
+
+RSCH4-03 (HIGH): The amendment voided the unexecutable half of the round-1 exit
+condition and SILENTLY DROPPED THE EXECUTABLE HALF: SWIFT_STRICT_CONCURRENCY=
+complete (prescribed by wave-d-round1 AND wave-c-round3). Project is Swift 5 /
+minimal everywhere. This is the only leg that is static/exhaustive rather than
+sample-based. FIX: add LEG 5 — warning-only build with
+SWIFT_STRICT_CONCURRENCY=complete, record the diagnostic count, triage only
+SemanticOcclusionPass/PersonSentinel/GeoARSessionManager/DropStore hits; rest
+rides the Wave E Swift-6 debt.
+
+RSCH4-04 (MEDIUM): Leg 3's wording is falsified by the file it certifies —
+stateLock IS held across CVMetalTextureCacheFlush and the CPU-side encode.
+Restate as: "no in-app lock is acquired while stateLock is held" (true, and the
+actual deadlock-freedom argument).
+RSCH4-05 (MEDIUM): Bar 4 (zero draw-over) is in FRAMES; a live operator cannot
+see a 1-3 frame (33-100 ms) hole. FIX (free): screen-record every occlusion-
+bearing pass and scrub; recorder OFF during FT-28 fps window and FT-31 hour.
+RSCH4-07 (LOW): pin build SHA + OS on the leg-1 evidence line; correct the
+"arm64e" clause (true claim is narrower: no iOS-device runtime ships).
+
+================================================================
+OTHER FINDINGS (MEDIUM/LOW)
+================================================================
+F-D4-TAUT (MED, reviewers B+C): testResumeAndTickReconstructionCanNeverDisagree
+is a tautology — since round 4, perceptionPlan DELEGATES to reconstructionDesired,
+so the 2^4 table asserts f(x)==f(x). Fix: assert the resume-plan COMPOSITION
+(cameraVisible || cameraRecentlyVisible(...)) path equals the tick path at the
+call-site level, or drive resumeSession itself once the seam exists.
+F-D4-TTFO (MED, reviewer C): the reorder corrupts the Killer-#1 TTFO instrument:
+on a failed-session warm resume, markCameraVisible latches timeToFirstObjectMs
+from a stale epoch (reads as 0/instant). Guard the latch on session-really-ran.
+F-D4-DETACH (MED, reviewer C): "Semantic pass detached" log wired at 1 of 6
+detach sites (disarmSemanticMatte et al. silent). Move the log INTO
+setCallbacksActive(false)'s choke point (or log at every site).
+F-D4-SLIDER (MED, gesture lens): HUD-hide tap and fireworks-demo teardown never
+deliver onEditingChanged(false) — 30 s of pinned .full until the backstop fires.
+Residual-grade: backstop bounds it; note for Wave E (cancel gestures on HUD hide).
+F-D4-FT40 (MED, reviewer C): FT-40 doesn't tell the tester which drop kind to
+use and can't distinguish the dead-button CRITICAL from the designed no-surface
+decline. Fix: name the drop kind + add "decline banner counts as PASS-decline,
+silence = FAIL" wording.
+F-D4-DEADPARAM (MED, reviewer A): editTarget's authored: param is literal nil at
+its one call site — dead branch; three of five table rows guard dead code.
+Either wire applyEdit's resolution THROUGH editTarget(authored: id) or drop the
+param and its rows.
+RSCH4-06 (MED): FT-40 and FT-3 are the ONLY guards on the two closed blockers —
+no test constructs ARSessionHolder or GeoARSessionManager. Neither field case is
+optional; failure on either re-opens the wave.
+F-D4-CTX (MED, unanimous undertone): five caller-context fixes shipped, zero
+caller-context tests. The counsel's demanded seam: extract the gesture state
+machine as a value type (GestureBinding: begin/tick/commit/authoredCommit) OR
+make the manager constructible with stubs. Round-5 candidate, Wave E acceptable
+if round 5 stays surgical.
+LOW: resumePlan's cameraVisible disjunct dead on both restorer paths post-
+reorder (keep — it documents the invariant); nearestDrop==nil clobber-guard
+disjunct cosmetic (distance line hidden until freeze lifts).
+
+Counter/hygiene verdicts (gesture lens): heldGestures five sites COMPLETE,
+provably non-negative, cannot latch (30 s backstop + min(+1,4) drains);
+round-1 heat blocker stays dead; removePerDropState zeroing closes a real
+round-3 wrong-drop hole. CallerClockTests non-vacuous for gestureAbandoned and
+grace-vs-pause; VACUOUS as a guard on the round-4 counter semantics.
+
+SUPERVISOR'S NOTE (on the record): post-suite crash in the lingering TSan test
+host (iOS 26.5 sim, 00:47:21, 68 s AFTER suite completion): SIGABRT via
+__cxa_pure_virtual inside Apple's libusd_ms.dylib under the TSan runtime.
+Not a test failure, not a race report, not field-reachable (real iOS termination
+is SIGKILL — no C++ teardown races on device). Filed here so the "sim crashed"
+observation is never mistaken for a suite failure. Earlier 17.2-sim abort was
+dyld failing to LOAD the TSan runtime — tooling generation mismatch, use a
+current-OS simulator (recorded in the amendment).
+
+================================================================
+SHIP VERDICT: NOT-this-build. ROUND 5 = surgical, then FIELD on the round-5 build.
+================================================================
+Round-5 scope (counsel-converged, ~2 h desk):
+CODE (small): F-D4-01 capture-teardown fix (~5 lines); TTFO latch guard;
+  detach log into the choke point; MetricKit subscriber (~30 lines).
+TESTS: de-tautologize the 2^4 resume test; cross-thread probe rendezvous +
+  prepare(on:) + deadline reader; PersonSentinel two-queue probe;
+  testHeldGestureCounterFloorsAtZero (restores the 147 target);
+  editTarget dead-param decision (wire or drop).
+RECORD: leg-1 coverage claim corrected; "field crash telemetry" struck/re-scoped
+  (99.5% = post-TestFlight fleet statistic, MetricKit is the mechanism that will
+  eventually sign it); leg-3 restated; LEG 5 added (strict-concurrency static
+  audit) + its diagnostic count recorded; arm64e clause corrected; SHA+OS pinned;
+  FB filed against RealityKit renderCallbacks threading contract, FB number in
+  the honest-unknown line; ADR-035 heat re-measure named as the install-once
+  decision input.
+FT-40: drop-kind + decline-vs-dead wording.
+RE-RUN: leg 1 on the round-5 SHA with TSAN_OPTIONS=halt_on_error=1, evidence =
+  `grep -c 'ThreadSanitizer:' == 0`; leg 5 count.
+THEN the four field sessions, ALL on the round-5 build, screen recorder ON for
+every occlusion pass (off during FT-28 fps window + FT-31 hour):
+  S1 desk gate (done-equivalent, re-run on round-5 SHA) · S2 device
+  ASan/UBSan/MTC correctness-only (no perf numbers valid under 2-3x CPU) ·
+  S3 = FT-28 fps (p95 ≤ 40 ms is the sustained bar's teeth) + FT-40 + FT-3 +
+  touched paths · S4 = FT-31 70-min + ten resume observations scrubbed on video.
+Wave D closes on: 147/147 green · leg-1 grep-zero · leg-5 triaged · S2 zero
+reports · FT-28 p95 ≤ 40 ms, no thermal banner · FT-31 hour clean · FT-40 five
+assertions · zero draw-over frames on scrubbed video · crash bar EXPLICITLY
+re-scoped in the closing ADR line. FT-40 and FT-3 are non-optional (RSCH4-06).
