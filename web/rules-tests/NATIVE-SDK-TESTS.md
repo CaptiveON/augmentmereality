@@ -57,12 +57,28 @@ creation, or any production endpoint. It validates SDK semantics and the helper;
 the normal rules suite still owns actual authorization policy. Review the
 `.xcresult` and logs: a skipped/unexecuted native test is not a passing regression.
 
+Before launching `xcodebuild`, the harness verifies that the database itself is
+ready by completing an emulator REST write/read/delete round trip and checking
+the returned document name and marker. This uses a 60-second monotonic budget
+and at most 15 seconds per backend request. Transient retries reuse the same
+synthetic document ID and identical payload; malformed responses fail at once.
+A failed warm-up exits before tests launch and never counts as an exercised
+native RPC gate. The wrapper runs the Firebase CLI from the artifact directory
+so emulator diagnostics are retained there, with `DEBUG` unset.
+
 The initial simulator-to-fixture readiness request has a separate 30-second
 monotonic setup budget, with at most five seconds per request and retries only
-for transient transport errors. A wrong fixture/project response fails at once.
+for transient transport errors. A wrong fixture/project response or missing
+backend-ready marker fails at once. Other fixture control requests have a
+30-second timeout; seed writes use a single attempt with a 20-second backend
+abort, without blindly retrying a potentially acknowledged mutation.
 Attempt and received-request counts distinguish client startup from an absent
-server. Actual SDK deadlines and assertions remain unchanged, including the
-0.2-second unresponsive-read deadline and its two-second completion assertion.
+server; each control/backend operation logs receipt, status, and elapsed time.
+Actual SDK deadlines and assertions remain unchanged, including the 0.2-second
+unresponsive-read deadline and its two-second completion assertion.
 To force a first-request timeout and verify recovery locally, run with
 `AMR_NATIVE_READY_DELAY_MS=6000`; only the first `/ready` reply is delayed. The
 native test and both RPC gates must still execute and pass.
+To exercise a slow first seed, use `AMR_NATIVE_SEED_DELAY_MS=6000`; only that
+seed is delayed, and a passing native run must still have exactly three seed
+requests, proving that setup recovery did not duplicate the mutations.

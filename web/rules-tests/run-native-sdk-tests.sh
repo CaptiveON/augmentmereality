@@ -72,7 +72,11 @@ amr_child+=(test-without-building)
 # emulators:exec accepts one shell command. Bash %q safely quotes every argument,
 # including spaces/metacharacters in a user's workspace or artifact directory.
 printf -v amr_quoted_child '%q ' "${amr_child[@]}"
-env -u DEBUG firebase --config "$amr_repo/web/rules-tests/native-sdk.firebase.json" \
-  --project demo-amr-native-sdk emulators:exec --only firestore \
-  "$amr_quoted_child" 2>&1 | tee "$amr_output/native-tests.log"
+(
+  # Keep emulator diagnostics in the uploaded artifact directory, not the repo.
+  cd "$amr_output"
+  env -u DEBUG firebase --config "$amr_repo/web/rules-tests/native-sdk.firebase.json" \
+    --project demo-amr-native-sdk emulators:exec --only firestore \
+    "$amr_quoted_child"
+) 2>&1 | tee "$amr_output/native-tests.log"
 echo "Native SDK and local client-contract results: $amr_output"

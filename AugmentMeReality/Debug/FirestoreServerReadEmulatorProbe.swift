@@ -30,6 +30,7 @@ enum FirestoreServerReadEmulatorProbe {
 
     private struct ControlReply: Decodable {
         let project: String
+        let backendReady: Bool
         let heldWrites: Int
         let heldReads: Int
     }
@@ -235,8 +236,8 @@ enum FirestoreServerReadEmulatorProbe {
         return try await FirestoreServerRead.race(stream, timeout: 4)
     }
 
-    /// A cold simulator's first CFNetwork request is setup, not the Firestore
-    /// deadline under test. Retry only transient transport failures within one
+    /// Simulator-to-fixture readiness is setup, not the Firestore deadline
+    /// under test. Retry only transient transport failures within one
     /// monotonic budget; invalid fixture/project responses fail immediately.
     private static func waitForFixture() async throws {
         let start = ProcessInfo.processInfo.systemUptime
@@ -265,7 +266,7 @@ enum FirestoreServerReadEmulatorProbe {
     }
 
     private static func control(
-        _ path: String, method: String = "POST", timeout: TimeInterval = 4
+        _ path: String, method: String = "POST", timeout: TimeInterval = 30
     ) async throws -> ControlReply {
         let url = URL(string: "http://127.0.0.1:8187/\(path)")!
         var request = URLRequest(url: url, timeoutInterval: max(0.001, timeout))
@@ -275,7 +276,9 @@ enum FirestoreServerReadEmulatorProbe {
             throw Failure.invalidFixture
         }
         let reply = try JSONDecoder().decode(ControlReply.self, from: data)
-        guard reply.project == "demo-amr-native-sdk" else { throw Failure.invalidFixture }
+        guard reply.project == "demo-amr-native-sdk", reply.backendReady else {
+            throw Failure.invalidFixture
+        }
         return reply
     }
 }

@@ -5,6 +5,7 @@
 import http from 'node:http';
 import http2 from 'node:http2';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 const project = 'demo-amr-native-sdk';
 const backend = '127.0.0.1:8188';
@@ -22,10 +23,88 @@ let holdReads = false;
 const held = new Set();
 const upstreamSessions = new Set();
 const incomingSessions = new Set();
-const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0 };
-const firstReadyDelay = Number(process.env.AMR_NATIVE_READY_DELAY_MS ?? '0');
-if (!Number.isInteger(firstReadyDelay) || firstReadyDelay < 0 || firstReadyDelay > 30000) {
-  throw new Error('AMR_NATIVE_READY_DELAY_MS must be an integer from 0 to 30000');
+const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0, seedRequests: 0 };
+function faultDelay(name, maximum) {
+  const value = Number(process.env[name] ?? '0');
+  if (!Number.isInteger(value) || value < 0 || value > maximum) {
+    throw new Error(`${name} must be an integer from 0 to ${maximum}`);
+  }
+  return value;
+}
+const firstReadyDelay = faultDelay('AMR_NATIVE_READY_DELAY_MS', 30000);
+const firstSeedDelay = faultDelay('AMR_NATIVE_SEED_DELAY_MS', 10000);
+let backendReady = false;
+
+class BackendHTTPError extends Error {
+  constructor(status) {
+    super(`Fixture backend returned HTTP ${status}`);
+    this.status = status;
+  }
+}
+
+async function backendDocument(method, document, fields, timeoutMs, delayMs = 0) {
+  const started = performance.now();
+  const signal = AbortSignal.timeout(Math.max(1, Math.ceil(timeoutMs)));
+  console.log(`Native SDK backend ${method} ${document} started at ${new Date().toISOString()}; budget=${Math.ceil(timeoutMs)}ms`);
+  try {
+    if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+    const response = await fetch(`http://${backend}/v1/projects/${project}/databases/(default)/documents/${document}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+      ...(fields ? { body: JSON.stringify({ fields }) } : {}),
+      redirect: 'error', // The fixture must never follow a loopback response off-host.
+      signal
+    });
+    const body = await response.text();
+    console.log(`Native SDK backend ${method} ${document} HTTP ${response.status} after ${Math.round(performance.now() - started)}ms`);
+    if (!response.ok) throw new BackendHTTPError(response.status);
+    return body ? JSON.parse(body) : {};
+  } catch (error) {
+    console.error(`Native SDK backend ${method} ${document} failed after ${Math.round(performance.now() - started)}ms: ${error.name}: ${error.message}`);
+    throw error;
+  }
+}
+
+async function warmBackend() {
+  const started = performance.now();
+  const deadline = started + 60000;
+  // Reuse one document and identical payload if a transient failure leaves the
+  // write acknowledgement uncertain. Never retry a native test's seed POST.
+  const document = `nativeWarmup/${randomUUID()}`;
+  const marker = 'native-sdk-backend-ready';
+  let attempt = 0;
+  let lastError;
+  while (performance.now() < deadline) {
+    attempt++;
+    console.log(`Native SDK backend warm-up attempt ${attempt}`);
+    const request = (method, fields) => {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new DOMException('Warm-up budget exhausted', 'TimeoutError');
+      return backendDocument(method, document, fields, Math.min(15000, remaining));
+    };
+    try {
+      await request('PATCH', { marker: { stringValue: marker } });
+      const read = await request('GET');
+      if (read.name !== `projects/${project}/databases/(default)/documents/${document}` ||
+          read.fields?.marker?.stringValue !== marker) {
+        throw new Error('Fixture backend warm-up returned the wrong document or marker');
+      }
+      await request('DELETE');
+      backendReady = true;
+      console.log(`Native SDK backend warm-up passed after ${attempt} attempt(s), ${Math.round(performance.now() - started)}ms; launching tests next`);
+      return;
+    } catch (error) {
+      const transient = error.name === 'TimeoutError' || error.name === 'AbortError' ||
+        (error instanceof TypeError && error.message === 'fetch failed' &&
+          ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+            'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET'].includes(error.cause?.code)) ||
+        (error instanceof BackendHTTPError && [408, 429, 500, 502, 503, 504].includes(error.status));
+      if (!transient) throw error;
+      lastError = `${error.name}: ${error.message}`;
+      await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - performance.now()))));
+    }
+  }
+  throw new Error(`Fixture backend warm-up exceeded 60000ms after ${attempt} attempt(s): ${lastError}`);
 }
 
 function forward(stream, headers) {
@@ -99,8 +178,16 @@ proxy.on('stream', (stream, headers) => {
 });
 
 const control = http.createServer(async (request, response) => {
+  const started = performance.now();
+  const path = new URL(request.url, 'http://127.0.0.1').pathname;
+  console.log(`Native SDK control ${request.method} ${path} received at ${new Date().toISOString()}`);
+  response.on('finish', () => {
+    console.log(`Native SDK control ${request.method} ${path} replied HTTP ${response.statusCode} after ${Math.round(performance.now() - started)}ms`);
+  });
+  response.on('close', () => {
+    if (!response.writableFinished) console.error(`Native SDK control ${request.method} ${path} client closed before reply after ${Math.round(performance.now() - started)}ms`);
+  });
   try {
-    const path = new URL(request.url, 'http://127.0.0.1').pathname;
     if (request.method === 'GET' && path === '/ready') {
       counters.readyRequests++;
       console.log(`Native SDK readiness request ${counters.readyRequests} received at ${new Date().toISOString()}`);
@@ -110,7 +197,7 @@ const control = http.createServer(async (request, response) => {
         await new Promise(resolve => setTimeout(resolve, firstReadyDelay));
       }
       if (response.destroyed) return;
-      response.end(JSON.stringify({ project, ...counters }));
+      response.end(JSON.stringify({ project, backendReady, ...counters }));
       return;
     }
     if (request.method !== 'POST') {
@@ -120,16 +207,12 @@ const control = http.createServer(async (request, response) => {
     const seed = /^\/seed\/(rejected|accepted|denied)\/([a-zA-Z0-9-]+)$/.exec(path);
     if (seed) {
       const [, kind, id] = seed;
-      const result = await fetch(`http://${backend}/v1/projects/${project}/databases/(default)/documents/probe/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
-        body: JSON.stringify({ fields: {
-          readable: { booleanValue: kind !== 'denied' },
-          allowDelete: { booleanValue: kind === 'accepted' },
-          marker: { stringValue: 'server-existing' }
-        } })
-      });
-      if (!result.ok) throw new Error(`Fixture seed failed: ${result.status}`);
+      counters.seedRequests++;
+      await backendDocument('PATCH', `probe/${id}`, {
+        readable: { booleanValue: kind !== 'denied' },
+        allowDelete: { booleanValue: kind === 'accepted' },
+        marker: { stringValue: 'server-existing' }
+      }, 20000, counters.seedRequests === 1 ? firstSeedDelay : 0);
     } else if (path === '/hold-writes') {
       holdWrites = true;
     } else if (path === '/release-writes') {
@@ -144,12 +227,16 @@ const control = http.createServer(async (request, response) => {
       response.writeHead(404).end();
       return;
     }
-    response.end(JSON.stringify({ project, ...counters }));
+    if (!response.destroyed) response.end(JSON.stringify({ project, backendReady, ...counters }));
   } catch (error) {
-    response.writeHead(500).end(String(error));
+    console.error(`Native SDK control ${request.method} ${path} failed: ${error.name}: ${error.message}`);
+    if (!response.destroyed) response.writeHead(500).end(String(error));
   }
 });
 
+// Listening ports do not prove that the emulator's database has initialized.
+// Complete a real backend round trip before consuming simulator/test resources.
+await warmBackend();
 await Promise.all([
   new Promise((resolve, reject) => {
     proxy.once('error', reject);
@@ -167,9 +254,9 @@ const code = await new Promise(resolve => {
   child.on('exit', value => resolve(value ?? 1));
 });
 console.log(`Native SDK gate counters: ${JSON.stringify(counters)}`);
-const exercisedNativeGate = counters.heldWrites > 0 && counters.heldReads > 0;
+const exercisedNativeGate = counters.heldWrites > 0 && counters.heldReads > 0 && counters.seedRequests === 3;
 if (code === 0 && !exercisedNativeGate) {
-  console.error('Native regression did not exercise both RPC gates; skips or empty selections cannot pass');
+  console.error('Native regression requires both RPC gates and exactly three seeds; skips, empty selections, or duplicated mutations cannot pass');
 }
 for (const session of incomingSessions) session.destroy();
 for (const session of upstreamSessions) session.destroy();
