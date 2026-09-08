@@ -1,0 +1,30 @@
+{
+  "sourceBaseCommit": "e54285d9875480a2a60a43a6ebb332fa9966b255",
+  "fullSuiteWithSixSecondInitialListenDelay": {
+    "passed": 157,
+    "failed": 0,
+    "heldWrites": 1,
+    "heldReads": 1,
+    "seedRequests": 3,
+    "startupListens": 1,
+    "transportReadinessSeconds": 6.13
+  },
+  "negativeControls": [
+    {
+      "configuration": "Original four-second initial-read setup; first Listen delayed six seconds",
+      "result": "failed before held-request gates, as expected",
+      "failure": "caller timeout"
+    },
+    {
+      "configuration": "Corrected startup setup; first Listen delayed 35 seconds",
+      "result": "failed before held-request gates, as expected",
+      "failure": "SDK offline code 14 after approximately 10.29 seconds, before outer 30-second budget"
+    }
+  ],
+  "unchanged": [
+    "Production ten-second caller deadline",
+    "Four-second subsequent native operations",
+    "Deliberately unresponsive read: 0.2-second timeout and <2-second completion assertion"
+  ],
+  "localArtifactRoot": "/tmp/augmentme-issue2-native-transport-20260908"
+}

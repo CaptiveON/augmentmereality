@@ -1,0 +1,12 @@
+{
+  "project": "augmentmereality",
+  "database": "(default)",
+  "scope": "firestore:rules",
+  "authorization": "User explicitly consented to closing issue #2, including merge, rules-only rollout and controlled checks, on 2026-09-08.",
+  "startedAt": "2026-09-08T12:47:25.068Z",
+  "commit": "e54285d9875480a2a60a43a6ebb332fa9966b255",
+  "candidateSHA256": "cd613a6be99c86e071cf4782d4e170731363b0a9496b4d781007e12d02c457b6",
+  "firebaseCLIVersion": "15.23.0",
+  "status": "success",
+  "finishedAt": "2026-09-08T12:47:32.913Z"
+}

@@ -6,7 +6,8 @@ import Foundation
 /// Wave 6.1 cloud store (ADR-039): Firestore behind the existing `DropStore`
 /// seam — the local JSON store stays the offline truth, this syncs it.
 ///
-/// Schema (documents in `drops/{dropId}`): every `GeoDrop` field plus
+/// Schema (documents in `drops/{dropId}`): `drop` contains the `GeoDrop`;
+/// the envelope also contains
 ///   ownerUid    — the creator (rules: only the owner writes)
 ///   geohash     — precision-9 geohash of the coordinate (geo-queries, Wave 7)
 ///   visibility  — "private" | "link" | "public"  (Wave 6.2/7 use link/public)

@@ -23,7 +23,7 @@ let holdReads = false;
 const held = new Set();
 const upstreamSessions = new Set();
 const incomingSessions = new Set();
-const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0, seedRequests: 0 };
+const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0, seedRequests: 0, startupListens: 0 };
 function faultDelay(name, maximum) {
   const value = Number(process.env[name] ?? '0');
   if (!Number.isInteger(value) || value < 0 || value > maximum) {
@@ -33,6 +33,7 @@ function faultDelay(name, maximum) {
 }
 const firstReadyDelay = faultDelay('AMR_NATIVE_READY_DELAY_MS', 30000);
 const firstSeedDelay = faultDelay('AMR_NATIVE_SEED_DELAY_MS', 10000);
+const firstTransportDelay = faultDelay('AMR_NATIVE_TRANSPORT_DELAY_MS', 35000);
 let backendReady = false;
 
 class BackendHTTPError extends Error {
@@ -164,6 +165,15 @@ proxy.on('session', session => {
 proxy.on('stream', (stream, headers) => {
   stream.on('error', () => {});
   const path = headers[':path'];
+  if (path?.endsWith('/Listen') && counters.startupListens === 0) {
+    counters.startupListens++;
+    if (firstTransportDelay > 0) {
+      console.log(`Native SDK first Listen delayed by ${firstTransportDelay}ms for startup validation`);
+      stream.pause();
+      setTimeout(() => forward(stream, headers), firstTransportDelay);
+      return;
+    }
+  }
   const kind = path?.endsWith('/Write') ? 'writes' :
     path?.endsWith('/BatchGetDocuments') || path?.endsWith('/Commit') ? 'reads' : null;
   if ((kind === 'writes' && holdWrites) || (kind === 'reads' && holdReads)) {

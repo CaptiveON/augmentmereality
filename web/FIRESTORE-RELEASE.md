@@ -1,8 +1,46 @@
 # Firestore release procedure — issue #2
 
-**Status: implementation and release preparation; production rollout is not authorized or completed.** Keep [issue #2](https://github.com/CaptiveON/augmentmereality/issues/2) open until the live policy and controlled post-release/next-day checks pass. This procedure deploys only Firestore rules for the default database.
+**Status: v3 deployed and verified on September 8, 2026; device acceptance and next-day verification are in progress.** Keep [issue #2](https://github.com/CaptiveON/augmentmereality/issues/2) open until the remaining client and next-day checks pass. This procedure deploys only Firestore rules for the default database.
 
-## Verified target and current release
+## Authorized September 8 rollout
+
+The user explicitly authorized completing issue #2, including the proposed merge, rules-only release and controlled checks. [PR #33](https://github.com/CaptiveON/augmentmereality/pull/33) was merged as `e54285d9875480a2a60a43a6ebb332fa9966b255`; its tree exactly matches tested commit `a4aeff7f9d1b6fd4e3cf9a57bd88eecda192df35`. The previously exposed Firebase CLI login was revoked and replaced through user-completed browser authentication.
+
+- Firebase CLI 15.23.0 deployed only `firestore:rules` to `augmentmereality` at **2026-09-08 12:47:32 UTC**. The operator account is recorded privately.
+- The [active release export](rules-releases/2026-09-08-after-rollout/release.json) identifies ruleset `a2f0de32-da20-4a9e-aba7-d5da8afee2a3`. Exact active source SHA-256: `cd613a6be99c86e071cf4782d4e170731363b0a9496b4d781007e12d02c457b6`, matching the reviewed v3 candidate.
+- [Controlled live checks](rules-releases/2026-09-08-after-rollout/live-checks.json) passed all 42 authorization cases, after emulator validation. Their disposable identities/documents were cleaned up. Requests used Firebase user ID tokens; they did not bypass Security Rules with operator credentials. Enumeration probes use a zero-result cap so no user documents are returned.
+- [Release build 0.9.0 (2)](rules-releases/2026-09-08-after-rollout/client-build.json) was signed, installed and launched on the paired iPhone 15 Pro Max running iOS 26.6. Device observations and remaining checks are recorded in the issue. This does not claim distribution to other users or App Store/TestFlight publication.
+- App Check enforcement remains **unknown** because the API omits its mode. No enforcement, hosting, indexes or functions configuration changed.
+
+The next-day verification is due **September 9, after 12:47:32 UTC (13:47:32 London time)**. Capture a fresh active release, repeat controlled access checks and verify receive/delete recovery on the patched client. Do not close the issue merely because deployment or installation succeeded.
+
+The post-merge CI run failed in the first native SDK transport setup read, before the regression's held-request gates. The test fixture now gives that initial read one bounded 30-second startup window and requires the seeded document to be present. Production deadlines and all subsequent native assertions are unchanged. The six-second transport-delay control reproduces the old failure and passes all 157 tests with the correction; a 35-second delay still fails before the held-request gates. Record the follow-up PR's hosted result separately.
+
+## Repeatable controlled live checks
+
+The operator runner is [scripts/firestore-release-smoke.mjs](../scripts/firestore-release-smoke.mjs). Its emulator mode is exercised by CI. Live mode is opt-in and accepts only the fixed production target; it requires a fresh matching release export and the configured app plist. It creates two anonymous test identities, limits writes to its generated IDs, tests 42 allow/deny cases, and removes the fixtures and identities afterward.
+
+From the repository root, first capture a fresh release into a new directory outside Git, then run:
+
+```sh
+node --use-system-ca scripts/verify-firestore-release.mjs --output /tmp/amr-next-day-release --expect-candidate
+node --use-system-ca scripts/firestore-release-smoke.mjs --production \
+  --output /tmp/amr-next-day-checks \
+  --release-evidence /tmp/amr-next-day-release/release.json \
+  --app-config AugmentMeReality/Support/GoogleService-Info.plist
+```
+
+Use fresh output paths each time. The parent directory must exist outside any Git checkout. `results.json` contains redacted verdicts and the exact runner hash. The private cleanup ledger contains test credentials only while needed, and is removed after successful cleanup; never publish that ledger. A failed or uncertain mutation is not blindly retried. If cleanup fails, keep the private ledger for a targeted recovery of only that run's test IDs. These REST checks do not replace native offline/tombstone or UI acceptance.
+
+To exercise the same checks without production access:
+
+```sh
+env -u DEBUG firebase --config web/firebase.release-smoke.json \
+  --project demo-amr-release-checks emulators:exec --only firestore \
+  'node scripts/firestore-release-smoke.mjs --emulator --output /tmp/amr-release-emulator-checks'
+```
+
+## Verified target and pre-rollout baseline
 
 The app's local Firebase configuration was checked against [firestore-target.json](firestore-target.json): project `augmentmereality`, project number `895624785272`, default database `(default)`, iOS bundle `com.adnan.augmentmereality`. Configuration values are identifiers, not credentials. Do not use a CLI's default project; this workstation's gcloud default points to an unrelated project.
 

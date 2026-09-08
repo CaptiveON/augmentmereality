@@ -131,8 +131,14 @@ enum FirestoreServerReadEmulatorProbe {
         let rejectedID = UUID().uuidString
         _ = try await control("seed/rejected/\(rejectedID)")
         let rejected = database.collection("probe").document(rejectedID)
-        // Prime the remote document before creating a local overlay.
-        _ = try await observe(rejected, source: .server)
+        // This first SDK request establishes the simulator's gRPC transport.
+        // It is setup, before any held-write/read assertion. Keep one bounded
+        // attempt and require the seeded remote document to be present.
+        let started = ProcessInfo.processInfo.systemUptime
+        print("Native SDK transport readiness started")
+        let primed = try await observe(rejected, source: .server, timeout: 30)
+        guard primed.exists, !primed.hasPendingWrites else { throw Failure.invalidFixture }
+        print("Native SDK transport ready after \(ProcessInfo.processInfo.systemUptime - started)s; starting pending-delete assertions")
         _ = try await control("hold-writes")
         let deletion = AsyncThrowingStream<Void, Error> { continuation in
             rejected.delete { error in
@@ -219,7 +225,7 @@ enum FirestoreServerReadEmulatorProbe {
     }
 
     private static func observe(
-        _ document: DocumentReference, source: FirestoreSource
+        _ document: DocumentReference, source: FirestoreSource, timeout: TimeInterval = 4
     ) async throws -> Observation {
         let stream = AsyncThrowingStream<Observation, Error> { continuation in
             document.getDocument(source: source) { snapshot, error in
@@ -233,7 +239,7 @@ enum FirestoreServerReadEmulatorProbe {
                 } else { continuation.finish() }
             }
         }
-        return try await FirestoreServerRead.race(stream, timeout: 4)
+        return try await FirestoreServerRead.race(stream, timeout: timeout)
     }
 
     /// Simulator-to-fixture readiness is setup, not the Firestore deadline

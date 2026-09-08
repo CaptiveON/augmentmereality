@@ -1,0 +1,13 @@
+{
+  "commit": "e54285d9875480a2a60a43a6ebb332fa9966b255",
+  "sourceTreeMatchesReviewedCommit": "a4aeff7f9d1b6fd4e3cf9a57bd88eecda192df35",
+  "configuration": "Release",
+  "bundleIdentifier": "com.adnan.augmentmereality",
+  "version": "0.9.0",
+  "build": "2",
+  "executableSHA256": "2c4a625e97fa804852e43de383d48f06c3d4530b11efbeb71cba53967f8a4371",
+  "signing": "Existing Apple Development certificate and profile, team 3WN9B888RU; target iPhone is provisioned",
+  "firebaseProject": "augmentmereality",
+  "appPath": "/tmp/augmentme-issue2-device-release-20260908/DerivedData/Build/Products/Release-iphoneos/AugmentMeReality.app",
+  "createdAt": "2026-09-08T12:54:27.518525+00:00"
+}

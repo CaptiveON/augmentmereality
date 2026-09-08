@@ -1225,3 +1225,29 @@ users don't perceive 30 vs 60, halves CPU/GPU heat), duty-cycle heavy passes und
 **Limits.** This preserves capability-based reactions before the parent is uploaded. Reaction `hasOnly` remains an allowed-key upper bound, not required-field/type validation. Moderation, abuse controls, App Check enforcement, account migration and AR performance are separate issues. Rules deployment cannot install the client correction on older app builds. Previous ADRs describe their historical observations; this entry supersedes only their unsupported assumption that an ordinary `.server` read excludes pending local deletes.
 
 **Simulator performance scope.** Hosted CI on `7470d07` recorded a 356.395 ms main-actor ticker scheduling gap during the Castle asset test; this was not the asset's total decode time. [Apple documents that simulators do not replicate physical-device performance](https://developer.apple.com/documentation/Xcode/running-your-app-on-simulated-or-physical-devices). The asset test retains decode and clone functional checks on every destination and attaches/logs its timings. ADR-047's unchanged 250 ms gap and 800 ms clone budgets are enforced only on physical devices, matching the original iPhone 15 Pro Max measurement. The physical-device performance gate for this build remains pending; this scope correction claims no AR performance fix.
+
+
+**ADR-054 rollout follow-up — 2026-09-08.** The user authorized the release;
+PR #33 merged with the same tree that passed its three CI jobs. Firebase CLI
+15.23.0 deployed the exact reviewed v3 rules to `augmentmereality` at
+12:47:32 UTC. Active ruleset/source, 42 controlled live authorization verdicts,
+cleanup, and Release 0.9.0 (2) build/install evidence are retained under
+`web/rules-releases/2026-09-08-after-rollout/`. Device and next-day acceptance
+remain explicit closure gates. App Check mode is still unknown and unchanged.
+The live runner uses [Firebase user ID tokens, which are evaluated by Security
+Rules](https://firebase.google.com/docs/firestore/use-rest-api), and
+[anonymous test identities with explicit cleanup](https://firebase.google.com/docs/reference/rest/auth).
+Its [zero-result query cap](https://firebase.google.com/docs/firestore/reference/rest/v1/StructuredQuery)
+prevents enumeration checks from returning user documents. Fixtures use the
+actual CloudDrop envelope (`drop` plus outer owner/visibility/geohash); a flat
+hand-created fixture was rejected by the app decoder and was corrected.
+
+The post-merge simulator run reached the first native `.server` priming read
+but timed out before either held-request assertion. HTTP/backend readiness
+alone does not establish the simulator's native gRPC connection. Only that
+initial setup read now has one 30-second budget and must return the seeded
+existing document without pending writes. All production and subsequent native
+operation deadlines are unchanged. A six-second first-Listen delay reproduces
+the old failure and passes all 157 tests with the correction; a 35-second delay
+still fails before the gates (the SDK can report offline before the outer
+budget expires). No physical performance improvement is claimed.
