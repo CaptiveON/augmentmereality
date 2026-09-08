@@ -4,10 +4,12 @@ Issue [#3](https://github.com/CaptiveON/augmentmereality/issues/3), implementati
 [PR #35](https://github.com/CaptiveON/augmentmereality/pull/35),
 [measurement protocol](AR-BASELINE-PROTOCOL.md).
 
-**Validation in progress.** The first unchanged-build trace records a thermal
-failure and an operator-reported content-visibility failure. It is not an
-initially cool baseline. Instrumentation overhead and the remaining physical
-readiness scenarios are pending; no heat or visual improvement is claimed.
+**Validation in progress.** Both completed traces record thermal failure. The
+recorder-disabled implementation run began cool/Nominal and reached Serious
+after 3 minutes 6 seconds, with the text visibly present. The unchanged build
+began Fair and had an operator-reported content-visibility failure. Instrumentation
+overhead and the remaining physical readiness scenarios are pending; no heat or
+visual improvement is claimed.
 
 ## Exact builds and retained evidence
 
@@ -22,6 +24,10 @@ reference `9612f8211547d358f2511be5ccd632f0580dce02`. I embeds verified source
 commit/hash, clean status and Release configuration. U has no embedded issue #3
 metadata; its preserved build/installation manifests identify the executable.
 The experiment flags are absent for default-workload comparisons.
+Both archived apps identify version **0.9.0 (1)**, Xcode **26.6 / 17F113**, SDK
+**iphoneos26.5 / 23F81a**, and deployment target 17.0. Device validation here is
+on iOS 26.6; this is not minimum-OS validation. `artifact-info.json` preserves
+these values read directly from the archived apps' Info.plists.
 
 The durable local artifact root is
 `/Users/captiveon/Documents/AR-Baselines/issue-3-2026-09-08/`.
@@ -29,6 +35,8 @@ The durable local artifact root is
 These app bundles contain the existing service configuration and remain local.
 Measurement artifacts are retained under `runs/`, with the original acquisition
 paths under `/tmp/augmentme-issue3-evidence/` also recorded in generated summaries.
+The [checked-in evidence](ar-baseline-evidence/2026-09-08/) includes the U build
+manifest, thermal intervals, CPU summary/extraction script and operator conditions.
 
 ## U-steady: observed failure, not a cool-start acceptance run
 
@@ -47,6 +55,9 @@ auto-brightness were not measured for U. They must not be inferred from later ru
 
 The requested scene was Playground camera, initially empty, followed by one
 Playground → 3D text placement (`ROOM TEST`, default style/scale, no USDZ asset).
+The source-defined fixture uses system heavy font size 0.6, extrusion depth 0.12,
+center alignment, scale 1 and color `#32ADE6`. Actual placement uses a center
+raycast or the existing 2.5 m fallback; which path ran in U is unmeasured.
 The operator confirmed placement but reported **the text was not visible**.
 Actual camera-intent/placement timestamps and placement distance were not captured
 by U. The trace's first ten seconds therefore cannot be labeled camera startup.
@@ -97,7 +108,7 @@ No CPU sample count is used as a render-frame count.
 | Original, unmodified trace | `U-steady.trace` |
 | Capture command outcome and table definitions | `U-steady.log`, `U-toc.xml` |
 | Complete thermal intervals | `U-device-thermal-state-intervals.xml` |
-| CPU samples and derived windows | `U-time-profile.xml`, `U-cpu-summary.json` |
+| CPU samples and derived windows, symbolicated with the archived U dSYM | `U-symbolicated-time-profile.xml`, `U-symbolicated-cpu-summary.json` |
 | Reproducible CPU extraction and time-unit definition | `extract-time-profile.py` |
 | Operator replies and uncertainty | `operator-observations.json` |
 | Original build/installation provenance | `U-build-manifest.json`, `U-install.json`, `U-launch.json` |
@@ -105,6 +116,49 @@ No CPU sample count is used as a render-frame count.
 The earlier `U-trace.log` attempt failed while Instruments was preparing the
 device and supplies no measurement. System-log collection required unavailable
 root privileges; its failure logs are not a substitute for a log archive.
+
+## I-off: cool/Nominal start, visible text, sustained thermal failure
+
+The same phone ran the archived I binary, recorder and experiment flags absent,
+using the same wireless Time Profiler template. Instruments launched the process
+(PID 9727); recording covered **20:39:08.889–20:55:10.318 UTC**, **961.429 s**.
+The operator confirmed cool, app closed and unplugged before launch. The first
+Instruments thermal interval independently reports **Nominal**.
+
+The operator was asked to keep brightness/room setup unchanged, open Playground
+camera, wait ten seconds, and place 3D text once. The text appeared and remained
+visible in the near-ten-minute and end replies. Observed warmth progressed from
+cool to hot, then very hot at those two later replies. Reply timestamps are
+retained separately from requested checkpoint times; they are not exact event
+timestamps. Camera intent, actual placement distance, brightness and battery
+remain unmeasured in I-off because the recorder is disabled. The app process was
+cold; OS/asset/shader caches were retained or unknown, not claimed uncached.
+
+| Relative to I-off trace start | Instruments device thermal state |
+| --- | --- |
+| 0–86.123 s | Nominal |
+| 86.123–186.120 s | Fair |
+| 186.120–961.429 s | Serious |
+| 10 min / 15 min | Serious / Serious |
+
+The no-serious-state target at ten minutes **fails**, and Serious persists through
+the extended observation. Actual presentation/capture FPS, frame p95/p99, GPU
+execution and memory remain unmeasured by this external template. Recorder
+overhead is pending I-on; the thermal failure already occurs with it disabled.
+U versus I-off is not a controlled improvement comparison because starting state,
+process-launch method and observed content visibility differ.
+
+I-off contains **815,999 Running CPU samples**, 815.999 s of sample weight over
+961.429 s: **84.874% of one core**, summed across process threads. A sampled
+`placeRoomDrop(content:assetName:)` stack appears at +41.214 s, followed by
+920.215 s of trace coverage. That establishes sampled placement-path activity,
+not the exact button/camera-intent time or a presented-hero timestamp. The operator
+separately confirmed the text remained visible.
+
+Artifacts: `runs/I-off.trace`, `I-off-toc.xml`,
+`I-off-device-thermal-state-intervals.xml`, `I-off-symbolicated.trace`,
+`I-off-symbolicated-time-profile.xml`, `I-off-trace.log`, `I-install.json` and
+the shared `operator-observations.json`/`capture-commands.json`.
 
 ## Implementation checks and remaining device work
 

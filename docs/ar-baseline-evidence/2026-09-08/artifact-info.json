@@ -1,0 +1,26 @@
+{
+  "U": {
+    "CFBundleShortVersionString": "0.9.0",
+    "CFBundleVersion": "1",
+    "DTSDKName": "iphoneos26.5",
+    "DTSDKBuild": "23F81a",
+    "DTXcode": "2660",
+    "DTXcodeBuild": "17F113",
+    "MinimumOSVersion": "17.0",
+    "ARBaselineBuildConfiguration": "unmeasured (not embedded in this build)",
+    "ARBaselineSourceCommit": "unmeasured (not embedded in this build)",
+    "ARBaselineSourceHash": "unmeasured (not embedded in this build)"
+  },
+  "I": {
+    "CFBundleShortVersionString": "0.9.0",
+    "CFBundleVersion": "1",
+    "DTSDKName": "iphoneos26.5",
+    "DTSDKBuild": "23F81a",
+    "DTXcode": "2660",
+    "DTXcodeBuild": "17F113",
+    "MinimumOSVersion": "17.0",
+    "ARBaselineBuildConfiguration": "Release",
+    "ARBaselineSourceCommit": "d5d7a7f3c5693e6b17b7d04774c8db353a4ffa41",
+    "ARBaselineSourceHash": "8323583960bb63b9d6907bfbfb182307d3347632f241412c2c999bf335dcd853"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "device": "iPhone 15 Pro Max, iOS 26.6 (23G71)",
+  "reportedProblem": "Every object: phone starts warming as soon as camera is opened for the object",
+  "operatorReadiness": "User confirmed physical device available; cool state before U was not reverified after Xcode preparation",
+  "measurementCaveat": "Xcode copied device symbols during setup; initial state must be rechecked for each accepted run",
+  "observations": [
+    {
+      "recordedAtUTC": "2026-09-08T20:18:41.406282+00:00",
+      "run": "U-steady",
+      "warmth": "warm",
+      "source": "operator reply; exact observation time and text visibility not independently confirmed"
+    },
+    {
+      "recordedAtUTC": "2026-09-08T20:33:35.569976+00:00",
+      "run": "U-steady",
+      "warmth": "very hot",
+      "textVisible": false,
+      "textPlaced": true,
+      "unpluggedThroughout": true,
+      "screenRecordingThroughout": false,
+      "source": "operator reply at run end"
+    },
+    {
+      "recordedAtUTC": "2026-09-08T20:39:06.608533+00:00",
+      "run": "I-off",
+      "warmth": "cool",
+      "appClosedBeforeRun": true,
+      "unplugged": true,
+      "source": "operator replied now to cool/unplugged readiness question; brightness and room requested unchanged"
+    },
+    {
+      "recordedAtUTC": "2026-09-08T20:42:19.806484+00:00",
+      "run": "I-off",
+      "warmth": "hot",
+      "textVisible": true,
+      "source": "operator reply after requested camera-open, 10-second wait and 3D text placement; exact event time unmeasured"
+    },
+    {
+      "recordedAtUTC": "2026-09-08T20:50:33.560160+00:00",
+      "run": "I-off",
+      "warmth": "very hot",
+      "textVisible": true,
+      "requestedCheckpoint": "10 minutes from trace start",
+      "source": "operator reply; exact observation time can differ from requested checkpoint"
+    },
+    {
+      "recordedAtUTC": "2026-09-08T20:56:53.510261+00:00",
+      "run": "I-off",
+      "warmth": "very hot",
+      "textVisible": true,
+      "requestedCheckpoint": "after recording ended",
+      "source": "operator reply; requested close camera and cool afterward"
+    }
+  ],
+  "screen_recording": false,
+  "screenRecordingSource": "operator confirmed OFF throughout U-steady",
+  "raw_trace_locations": [
+    "/tmp/augmentme-issue3-evidence/U-steady.trace"
+  ]
+}
