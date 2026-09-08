@@ -31,27 +31,40 @@ export function rulesEmojiList() {
 // fields DropReaction actually encodes — adding a field to the struct without
 // touching the rules turns EVERY reaction write into permission-denied, which
 // the client now (correctly) escalates to a terminal verdict.
-export function appReactionKeys() {
-  const swift = readFileSync(
-    join(here, '..', '..', 'AugmentMeReality', 'Services', 'ReactionService.swift'),
-    'utf8'
-  );
-  const structMatch = swift.match(/struct DropReaction[^{]*\{([\s\S]*?)\n\}/);
+export function parseAppReactionFields(swift) {
+  const structMatch = swift.match(/struct DropReaction\b[^{]*\{([\s\S]*?)\n\}/);
   if (!structMatch) throw new Error('DropReaction struct not found — update drift-check.mjs');
-  // Round 14 (counsel seams-4): FAIL-CLOSED parsing — matches `var`/`let`,
-  // optional property-wrapper/attribute prefixes, and sanity-checks the
-  // count: a lock that silently parses zero fields protects nothing.
-  const keys = [
-    ...structMatch[1].matchAll(
-      /^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:var|let)\s+(\w+)\s*[:=]/gm
-    ),
-  ].map((m) => m[1]);
-  if (keys.length < 3) {
+  const body = structMatch[1];
+  // This is a contract for today's synthesized Codable payload, not a Swift
+  // encoder. Renaming CodingKeys, custom encoding, wrappers or computed fields
+  // require explicit review; silently counting their property names is unsafe.
+  if (/\bCodingKeys\b|\bfunc\s+encode\s*\(|@/.test(body) || /\bextension\s+DropReaction\b/.test(swift)) {
+    throw new Error('DropReaction encoding customization requires an explicit drift-contract update');
+  }
+  const declarations = body.split('\n').filter((line) =>
+    !line.trim().startsWith('//') && /\b(?:var|let)\s+\w+/.test(line));
+  const fields = declarations.map((line) => {
+    const match = line.match(/^\s*(?:var|let)\s+(\w+)\s*:\s*(\w+\??)(?:\s*=\s*[^{}]+)?\s*$/);
+    if (!match) throw new Error(`Unsupported DropReaction field declaration: ${line.trim()}`);
+    return { name: match[1], type: match[2] };
+  });
+  if (fields.length < 3) {
     throw new Error(
-      `DropReaction parse suspicious (${keys.length} fields) — the drift lock regex needs updating, refusing to pass`
+      `DropReaction parse suspicious (${fields.length} fields) — the drift lock needs updating, refusing to pass`
     );
   }
-  return keys;
+  return fields;
+}
+
+export function appReactionFields() {
+  return parseAppReactionFields(readFileSync(
+    join(here, '..', '..', 'AugmentMeReality', 'Services', 'ReactionService.swift'),
+    'utf8'
+  ));
+}
+
+export function appReactionKeys() {
+  return appReactionFields().map(({ name }) => name);
 }
 
 export function rulesReactionKeys() {

@@ -44,14 +44,14 @@ enum DropSharingService {
 
     /// Round 12 (counsel SURF-lens-2 + SEAMS-lens-4): the three REAL outcomes
     /// of a link fetch, as a total type. Only a served `exists == false` may
-    /// claim absence — under the DEPLOYED v2 rules an absent (or private)
-    /// document DENIES the read, so permission errors, auth-in-flight,
+    /// claim absence — policies such as the historical v2 rules deny an absent
+    /// (or private) document, so permission errors, auth-in-flight,
     /// missing config and decode failures are all `.unknown`: retryable,
     /// never an expiry verdict, never an offline claim.
     enum SharedDropFetch {
         case found(GeoDrop)
-        /// The SERVER answered: the document does not exist. (Producible only
-        /// once the v3 rules — get tolerates absence — are deployed.)
+        /// The SERVER answered: the document does not exist. Requires rules
+        /// that permit an absent-document read, as the v3 candidate does.
         case absent
         /// No authoritative answer — offline, denied, unconfigured, or the
         /// payload didn't decode. Retry is meaningful; no cause is claimed.
@@ -60,15 +60,15 @@ enum DropSharingService {
 
     /// Fetch a drop someone shared by link. Reads are gated by Firestore rules:
     /// visibility "link"/"public" is readable by any signed-in user.
-    /// Round 10 (counsel flows-6): forced to the SERVER — a cached copy or a
-    /// cached miss must never produce a verdict.
+    /// A transaction read excludes pending local writes as well as cached
+    /// results, so an unacknowledged local delete cannot produce `.absent`.
     static func fetchSharedDrop(id: UUID) async -> SharedDropFetch {
         guard AppConfig.firebaseConfigured else { return .unknown }
         let snapshot: DocumentSnapshot
         do {
-            snapshot = try await Firestore.firestore()
-                .collection("drops").document(id.uuidString)
-                .getDocument(source: .server)
+            snapshot = try await FirestoreServerRead.document(
+                Firestore.firestore().collection("drops").document(id.uuidString)
+            )
         } catch {
             return .unknown
         }

@@ -4,10 +4,10 @@ rules_version = '2';
 // pulled forward in Wave C round 6 because four review findings turned on
 // rules semantics the repository could not assert).
 //
-// STATUS: DRAFT pending Wave A — deploy + @firebase/rules-unit-testing
-// emulator verification are Wave A gates. This file is the single source of
-// truth; the README v2 block is superseded by it. The emulator suite lives in
-// web/rules-tests/ and MUST pass before any deploy.
+// STATUS: reviewed release candidate; deployment is a separate recorded action.
+// This file defines intended policy, not proof of the active cloud release.
+// Verify active metadata/source with scripts/verify-firestore-release.mjs and
+// follow web/FIRESTORE-RELEASE.md. Emulator/client gates MUST pass first.
 //
 // v3 fixes over the README v2 rules (counsel PBS-1/PBS-2/PBS-6, flows-4):
 // - create and update are SPLIT; update gates on the EXISTING doc's owner and
@@ -22,8 +22,8 @@ rules_version = '2';
 // - GET also tolerates absence: the client's `exists` checks
 //   (fetchSharedDrop, serverConfirmsAbsent tombstone retirement) need the
 //   server to ANSWER "not there" for a missing doc; denying the read made
-//   absence indistinguishable from no-permission. Doc ids are UUIDs, so
-//   existence probing is not a practical enumeration channel.
+//   absence indistinguishable from no-permission. This permits exact-id
+//   existence probes; collection enumeration remains owner-scoped.
 // - The reaction emoji allow-list matches the SHIPPING reaction bar
 //   (ReactionSession.reactions) EXACTLY. Drift lock: web/rules-tests
 //   parses both this file and ReactionSession.swift and fails on mismatch.

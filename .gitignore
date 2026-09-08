@@ -13,6 +13,8 @@ GoogleService-Info.plist
 web/rules-tests/node_modules/
 web/rules-tests/firestore-debug.log
 web/rules-tests/*.log
+firebase-debug*.log
+firestore-debug*.log
 .firebase/
 
 # Local store artifacts that may appear during device debugging

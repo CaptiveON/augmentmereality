@@ -26,9 +26,9 @@ protocol DropAbsenceVerifying {
     /// Cache-served reads, network failures, permission denials → false.
     func serverConfirmsAbsent(_ id: UUID) async -> Bool
     /// Round 10 (counsel seams-1c/own-3): whether the DEPLOYED backend can
-    /// answer an absent-document read at all. Probed once per session so the
-    /// library never pays per-tombstone round-trips a rules version cannot
-    /// answer — and never mistakes "offline right now" for "can never answer".
+    /// answer an absent-document read at all. A denied capability is retried
+    /// after a bounded interval so a rules rollout can recover this session.
+    /// Offline failure is never treated as a permanent policy verdict.
     func probeAbsenceCapability() async -> AbsenceCapability
 }
 
@@ -36,8 +36,8 @@ protocol DropAbsenceVerifying {
 enum AbsenceCapability: Sendable {
     /// The server answered an absent-doc read — retirement probes work.
     case answers
-    /// The deployed rules DENY absent-doc reads (pre-v3) — probing is futile
-    /// until a rules deploy; latch for the session.
+    /// The current request was denied. This does not identify the rules release
+    /// and must be rechecked after a policy change or a different auth session.
     case denied
     /// Offline or transient failure — unknown, try again next refresh.
     case inconclusive
@@ -455,9 +455,11 @@ final class DropLibrary: ObservableObject {
     /// ids the server never acked resolve to DONE instead of raising a
     /// cloud-copy alarm the deployed rules may never be able to clear.
     private var ackedCloudIDs: Set<UUID> = []
-    /// Round 10 (counsel seams-1c): the session's latched probe result.
-    /// `.inconclusive` never latches — it retries next refresh.
+    /// Positive capability stays cached; denial expires so a rules rollout
+    /// can recover without restarting. Inconclusive results never latch.
     private var knownAbsenceCapability: AbsenceCapability?
+    private var deniedAbsenceRetryAt: TimeInterval?
+    private let absenceProbeTime: () -> TimeInterval
     /// Round 12 (counsel FLOWS-lens-1): positive cloud provenance captured AT
     /// TOMBSTONE TIME, while the evidence still exists — a stamped ownerUid,
     /// a session ack, or a standing terminal verdict all prove the server has
@@ -495,11 +497,13 @@ final class DropLibrary: ObservableObject {
         cloudStore: DropStore? = AppConfig.firebaseConfigured
             ? FirebaseDropStore()
             : (AppConfig.cloudKitEnabled ? CloudKitDropStore() : nil),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.local = localStore
         self.cloud = cloudStore
         self.defaults = defaults
+        self.absenceProbeTime = absenceProbeTime
         let pending = defaults.stringArray(forKey: Self.pendingDefaultsKey) ?? []
         pendingSyncIDs = Set(pending.compactMap(UUID.init(uuidString:)))
         let deletes = defaults.stringArray(forKey: Self.pendingDeleteDefaultsKey) ?? []
@@ -732,16 +736,23 @@ final class DropLibrary: ObservableObject {
         // RETIREMENT requires a positive, PER-DOCUMENT, SERVER-SOURCED answer
         // — never a set-difference over a cache-satisfiable, uid-scoped query.
         // Round 10 (counsel seams-1c/own-3): capability-gated (the deployed
-        // rules may be unable to answer absence at all — probe once, latch
-        // answers/denied, retry inconclusive) and capped per pass.
+        // rules may be unable to answer absence at all — cache answers,
+        // back off denied probes, retry inconclusive) and capped per pass.
         if let absence = cloud as? DropAbsenceVerifying {
             let tombstones = pendingDeleteIDs.union(unresolvedDeleteIDs)
             if !tombstones.isEmpty {
+                if knownAbsenceCapability == .denied,
+                   let retryAt = deniedAbsenceRetryAt,
+                   absenceProbeTime() >= retryAt {
+                    knownAbsenceCapability = nil
+                    deniedAbsenceRetryAt = nil
+                }
                 if knownAbsenceCapability == nil {
                     let capability = await absence.probeAbsenceCapability()
                     guard refreshGeneration == generation else { return }
                     if capability != .inconclusive {
                         knownAbsenceCapability = capability
+                        deniedAbsenceRetryAt = capability == .denied ? absenceProbeTime() + 60 : nil
                     }
                 }
                 guard knownAbsenceCapability == .answers else { return }
@@ -812,6 +823,10 @@ final class DropLibrary: ObservableObject {
         evidenceUid = uid
         if changed {
             hasCompletedCleanRefresh = false
+        }
+        if changed || firstPassThisSession {
+            knownAbsenceCapability = nil
+            deniedAbsenceRetryAt = nil
         }
         await refresh(near: nil)
         if changed || firstPassThisSession {
