@@ -56,3 +56,13 @@ admin interface; it does not use credentials, the default Firebase app, account
 creation, or any production endpoint. It validates SDK semantics and the helper;
 the normal rules suite still owns actual authorization policy. Review the
 `.xcresult` and logs: a skipped/unexecuted native test is not a passing regression.
+
+The initial simulator-to-fixture readiness request has a separate 30-second
+monotonic setup budget, with at most five seconds per request and retries only
+for transient transport errors. A wrong fixture/project response fails at once.
+Attempt and received-request counts distinguish client startup from an absent
+server. Actual SDK deadlines and assertions remain unchanged, including the
+0.2-second unresponsive-read deadline and its two-second completion assertion.
+To force a first-request timeout and verify recovery locally, run with
+`AMR_NATIVE_READY_DELAY_MS=6000`; only the first `/ready` reply is delayed. The
+native test and both RPC gates must still execute and pass.

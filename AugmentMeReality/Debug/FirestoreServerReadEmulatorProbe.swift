@@ -49,9 +49,19 @@ enum FirestoreServerReadEmulatorProbe {
 
     private enum Failure: Error {
         case notExplicitlyInvoked, serviceConfigurationBundled, invalidFixture
+        case fixtureReadinessTimedOut(attempts: Int, lastTransportError: String)
         case expectedCachedDelete, expectedRejectedDelete, expectedAcknowledgedDelete, expectedAcknowledgedWrite
         case expectedDeniedRead, expectedUnansweredRead
     }
+
+    private static let fixtureHTTP: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
 
     static func run() async throws -> Report {
         guard ProcessInfo.processInfo.environment["AMR_NATIVE_FIRESTORE_EMULATOR_TEST"] == "1" else {
@@ -63,7 +73,7 @@ enum FirestoreServerReadEmulatorProbe {
               Bundle.main.url(forResource: "Secrets", withExtension: "plist") == nil else {
             throw Failure.serviceConfigurationBundled
         }
-        _ = try await control("ready", method: "GET")
+        try await waitForFixture()
         let name = "native-sdk-test-\(UUID().uuidString)"
         let options = FirebaseOptions(
             googleAppID: "1:000000000000:ios:0000000000000000", gcmSenderID: "000000000000"
@@ -225,11 +235,42 @@ enum FirestoreServerReadEmulatorProbe {
         return try await FirestoreServerRead.race(stream, timeout: 4)
     }
 
-    private static func control(_ path: String, method: String = "POST") async throws -> ControlReply {
+    /// A cold simulator's first CFNetwork request is setup, not the Firestore
+    /// deadline under test. Retry only transient transport failures within one
+    /// monotonic budget; invalid fixture/project responses fail immediately.
+    private static func waitForFixture() async throws {
+        let start = ProcessInfo.processInfo.systemUptime
+        let deadline = start + 30
+        var attempts = 0
+        var lastError = "No readiness response"
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            attempts += 1
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            do {
+                _ = try await control("ready", method: "GET", timeout: min(5, remaining))
+                let elapsed = ProcessInfo.processInfo.systemUptime - start
+                print("Native SDK fixture ready after \(attempts) attempt(s), \(String(format: "%.2f", elapsed))s")
+                return
+            } catch let error as URLError where [
+                .timedOut, .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet
+            ].contains(error.code) {
+                lastError = "\(error.code.rawValue): \(error.localizedDescription)"
+                print("Native SDK fixture readiness attempt \(attempts) failed: \(lastError)")
+            }
+            let pause = min(0.25, max(0, deadline - ProcessInfo.processInfo.systemUptime))
+            try await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
+        }
+        throw Failure.fixtureReadinessTimedOut(attempts: attempts, lastTransportError: lastError)
+    }
+
+    private static func control(
+        _ path: String, method: String = "POST", timeout: TimeInterval = 4
+    ) async throws -> ControlReply {
         let url = URL(string: "http://127.0.0.1:8187/\(path)")!
-        var request = URLRequest(url: url, timeoutInterval: 4)
+        var request = URLRequest(url: url, timeoutInterval: max(0.001, timeout))
         request.httpMethod = method
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await fixtureHTTP.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw Failure.invalidFixture
         }

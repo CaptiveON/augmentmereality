@@ -22,7 +22,11 @@ let holdReads = false;
 const held = new Set();
 const upstreamSessions = new Set();
 const incomingSessions = new Set();
-const counters = { heldWrites: 0, heldReads: 0 };
+const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0 };
+const firstReadyDelay = Number(process.env.AMR_NATIVE_READY_DELAY_MS ?? '0');
+if (!Number.isInteger(firstReadyDelay) || firstReadyDelay < 0 || firstReadyDelay > 30000) {
+  throw new Error('AMR_NATIVE_READY_DELAY_MS must be an integer from 0 to 30000');
+}
 
 function forward(stream, headers) {
   if (stream.destroyed || stream.closed) return;
@@ -98,6 +102,14 @@ const control = http.createServer(async (request, response) => {
   try {
     const path = new URL(request.url, 'http://127.0.0.1').pathname;
     if (request.method === 'GET' && path === '/ready') {
+      counters.readyRequests++;
+      console.log(`Native SDK readiness request ${counters.readyRequests} received at ${new Date().toISOString()}`);
+      // Opt-in fault injection validates first-request timeout/retry without
+      // loosening the actual Firestore deadline or allowing a skipped test.
+      if (counters.readyRequests === 1 && firstReadyDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, firstReadyDelay));
+      }
+      if (response.destroyed) return;
       response.end(JSON.stringify({ project, ...counters }));
       return;
     }

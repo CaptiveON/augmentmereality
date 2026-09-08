@@ -3,10 +3,10 @@ import XCTest
 
 @testable import AugmentMeReality
 
-/// ADR-047: the launch hang recurred — so main-thread health during asset
-/// decode is now MEASURED on device, not assumed. A 10 ms main-actor ticker
-/// runs while the heaviest bundled asset decodes; any long gap means the
-/// loader is doing main-thread work and the fix is insufficient.
+/// ADR-047/054: decode and clone must work on every test destination. The
+/// 250 ms main-actor gap and 800 ms clone budgets apply to physical devices.
+/// Simulator timings are diagnostics: ticker gaps also include host scheduling
+/// delays and do not establish device performance or the decoder's thread.
 final class AssetLoadStallTests: XCTestCase {
 
     @MainActor
@@ -16,10 +16,10 @@ final class AssetLoadStallTests: XCTestCase {
     }
 
     @MainActor
-    func testHeaviestAssetDecodeDoesNotStallMainActor() async throws {
+    func testHeaviestAssetDecodesAndClonesWithPhysicalDeviceTimingBudgets() async throws {
         let assets = DropEntityFactory.bundledAnimatedAssets
         try XCTSkipUnless(!assets.isEmpty, "no bundled assets")
-        // Pick the biggest file — the worst case is the test.
+        // Retain ADR-047's largest-file fixture selection.
         let heaviest = assets.max { a, b in
             (Bundle.main.url(forResource: a, withExtension: "usdz")
                 .flatMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize } ?? 0)
@@ -38,25 +38,44 @@ final class AssetLoadStallTests: XCTestCase {
             }
         }
 
-        let template = await DropEntityFactory.decodeTemplate(heaviest)
+        let decoded = await DropEntityFactory.decodeTemplate(heaviest)
         ticker.cancel()
-        XCTAssertNotNil(template, "decode failed for \(heaviest)")
+        let template = try XCTUnwrap(decoded, "decode failed for \(heaviest)")
 
-        // Bar: no main-actor gap above 250 ms during decode (a stall a user
-        // would feel as a hang is far larger; healthy is <50 ms).
+        // Placement path: clone cost on main (this is what a tap pays).
+        let start = Date()
+        let clone = template.clone(recursive: true)
+        let cloneMs = Date().timeIntervalSince(start) * 1000
+        XCTAssertFalse(clone === template, "clone must produce a distinct entity")
+
+        #if targetEnvironment(simulator)
+        let mode = "simulator diagnostics; physical timing budgets not evaluated"
+        #else
+        let mode = "physical device; timing budgets enforced"
+        #endif
+        let measurements = """
+        asset=\(heaviest)
+        mode=\(mode)
+        maximumMainActorSchedulingGapMs=\(String(format: "%.3f", meter.maxGapMs))
+        cloneMs=\(String(format: "%.3f", cloneMs))
+        """
+        let attachment = XCTAttachment(string: measurements)
+        attachment.name = "Asset decode and clone timings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("AssetLoadStallTests: \(measurements)")
+
+        #if !targetEnvironment(simulator)
+        // Keep ADR-047's device budgets unchanged; hosted simulator timings
+        // cannot substitute for this physical-device release gate.
         XCTAssertLessThan(
             meter.maxGapMs, 250,
             "main actor stalled \(Int(meter.maxGapMs)) ms decoding \(heaviest)"
         )
-
-        // Placement path: clone cost on main (this is what a tap pays).
-        let start = Date()
-        let clone = template!.clone(recursive: true)
-        let cloneMs = Date().timeIntervalSince(start) * 1000
-        _ = clone
         XCTAssertLessThan(
             cloneMs, 800,
             "clone of \(heaviest) took \(Int(cloneMs)) ms on main — needs pooling"
         )
+        #endif
     }
 }
