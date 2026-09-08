@@ -10,6 +10,7 @@ struct AugmentMeRealityApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        ARBaselineMetrics.shared.event("applicationLaunch")
         // ADR-039: Firebase configures before any store/auth use; absent
         // config file = fully local app, exactly as before.
         if AppConfig.firebaseConfigured {

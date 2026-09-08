@@ -127,3 +127,12 @@ AugmentMeReality/
 ├── AR/         AR camera, placement engine, procedural 3D content
 └── Drops/      list of placed drops
 ```
+
+## AR startup and thermal measurements
+
+The [Release baseline protocol](docs/AR-BASELINE-PROTOCOL.md) covers source/build
+provenance, opt-in `-ARBaselineMetrics` capture, isolated experiment switches and
+startup/15-minute comparisons. Build manifests and Markdown reports are generated
+with `python3 scripts/ar-baseline.py`. Callback and hero-readiness proxies remain
+explicitly separate from actual display presentation; device results are required
+before making performance or thermal claims.

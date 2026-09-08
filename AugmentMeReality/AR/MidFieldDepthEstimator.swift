@@ -103,6 +103,9 @@ final class MidFieldDepthEstimator {
 
         queue.async { [weak self] in
             guard let self else { return }
+            let metrics = ARBaselineMetrics.shared
+            let trace = metrics.measure("Depth model prepare")
+            defer { metrics.end(trace) }
             let configuration = MLModelConfiguration()
             configuration.computeUnits = .all
             guard
@@ -112,6 +115,7 @@ final class MidFieldDepthEstimator {
                 let mlModel = try? MLModel(contentsOf: url, configuration: configuration),
                 let vnModel = try? VNCoreMLModel(for: mlModel)
             else {
+                metrics.event("Depth model prepare failed")
                 self.log.error("Mid-field depth model failed to load; feature disabled")
                 self.stateLock.lock()
                 self.loading = false
@@ -122,6 +126,8 @@ final class MidFieldDepthEstimator {
             self.model = vnModel
             self.loading = false
             self.stateLock.unlock()
+            metrics.event("Depth model ready")
+            metrics.setWorkload("Depth model ready", enabled: true)
             self.log.log("Mid-field depth model loaded (Depth Anything V2 small f16)")
         }
     }
@@ -161,7 +167,10 @@ final class MidFieldDepthEstimator {
             let image = sources.image.flatMap { self.pooledCopy($0) }
             let lidar = sources.lidar.flatMap { self.pooledCopy($0) }
             sources.empty() // ARKit's buffers release HERE, pre-inference
-            guard let image, let lidar else { return }
+            guard let image, let lidar else {
+                ARBaselineMetrics.shared.event("Depth input copy failed")
+                return
+            }
             let request: VNCoreMLRequest
             if let existing = self.request {
                 request = existing
@@ -170,11 +179,26 @@ final class MidFieldDepthEstimator {
                 request.imageCropAndScaleOption = .scaleFill
                 self.request = request
             }
+            let metrics = ARBaselineMetrics.shared
+            metrics.sample("Depth input age", milliseconds: (ProcessInfo.processInfo.systemUptime - timestamp) * 1000)
             let handler = VNImageRequestHandler(cvPixelBuffer: image)
-            guard
-                (try? handler.perform([request])) != nil,
-                let observation = request.results?.first as? VNPixelBufferObservation
-            else { return }
+            let inferenceSucceeded: Bool = {
+                let trace = metrics.measure("Depth inference")
+                defer { metrics.end(trace) }
+                metrics.observe("Depth inference")
+                do {
+                    try handler.perform([request])
+                    return true
+                } catch {
+                    metrics.event("Depth inference failed")
+                    return false
+                }
+            }()
+            guard inferenceSucceeded else { return }
+            guard let observation = request.results?.first as? VNPixelBufferObservation else {
+                metrics.event("Depth inference missing output")
+                return
+            }
             let relative = observation.pixelBuffer
 
             if let fit = Self.fitInverseDepth(relative: relative, lidar: lidar) {
@@ -187,7 +211,10 @@ final class MidFieldDepthEstimator {
                     maxTrustedDepth: fit.maxTrustedDepth,
                     frameTimestamp: timestamp
                 ))
+                metrics.sample("Depth publication age", milliseconds: (ProcessInfo.processInfo.systemUptime - timestamp) * 1000)
+                metrics.observe("Depth sample published")
             } else {
+                metrics.event("Depth alignment rejected")
                 self.feed.invalidateIfStale(maxAge: AppConfig.midDepthMaxSampleAge)
             }
         }

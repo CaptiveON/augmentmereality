@@ -112,6 +112,9 @@ final class GeospatialEngine {
 
     func start(arView: ARView) {
         guard AppConfig.vpsEnabled else {
+            ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
+            ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
+            ARBaselineMetrics.shared.event("GAR unavailable", details: "configuration absent")
             state = .off
             return
         }
@@ -135,7 +138,13 @@ final class GeospatialEngine {
             self.configuration = configuration
             garSession = session
             state = .searching
+            ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
+            ARBaselineMetrics.shared.setWorkload("GAR session", enabled: true)
+            ARBaselineMetrics.shared.event("GAR session ready")
         } catch {
+            ARBaselineMetrics.shared.event("GAR session start failed")
+            ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
+            ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
             garSession = nil
             state = .failed("VPS unavailable: \(error.localizedDescription)")
         }
@@ -184,14 +193,20 @@ final class GeospatialEngine {
         configuration.semanticMode = on ? .enabled : .disabled
         var error: NSError?
         garSession.setConfiguration(configuration, error: &error)
-        guard error == nil else { return }
+        guard error == nil else {
+            ARBaselineMetrics.shared.event("GAR semantics configuration failed")
+            return
+        }
         semanticActive = on
+        ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: on)
         if !on {
             semanticFeed.update(labels: nil, confidence: nil)
         }
     }
 
     func stop() {
+        ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
+        ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
         garSession = nil
         anchorIDToDropID.removeAll()
         requestedDrops.removeAll()
@@ -223,7 +238,21 @@ final class GeospatialEngine {
     /// and the occluder entities this engine maintains in the scene.
     func update(with frame: ARFrame) {
         guard let garSession else { return }
-        guard let garFrame = try? garSession.update(frame) else { return }
+        let metrics = ARBaselineMetrics.shared
+        let updatedFrame: GARFrame?
+        do {
+            let trace = metrics.measure("GAR update")
+            defer { metrics.end(trace) }
+            metrics.observe("GAR update")
+            updatedFrame = try garSession.update(frame)
+        } catch {
+            metrics.event("GAR update failed")
+            return
+        }
+        guard let garFrame = updatedFrame else {
+            metrics.event("GAR update missing frame")
+            return
+        }
 
         if let earth = garFrame.earth {
             updateState(earth: earth)

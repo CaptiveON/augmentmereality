@@ -47,7 +47,7 @@ struct ReceiveScreen: View {
         .task {
             // ADR-043: opening a drop link IS camera intent — start the session
             // behind the invitation so "Reveal in AR" lands in a live camera.
-            arHolder.beginRevealWarmup()
+            arHolder.beginRevealWarmup(heroID: dropID)
         }
         // Round 12 (counsel SURF-lens-2): a first-ever launch from a link
         // races anonymous sign-in — the fetch waits for the uid instead of

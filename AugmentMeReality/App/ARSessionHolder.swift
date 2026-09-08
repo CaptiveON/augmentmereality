@@ -45,6 +45,8 @@ final class ARSessionHolder: ObservableObject {
     func warmWithoutCamera() {
         guard GeoARSessionManager.isDeviceSupported else { return }
         if arView == nil {
+            let trace = ARBaselineMetrics.shared.measure("ARView prepare")
+            defer { ARBaselineMetrics.shared.end(trace) }
             arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
         }
     }
@@ -52,8 +54,9 @@ final class ARSessionHolder: ObservableObject {
     /// Explicit camera intent from the Receive flow: the user tapped a drop
     /// link, the invitation is on screen — start the session now so "Reveal in
     /// AR" lands in an already-running camera.
-    func beginRevealWarmup() {
+    func beginRevealWarmup(heroID: UUID? = nil) {
         guard GeoARSessionManager.isDeviceSupported else { return }
+        manager.markCameraIntent(heroID: heroID)
         startIfNeeded()
         schedulePause()
     }
@@ -100,6 +103,8 @@ final class ARSessionHolder: ObservableObject {
     private func startIfNeeded() {
         guard let locationService, let library else { return }
         if arView == nil {
+            let trace = ARBaselineMetrics.shared.measure("ARView prepare")
+            defer { ARBaselineMetrics.shared.end(trace) }
             arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
         }
         if !attached {

@@ -20,3 +20,7 @@ firestore-debug*.log
 # Local store artifacts that may appear during device debugging
 *.incident
 *.ackdigest
+
+# Python report-tool bytecode
+__pycache__/
+*.pyc

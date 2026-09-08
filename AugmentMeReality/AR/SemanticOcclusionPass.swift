@@ -181,7 +181,8 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// (ADR-035: an attached pass with no work still forces RealityKit through
     /// an offscreen render + full-screen copy — detaching IS the heat fix, so
     /// install-once was not an option; the lock makes detach safe instead.)
-    func setCallbacksActive(_ active: Bool) {
+    func setCallbacksActive(_ requested: Bool) {
+        let active = requested && ARBaselineExperiment.current.allows(.postprocess)
         stateLock.lock()
         let changed = active != callbacksActiveStorage
         callbacksActiveStorage = active
@@ -207,10 +208,14 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             // interruption, session failure — were invisible to the FT-28/31
             // toggle count). Emitted AFTER the slot assignment, so it can
             // never claim a toggle the `guard changed, let arView` refused.
+            ARBaselineMetrics.shared.setWorkload("Semantic postprocess", enabled: true)
+            ARBaselineMetrics.shared.event("Semantic pass attached")
             log.log("Semantic pass attached")
         } else {
             arView.renderCallbacks.prepareWithDevice = nil
             arView.renderCallbacks.postProcess = nil
+            ARBaselineMetrics.shared.setWorkload("Semantic postprocess", enabled: false)
+            ARBaselineMetrics.shared.event("Semantic pass detached")
             log.log("Semantic pass detached")
         }
     }
@@ -239,11 +244,17 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         stateLock.unlock()
         if alreadyBuilt { return }
 
+        let metrics = ARBaselineMetrics.shared
+        let trace = metrics.measure("Semantic pipeline prepare")
+        defer { metrics.end(trace) }
         guard
             let library = try? device.makeDefaultLibrary(bundle: .main),
             let function = library.makeFunction(name: "semanticMatte"),
             let builtPipeline = try? device.makeComputePipelineState(function: function)
-        else { return }
+        else {
+            metrics.event("Semantic pipeline prepare failed")
+            return
+        }
         var builtCache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(nil, nil, device, nil, &builtCache)
         let builtUint = makeDummy(device: device, format: .r8Uint)
@@ -259,6 +270,11 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         dummyUint = builtUint
         dummyUnorm = builtUnorm
         dummyFloat = builtFloat
+        if builtCache != nil, builtUint != nil, builtUnorm != nil, builtFloat != nil {
+            metrics.event("Semantic pipeline ready")
+        } else {
+            metrics.event("Semantic pipeline resources incomplete")
+        }
     }
 
     private func makeDummy(device: MTLDevice, format: MTLPixelFormat) -> MTLTexture? {
@@ -270,6 +286,24 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     }
 
     private func encode(context: ARView.PostProcessContext) {
+        let metrics = ARBaselineMetrics.shared
+        // RealityKit callback cadence is an explicit presentation proxy. It is
+        // absent while detached and does not establish drawable presentation.
+        metrics.observe("Postprocess callback proxy")
+        // CPU-side elapsed time includes lock waiting; GPU duration/presentation
+        // remain measurements for Metal System Trace rather than this interval.
+        let trace = metrics.measure("Postprocess CPU encode")
+        defer { metrics.end(trace) }
+        if metrics.isEnabled {
+            // This is the entire RealityKit-provided command buffer, not an
+            // isolated shader or proof of drawable presentation. Never wait on it.
+            context.commandBuffer.addCompletedHandler { buffer in
+                guard buffer.status == .completed, buffer.gpuStartTime > 0,
+                      buffer.gpuEndTime >= buffer.gpuStartTime else { return }
+                metrics.sample("Postprocess command buffer GPU", milliseconds:
+                    (buffer.gpuEndTime - buffer.gpuStartTime) * 1000, originating: trace)
+            }
+        }
         // Counsel ARP-11/SWE-4: the WHOLE CPU-side encode holds the state lock —
         // a main-actor uninstall/detach serializes against it instead of
         // mutating pipeline/mattes under the render thread's feet.
@@ -323,6 +357,10 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         if let midSample = midDepthFeed?.snapshot(
             forFrameAt: frame.timestamp, maxAge: AppConfig.midDepthMaxSampleAge
         ) {
+            metrics.sample(
+                "Depth sample age", milliseconds:
+                    max(0, frame.timestamp - midSample.frameTimestamp) * 1000
+            )
             midTexture = makeTexture(
                 midSample.relativeDepth, format: .r16Float, cache: textureCache
             )
@@ -448,6 +486,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// added without releasing the frame's wrappers and flushing the cache.
     /// Caller holds `stateLock`.
     private func bailOut(context: ARView.PostProcessContext) {
+        ARBaselineMetrics.shared.observe("Postprocess blit fallback")
         inFlightTextures.removeAll()
         if let textureCache {
             CVMetalTextureCacheFlush(textureCache, 0)

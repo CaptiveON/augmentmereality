@@ -53,6 +53,8 @@ enum DropEntityFactory {
     @MainActor private static var animatedTemplates: [String: Entity] = [:]
     /// Assets currently decoding, so preload and on-demand requests never race.
     @MainActor private static var loadingAssets: Set<String> = []
+    /// Counts running publishers, excluding assets that are only queued for preload.
+    @MainActor private static var activeDecodes = 0
     /// Wave C (counsel SWE-6): assets whose decode FAILED. Without this
     /// negative cache, a corrupt USDZ spun forever: the load callback fired as
     /// if it succeeded, the manager rebuilt the entity, the rebuild re-requested
@@ -71,6 +73,10 @@ enum DropEntityFactory {
     @MainActor static func isAssetFailed(_ name: String) -> Bool {
         failedAssets.contains(name)
     }
+    @MainActor static func isAssetReady(_ name: String) -> Bool {
+        animatedTemplates[name] != nil
+    }
+
     private static let log = Logger(
         subsystem: "com.adnan.augmentmereality", category: "assets"
     )
@@ -83,7 +89,25 @@ enum DropEntityFactory {
     /// the ONLY path (deprecated on iOS 18+, deliberately — see ADR-047;
     /// stall-measured on device by `AssetLoadStallTests`).
     @MainActor static func decodeTemplate(_ name: String) async -> Entity? {
-        await withCheckedContinuation { continuation in
+        let delay = ARBaselineExperiment.current.delay(for: name)
+        if delay > 0 {
+            ARBaselineMetrics.shared.event("Asset fixture delay", details: "asset=\(name) seconds=\(delay)")
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            catch { return nil }
+        }
+        let metrics = ARBaselineMetrics.shared
+        // RealityKit owns the decode queue. This is publisher completion latency,
+        // including suspension/queueing, rather than CPU execution time.
+        let trace = metrics.measure("Asset decode latency")
+        activeDecodes += 1
+        metrics.setWorkload("Asset decode", enabled: true)
+        metrics.event("Asset decode started", details: name)
+        defer {
+            metrics.end(trace)
+            activeDecodes -= 1
+            metrics.setWorkload("Asset decode", enabled: activeDecodes > 0)
+        }
+        return await withCheckedContinuation { continuation in
             var cancellable: AnyCancellable?
             var loaded: Entity?
             cancellable = Entity.loadAsync(named: name, in: .main)
@@ -94,6 +118,10 @@ enum DropEntityFactory {
                         // asset never existed.
                         if case .failure(let error) = completion {
                             log.error("USDZ decode failed for \(name): \(error.localizedDescription)")
+                            metrics.event("Asset decode failed", details: name)
+                        }
+                        if loaded != nil {
+                            metrics.event("Asset decoded", details: name)
                         }
                         continuation.resume(returning: loaded)
                         cancellable?.cancel()
@@ -112,6 +140,7 @@ enum DropEntityFactory {
     /// EXCLUDED from auto-preload — they decode on demand behind a placeholder,
     /// never as an ambush during the launch window.
     @MainActor static func preloadAnimatedAssets() {
+        guard ARBaselineExperiment.current.allows(.assetPreload) else { return }
         let queue = bundledAnimatedAssets
             .filter { animatedTemplates[$0] == nil && !loadingAssets.contains($0) }
             .filter { assetFileSize($0) <= AppConfig.assetPreloadMaxBytes }
@@ -124,6 +153,7 @@ enum DropEntityFactory {
                 loadingAssets.remove(name)
                 if let entity, animatedTemplates[name] == nil {
                     animatedTemplates[name] = entity
+                    ARBaselineMetrics.shared.event("Asset cache ready", details: name)
                 } else if entity == nil {
                     failedAssets.insert(name) // SWE-6: never re-decode a dud
                 }
@@ -145,6 +175,7 @@ enum DropEntityFactory {
             loadingAssets.remove(name)
             if let entity, animatedTemplates[name] == nil {
                 animatedTemplates[name] = entity
+                ARBaselineMetrics.shared.event("Asset cache ready", details: name)
             } else if entity == nil {
                 failedAssets.insert(name)
             }

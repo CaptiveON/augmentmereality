@@ -38,7 +38,9 @@ enum AppConfig {
         return secrets["GoogleGeospatialAPIKey"] as? String ?? ""
     }()
 
-    static var vpsEnabled: Bool { !googleGeospatialAPIKey.isEmpty }
+    static var vpsEnabled: Bool {
+        !googleGeospatialAPIKey.isEmpty && ARBaselineExperiment.current.allows(.localization)
+    }
 
     /// VPS localization must be at least this good before we trust it to own
     /// content placement (meters horizontal / degrees yaw). Yaw is the lateral
@@ -109,7 +111,7 @@ enum AppConfig {
 
     /// ADR-031 mid-field depth (Depth Anything V2 small, Neural Engine): dense
     /// metric-aligned depth for occlusion in the LiDAR-blind 4–60 m band.
-    static let midFieldDepthEnabled = true
+    static let midFieldDepthEnabled = ARBaselineExperiment.current.allows(.neuralDepth)
     /// Inference rate (the model is ~17 ms on ANE; mid-field scenery changes
     /// slowly and the matte is EMA-smoothed — 5 Hz reads identically at half
     /// the ANE duty; ADR-035).
