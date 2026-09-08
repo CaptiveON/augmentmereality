@@ -12,10 +12,9 @@ mkdir -p "$amr_output"
 amr_output="$(cd "$amr_output" && pwd)"
 cd "$amr_repo"
 
-amr_packages=()
-if [[ $# == 2 ]]; then
-  amr_packages=(-clonedSourcePackagesDirPath "$2")
-fi
+# Keep this array nonempty: macOS Bash 3.2 treats an empty-array expansion as an
+# unbound variable under set -u. The default matches the isolated Xcode cache.
+amr_packages=(-clonedSourcePackagesDirPath "${2:-$amr_output/DerivedData/SourcePackages}")
 echo "Building config-free Debug test host; artifacts: $amr_output"
 # Resolve explicitly from the committed lock so a clean CI runner can fetch the
 # pinned checkouts. The build itself is not permitted to choose newer versions.
