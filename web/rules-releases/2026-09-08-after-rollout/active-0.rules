@@ -1,0 +1,91 @@
+rules_version = '2';
+
+// AugmentMeReality Firestore rules v3 — IN SOURCE CONTROL (counsel PBS-10,
+// pulled forward in Wave C round 6 because four review findings turned on
+// rules semantics the repository could not assert).
+//
+// STATUS: reviewed release candidate; deployment is a separate recorded action.
+// This file defines intended policy, not proof of the active cloud release.
+// Verify active metadata/source with scripts/verify-firestore-release.mjs and
+// follow web/FIRESTORE-RELEASE.md. Emulator/client gates MUST pass first.
+//
+// v3 fixes over the README v2 rules (counsel PBS-1/PBS-2/PBS-6, flows-4):
+// - create and update are SPLIT; update gates on the EXISTING doc's owner and
+//   pins ownerUid immutable (v2 let any signed-in user hijack any drop).
+// - read is split into get/list; list is owner-only (v2 let anyone enumerate
+//   every shared drop's coordinates and recipient names).
+// - delete tolerates absence (resource == null) so deleting a never-uploaded
+//   doc is a harmless success, not a permission-denied the client must treat
+//   as folklore (round-5 flows-4).
+//
+// Round 8 corrections (counsel B5 — seam-3/ux-2/flows-3, B3):
+// - GET also tolerates absence: the client's `exists` checks
+//   (fetchSharedDrop, serverConfirmsAbsent tombstone retirement) need the
+//   server to ANSWER "not there" for a missing doc; denying the read made
+//   absence indistinguishable from no-permission. This permits exact-id
+//   existence probes; collection enumeration remains owner-scoped.
+// - The reaction emoji allow-list matches the SHIPPING reaction bar
+//   (ReactionSession.reactions) EXACTLY. Drift lock: web/rules-tests
+//   parses both this file and ReactionSession.swift and fails on mismatch.
+//   The old list denied 😂 (offered by the UI — 25% of taps) and permitted
+//   🎉/😭 (never sent).
+// - Reaction CREATE no longer performs the parent-visibility get(): it cost a
+//   billed read per reaction, and it denied legitimate reactions whenever the
+//   parent doc was missing or its visibility hadn't flushed. Access control
+//   stays capability-based: writing a reaction requires holding the drop's
+//   unguessable UUID (the magic link), plus author-stamp + fixed schema +
+//   emoji allow-list. Structural alternative (top-level reactions collection
+//   or Cloud Function) stays a recorded residual.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /drops/{dropId} {
+      // GET: the owner, anyone holding the exact document id of a shared
+      // drop (the magic link) — and absence ANSWERS (resource == null) so
+      // client `exists` checks work. LIST: owner only — a filtered list
+      // query is an allowed full-collection page under v2's combined rule.
+      allow get: if signedIn()
+        && (resource == null
+            || resource.data.ownerUid == request.auth.uid
+            || resource.data.visibility in ['link', 'public']);
+      allow list: if signedIn()
+        && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid;
+
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid;
+
+      // Absence satisfies a delete intent (resource == null) — the client's
+      // tombstone pipeline depends on this distinction.
+      allow delete: if signedIn()
+        && (resource == null || resource.data.ownerUid == request.auth.uid);
+
+      match /reactions/{reactionId} {
+        allow read: if signedIn();
+        // Emoji list = ReactionSession.reactions, verbatim (drift-locked by
+        // web/rules-tests). Capability model: the dropId UUID is the secret.
+        allow create: if signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.emoji in ['❤️', '😂', '🥹', '🤯']
+          && request.resource.data.keys().hasOnly(['id', 'emoji', 'uid', 'byName', 'at']);
+        allow delete: if signedIn()
+          && (resource.data.uid == request.auth.uid
+              || get(/databases/$(database)/documents/drops/$(dropId)).data.ownerUid
+                  == request.auth.uid);
+        allow update: if false;
+      }
+    }
+
+    match /users/{userId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+  }
+}

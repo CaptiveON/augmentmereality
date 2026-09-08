@@ -1,0 +1,31 @@
+{
+  "device": "iPhone 15 Pro Max",
+  "os": "iOS 26.6",
+  "configuration": "Release",
+  "appVersion": "0.9.0 (2)",
+  "commit": "e54285d9875480a2a60a43a6ebb332fa9966b255",
+  "checks": [
+    {
+      "check": "Existing home screen and content after update",
+      "method": "User observed on physical device",
+      "result": "passed"
+    },
+    {
+      "check": "Private foreign test link yields retryable unknown with Try again, not gone",
+      "method": "Controlled private drop plus user observed UI",
+      "result": "passed"
+    }
+  ],
+  "pending": [
+    "Offline retry then recovery after restoring connectivity",
+    "Deleted-link gone state",
+    "Queued owner deletion across offline/reconnect and relaunch",
+    "Next-day repeat and active-release verification"
+  ],
+  "invalidatedTrials": [
+    {
+      "check": "First reconnect invitation trial",
+      "reason": "The operator-created record used flat GeoDrop fields instead of the required CloudDrop.drop envelope. The user saw a retryable error after reconnecting. The fixture was corrected; this is not counted as an app defect or a passing reconnect test."
+    }
+  ]
+}

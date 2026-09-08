@@ -82,3 +82,17 @@ native test and both RPC gates must still execute and pass.
 To exercise a slow first seed, use `AMR_NATIVE_SEED_DELAY_MS=6000`; only that
 seed is delayed, and a passing native run must still have exactly three seed
 requests, proving that setup recovery did not duplicate the mutations.
+
+The first native SDK server read has one 30-second setup budget to establish
+its gRPC connection after the simulator launches. It must return the seeded
+existing document without pending writes before any held-request assertions
+start. This is separate from HTTP fixture readiness. There is no setup retry.
+Subsequent SDK operations retain their four-second bounds, and the deliberate
+unresponsive-read test retains its 0.2-second deadline and <2-second assertion.
+The production helper retains its ten-second default deadline.
+
+Use `AMR_NATIVE_TRANSPORT_DELAY_MS=6000` to delay only the first Listen RPC and
+verify startup recovery. `35000` must fail before either held-request gate; the SDK may report
+its own offline error before the outer 30-second setup budget expires. Warm-up cannot satisfy those gates or the three-seed
+requirement. This addresses the post-merge run's initial-read timeout, before
+any pending-delete assertion; it does not establish physical-device timing.

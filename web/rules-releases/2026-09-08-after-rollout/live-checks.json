@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 1,
+  "project": "augmentmereality",
+  "mode": "--production",
+  "runnerSHA256": "2b966e56719ef5deb61d9cdeacb6fe280d5e67d994f6ae15e6eb888ac3e94013",
+  "startedAt": "2026-09-08T13:16:40.490Z",
+  "checks": [
+    {
+      "label": "create private drop a",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "create link drop a",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "create public drop a",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "create private drop b",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner reads private",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner edits private",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "viewer reads private",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "owner reads link",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner edits link",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "viewer reads link",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner reads public",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner edits public",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "viewer reads public",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner scoped refresh",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "viewer own scoped refresh",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "deny unfiltered enumeration (zero-result cap)",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny link enumeration (zero-result cap)",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny public enumeration (zero-result cap)",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny foreign owner enumeration (zero-result cap)",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny unauthenticated missing get",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "signed-in missing get",
+      "status": 404,
+      "expected": 404,
+      "passed": true
+    },
+    {
+      "label": "missing delete",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "repeated missing delete",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "deny foreign overwrite owner takeover",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny foreign merge owner takeover",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny owner transfers ownership",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "owner and content unchanged after denied mutations",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "deny viewer deletion of owner drop",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "allowed reaction ❤️",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "allowed reaction 😂",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "allowed reaction 🥹",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "allowed reaction 🤯",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "allowed reaction before parent",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "deny reaction with wrong author",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny reaction extra key",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny unsupported reaction emoji",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "deny reaction update",
+      "status": 403,
+      "expected": 403,
+      "passed": true
+    },
+    {
+      "label": "parent owner removes reaction",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "author removes reaction",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "owner deletes linked drop",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    },
+    {
+      "label": "deleted link is authoritatively missing for viewer",
+      "status": 404,
+      "expected": 404,
+      "passed": true
+    },
+    {
+      "label": "owner repeats acknowledged delete",
+      "status": 200,
+      "expected": 200,
+      "passed": true
+    }
+  ],
+  "cleanup": [
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "reaction",
+      "removed": true
+    },
+    {
+      "kind": "drop",
+      "removed": true
+    },
+    {
+      "kind": "drop",
+      "removed": true
+    },
+    {
+      "kind": "drop",
+      "removed": true
+    },
+    {
+      "kind": "drop",
+      "removed": true
+    },
+    {
+      "kind": "anonymous-account",
+      "role": "a",
+      "removed": true
+    },
+    {
+      "kind": "anonymous-account",
+      "role": "b",
+      "removed": true
+    }
+  ],
+  "sources": [
+    "https://firebase.google.com/docs/firestore/use-rest-api",
+    "https://firebase.google.com/docs/reference/rest/auth",
+    "https://firebase.google.com/docs/firestore/reference/rest/v1/StructuredQuery"
+  ],
+  "activeRuleset": "projects/augmentmereality/rulesets/a2f0de32-da20-4a9e-aba7-d5da8afee2a3",
+  "candidateSHA256": "cd613a6be99c86e071cf4782d4e170731363b0a9496b4d781007e12d02c457b6",
+  "status": "passed",
+  "cleanupComplete": true,
+  "finishedAt": "2026-09-08T13:17:01.562Z",
+  "checkCount": 42,
+  "limits": [
+    "REST authorization checks do not substitute for iOS offline/session/UI checks.",
+    "Zero-result enumeration probes return no user documents.",
+    "No production policy or App Check changes are made by this script."
+  ]
+}
