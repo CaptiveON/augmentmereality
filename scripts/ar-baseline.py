@@ -51,6 +51,18 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
+def validate_embedded_identity(info, identity):
+    expected = {
+        'ARBaselineSourceCommit': identity['sourceCommit'],
+        'ARBaselineSourceHash': identity['sourceHash'],
+        'ARBaselineSourceDirty': str(identity['sourceDirty']).lower(),
+        'ARBaselineBuildConfiguration': 'Release',
+    }
+    for key, value in expected.items():
+        if info.get(key) != value:
+            raise ValueError(f'Built app identity mismatch for {key}: {info.get(key)!r} != {value!r}')
+
+
 def manifest(root, app, output, configuration, identity=None):
     identity = identity or source_identity(root)
     info = plistlib.loads((app / 'Info.plist').read_bytes())
@@ -78,10 +90,9 @@ def build(args):
                '-scheme', 'AugmentMeReality', '-configuration', 'Release',
                '-destination', 'generic/platform=iOS', '-derivedDataPath', str(args.derived_data.resolve()),
                '-disableAutomaticPackageResolution',
-               'INFOPLIST_KEY_ARBaselineSourceCommit=' + identity['sourceCommit'],
-               'INFOPLIST_KEY_ARBaselineSourceHash=' + identity['sourceHash'],
-               'INFOPLIST_KEY_ARBaselineSourceDirty=' + str(identity['sourceDirty']).lower(),
-               'INFOPLIST_KEY_ARBaselineBuildConfiguration=Release']
+               'AR_BASELINE_SOURCE_COMMIT=' + identity['sourceCommit'],
+               'AR_BASELINE_SOURCE_HASH=' + identity['sourceHash'],
+               'AR_BASELINE_SOURCE_DIRTY=' + str(identity['sourceDirty']).lower()]
     if args.unsigned:
         command += ['CODE_SIGNING_ALLOWED=NO']
     elif args.team:
@@ -94,6 +105,7 @@ def build(args):
     if source_identity(root)['sourceHash'] != identity['sourceHash']:
         raise ValueError('Sources changed during build; rebuild before using this artifact.')
     app = args.derived_data.resolve() / 'Build/Products/Release-iphoneos/AugmentMeReality.app'
+    validate_embedded_identity(plistlib.loads((app / 'Info.plist').read_bytes()), identity)
     manifest(root, app, output / 'build-manifest.json', 'Release', identity)
     print(output / 'build-manifest.json')
 

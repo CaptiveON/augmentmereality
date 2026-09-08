@@ -42,6 +42,16 @@ class ReportTests(unittest.TestCase):
         text = baseline.summarize(data)
         self.assertIn('30.00 | unmeasured | unmeasured | unmeasured', text)
 
+    def test_build_provenance_requires_actual_embedded_keys(self):
+        identity = {'sourceCommit': 'abc', 'sourceHash': 'def', 'sourceDirty': False}
+        for info in [{}, {'ARBaselineSourceCommit': 'wrong'}]:
+            with self.assertRaises(ValueError):
+                baseline.validate_embedded_identity(info, identity)
+        baseline.validate_embedded_identity({
+            'ARBaselineSourceCommit': 'abc', 'ARBaselineSourceHash': 'def',
+            'ARBaselineSourceDirty': 'false', 'ARBaselineBuildConfiguration': 'Release'
+        }, identity)
+
     def test_unknown_schema_and_nonfinite_values(self):
         with self.assertRaises(ValueError):
             baseline.summarize({'schemaVersion': 9})

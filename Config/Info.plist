@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>ARBaselineSourceCommit</key>
+    <string>$(AR_BASELINE_SOURCE_COMMIT)</string>
+    <key>ARBaselineSourceHash</key>
+    <string>$(AR_BASELINE_SOURCE_HASH)</string>
+    <key>ARBaselineSourceDirty</key>
+    <string>$(AR_BASELINE_SOURCE_DIRTY)</string>
+    <key>ARBaselineBuildConfiguration</key>
+    <string>$(CONFIGURATION)</string>
 	<!-- Merged with the generated Info.plist (GENERATE_INFOPLIST_FILE stays YES).
 	     Holds the array-valued keys build settings can't express. -->
 	<key>CFBundleURLTypes</key>
