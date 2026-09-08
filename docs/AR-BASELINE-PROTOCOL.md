@@ -214,8 +214,12 @@ mark the experiment INVALID. Inspect the exported experiment description.
 For an intentionally delayed existing model, set `AR_BASELINE_DELAYED_ASSET` to its
 bundle name and `AR_BASELINE_ASSET_DELAY_SECONDS` to 0–10. Disable `assetPreload`
 to prevent it being ready before the test. This delay precedes the measured decode
-and is separately logged as a fixture delay. Missing assets still use a documented
-fixture referencing an absent model; negative-cache failures never become readiness.
+and is separately logged as a fixture delay. For missing-resource validation, set
+`AR_BASELINE_MISSING_ASSET` to an existing bundle name and disable `assetPreload`.
+Selecting that asset requests the deliberately absent `__ARBaselineMissingResource__`
+through the real RealityKit loader. The selected identity stays unchanged, the
+fixture event names the redirect, and the ordinary failure/negative-cache path runs.
+Use a fresh process; negative-cache failures never become readiness.
 Never relabel an experiment variant as U.
 
 Make short **separate** screen recordings for these scenarios to correlate the

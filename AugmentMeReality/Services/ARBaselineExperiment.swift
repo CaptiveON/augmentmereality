@@ -16,13 +16,14 @@ struct ARBaselineExperiment: Sendable {
     let enabled: Bool
     let disabled: Set<Subsystem>
     let delayedAsset: String?
+    let missingAsset: String?
     let assetDelaySeconds: Double
     let invalidOptions: [String]
 
     init(arguments: [String], environment: [String: String]) {
         enabled = arguments.contains("-ARBaselineExperiment")
         guard enabled else {
-            disabled = []; delayedAsset = nil; assetDelaySeconds = 0; invalidOptions = []
+            disabled = []; delayedAsset = nil; missingAsset = nil; assetDelaySeconds = 0; invalidOptions = []
             return
         }
         let names = (environment["AR_BASELINE_DISABLE"] ?? "")
@@ -34,6 +35,7 @@ struct ARBaselineExperiment: Sendable {
             invalid.append("AR_BASELINE_ASSET_DELAY_SECONDS must be 0...10")
         }
         delayedAsset = environment["AR_BASELINE_DELAYED_ASSET"]
+        missingAsset = environment["AR_BASELINE_MISSING_ASSET"]
         if (delay ?? 0) > 0, delayedAsset?.isEmpty != false {
             invalid.append("AR_BASELINE_DELAYED_ASSET is required for delay")
         }
@@ -49,9 +51,16 @@ struct ARBaselineExperiment: Sendable {
         enabled && invalidOptions.isEmpty && asset == delayedAsset ? assetDelaySeconds : 0
     }
 
+    /// Exercise RealityKit's real missing-resource failure while retaining the
+    /// user's selected asset identity and the ordinary negative-cache path.
+    func resourceName(for asset: String) -> String {
+        enabled && invalidOptions.isEmpty && asset == missingAsset
+            ? "__ARBaselineMissingResource__" : asset
+    }
+
     var description: String {
         if !enabled { return "shipping defaults" }
         if !invalidOptions.isEmpty { return "INVALID: \(invalidOptions.joined(separator: "; ")); shipping defaults retained" }
-        return "disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ",")); delayedAsset=\(delayedAsset ?? "none"); delaySeconds=\(assetDelaySeconds)"
+        return "disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ",")); delayedAsset=\(delayedAsset ?? "none"); delaySeconds=\(assetDelaySeconds); missingAsset=\(missingAsset ?? "none")"
     }
 }

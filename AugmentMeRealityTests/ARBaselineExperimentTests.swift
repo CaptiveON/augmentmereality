@@ -34,4 +34,16 @@ final class ARBaselineExperimentTests: XCTestCase {
             XCTAssertEqual(options.delay(for: "heavy"), 0)
         }
     }
+
+    func testMissingFixtureRequiresValidExperimentAndOnlyRedirectsSelectedAsset() {
+        let environment = ["AR_BASELINE_MISSING_ASSET": "robot"]
+        let shipping = ARBaselineExperiment(arguments: ["-ARBaselineMetrics"], environment: environment)
+        XCTAssertEqual(shipping.resourceName(for: "robot"), "robot")
+        let fixture = ARBaselineExperiment(arguments: ["-ARBaselineExperiment"], environment: environment)
+        XCTAssertEqual(fixture.resourceName(for: "robot"), "__ARBaselineMissingResource__")
+        XCTAssertEqual(fixture.resourceName(for: "flower"), "flower")
+        let invalid = ARBaselineExperiment(arguments: ["-ARBaselineExperiment"], environment:
+            environment.merging(["AR_BASELINE_DISABLE": "typo"]) { _, new in new })
+        XCTAssertEqual(invalid.resourceName(for: "robot"), "robot")
+    }
 }

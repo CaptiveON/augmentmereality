@@ -96,6 +96,10 @@ enum DropEntityFactory {
             catch { return nil }
         }
         let metrics = ARBaselineMetrics.shared
+        let resourceName = ARBaselineExperiment.current.resourceName(for: name)
+        if resourceName != name {
+            metrics.event("Asset missing fixture", details: "selected=\(name) requested=\(resourceName)")
+        }
         // RealityKit owns the decode queue. This is publisher completion latency,
         // including suspension/queueing, rather than CPU execution time.
         let trace = metrics.measure("Asset decode latency")
@@ -110,7 +114,7 @@ enum DropEntityFactory {
         return await withCheckedContinuation { continuation in
             var cancellable: AnyCancellable?
             var loaded: Entity?
-            cancellable = Entity.loadAsync(named: name, in: .main)
+            cancellable = Entity.loadAsync(named: resourceName, in: .main)
                 .sink(
                     receiveCompletion: { completion in
                         // Wave C SWE-6: the failure used to be dropped on the
