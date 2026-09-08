@@ -204,14 +204,16 @@ final class DropLibraryTests: XCTestCase {
     }
 
     private func makeLibrary(
-        local: DropStore? = nil, cloud: DropStore? = nil, defaults: UserDefaults? = nil
+        local: DropStore? = nil, cloud: DropStore? = nil, defaults: UserDefaults? = nil,
+        absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) -> DropLibrary {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("library-\(UUID().uuidString).json")
         return DropLibrary(
             localStore: local ?? LocalDropStore(fileURL: url),
             cloudStore: cloud,
-            defaults: defaults ?? makeDefaults()
+            defaults: defaults ?? makeDefaults(),
+            absenceProbeTime: absenceProbeTime
         )
     }
 
@@ -923,6 +925,78 @@ final class DropLibraryTests: XCTestCase {
         )
     }
 
+    func testDeniedCapabilityRetriesAfterBackoffAndStillRequiresPerDocumentAbsence() async {
+        let id = UUID()
+        let defaults = makeDefaults()
+        defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        let cloud = GatedCloudStore()
+        await cloud.setFailDelete(DropStoreError.ackTimedOut, for: id)
+        await cloud.setAbsenceCapability(.denied)
+        var uptime: TimeInterval = 0
+        let library = makeLibrary(cloud: cloud, defaults: defaults, absenceProbeTime: { uptime })
+
+        await library.refresh(near: nil)
+        XCTAssertTrue(library.pendingDeleteIDs.contains(id))
+        await cloud.setAbsenceCapability(.answers) // A rules rollout changes the capability.
+        uptime = 59
+        await library.refresh(near: nil)
+        let beforeBackoff = await cloud.absenceProbeCalls
+        XCTAssertEqual(beforeBackoff, 1, "Denials back off instead of probing every refresh")
+
+        uptime = 61
+        await library.refresh(near: nil)
+        let afterBackoff = await cloud.absenceProbeCalls
+        XCTAssertEqual(afterBackoff, 2, "The same session must recover after a rules rollout")
+        XCTAssertTrue(library.pendingDeleteIDs.contains(id), "Capability is not proof this drop is gone")
+
+        await cloud.setServerAbsent([id])
+        await library.refresh(near: nil)
+        XCTAssertFalse(library.pendingDeleteIDs.contains(id), "Per-document proof retires the tombstone")
+        let afterRetirement = await cloud.absenceProbeCalls
+        XCTAssertEqual(afterRetirement, 2, "Positive capability can be reused")
+    }
+
+    func testChangedIdentityRechecksDeniedCapabilityWithoutWaitingForBackoff() async {
+        let id = UUID()
+        let defaults = makeDefaults()
+        defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        let cloud = GatedCloudStore()
+        await cloud.setFailDelete(DropStoreError.ackTimedOut, for: id)
+        await cloud.setAbsenceCapability(.denied)
+        let library = makeLibrary(cloud: cloud, defaults: defaults, absenceProbeTime: { 0 })
+
+        await library.authDidBecomeReady(uid: "first-user")
+        await cloud.setAbsenceCapability(.answers)
+        await cloud.setServerAbsent([id])
+        await library.authDidBecomeReady(uid: "first-user")
+        XCTAssertTrue(library.pendingDeleteIDs.contains(id), "An unchanged identity keeps the backoff")
+        let sameIdentityCalls = await cloud.absenceProbeCalls
+        XCTAssertEqual(sameIdentityCalls, 1)
+
+        await library.authDidBecomeReady(uid: "second-user")
+        XCTAssertFalse(library.pendingDeleteIDs.contains(id), "A different identity needs a fresh verdict")
+        let changedIdentityCalls = await cloud.absenceProbeCalls
+        XCTAssertEqual(changedIdentityCalls, 2)
+    }
+
+    func testFirstAuthReadyRechecksCapabilityLearnedBeforeIdentityWasAttached() async {
+        let id = UUID()
+        let defaults = makeDefaults()
+        defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        let cloud = GatedCloudStore()
+        await cloud.setFailDelete(DropStoreError.ackTimedOut, for: id)
+        await cloud.setAbsenceCapability(.denied)
+        let library = makeLibrary(cloud: cloud, defaults: defaults, absenceProbeTime: { 0 })
+
+        await library.refresh(near: nil)
+        await cloud.setAbsenceCapability(.answers)
+        await cloud.setServerAbsent([id])
+        await library.authDidBecomeReady(uid: "first-user")
+        XCTAssertFalse(library.pendingDeleteIDs.contains(id))
+        let calls = await cloud.absenceProbeCalls
+        XCTAssertEqual(calls, 2, "Bootstrap must not reuse a verdict learned before auth-ready")
+    }
+
     // MARK: - Round 12 (counsel round-11 blockers + same-pass items)
 
     /// Round 12 (counsel SURF-lens-1/STATE-lens-3/FLOWS-lens-3): the composed
@@ -1379,6 +1453,7 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
     private var unackedRowIDs: Set<UUID> = []
     /// Round 10 (counsel seams-1c): configurable deployed-rules capability.
     private var absenceCapabilityAnswer: AbsenceCapability = .answers
+    private(set) var absenceProbeCalls = 0
     private var gateSaves = false
     private var gateLoads = false
     private var gateDeletes = false
@@ -1443,7 +1518,8 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
     }
 
     func probeAbsenceCapability() async -> AbsenceCapability {
-        absenceCapabilityAnswer
+        absenceProbeCalls += 1
+        return absenceCapabilityAnswer
     }
 
     func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop] {

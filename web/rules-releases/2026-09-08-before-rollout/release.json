@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-09-08T03:18:12.251Z",
+  "target": {
+    "projectId": "augmentmereality",
+    "projectNumber": "895624785272",
+    "databaseId": "(default)"
+  },
+  "method": "Read-only Rules REST release + referenced source + repeat release check; no user-document reads.",
+  "release": {
+    "name": "projects/augmentmereality/releases/cloud.firestore",
+    "rulesetName": "projects/augmentmereality/rulesets/680529bf-416d-44b2-aef8-347ab6584664",
+    "createTime": "2026-07-09T00:15:52.815371Z",
+    "updateTime": "2026-07-09T01:11:10.207900Z"
+  },
+  "rulesetCreatedAt": "2026-07-09T01:11:09.333087Z",
+  "sourceFiles": [
+    {
+      "name": "firestore.rules",
+      "savedAs": "active-0.rules",
+      "sha256": "bfbd52d0c34dcc43e0624ff3f0eb6fa2495065547cacc41e304385c96d0a65bf",
+      "bytes": 942
+    }
+  ],
+  "candidate": {
+    "path": "web/firestore.rules",
+    "sha256": "cd613a6be99c86e071cf4782d4e170731363b0a9496b4d781007e12d02c457b6",
+    "matchesActiveSource": false
+  },
+  "appCheck": {
+    "name": "projects/895624785272/services/firestore.googleapis.com",
+    "verification": "read",
+    "enforcementMode": "NOT_RETURNED",
+    "updateTime": "1970-01-01T00:00:00Z",
+    "note": "API omitted the mode; enforcement is not inferred."
+  }
+}

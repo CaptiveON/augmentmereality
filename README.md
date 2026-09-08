@@ -87,34 +87,19 @@ The app runs fully local until Firebase is configured. To light it up:
 3. Download **GoogleService-Info.plist** → put it in `AugmentMeReality/Support/`
    (it's gitignored, same as Secrets.plist).
 4. Console → **Build → Authentication → Sign-in method → Anonymous → Enable**.
-5. Console → **Build → Firestore Database → Create database** (production mode,
-   nearest region). **Rules v2 (Wave 6.2 — magic links + reactions):**
-   ```
-   rules_version = '2';
-   service cloud.firestore {
-     match /databases/{database}/documents {
-       match /users/{uid} {
-         allow read, write: if request.auth != null && request.auth.uid == uid;
-       }
-       match /drops/{id} {
-         // Owner full control; link/public drops readable by any signed-in user.
-         allow read: if request.auth != null
-           && (resource.data.ownerUid == request.auth.uid
-               || resource.data.visibility in ['link', 'public']);
-         allow create, update: if request.auth != null
-           && request.resource.data.ownerUid == request.auth.uid;
-         allow delete: if request.auth != null
-           && resource.data.ownerUid == request.auth.uid;
-         match /reactions/{rid} {
-           allow read: if request.auth != null;
-           allow create: if request.auth != null
-             && request.resource.data.uid == request.auth.uid;
-         }
-       }
-     }
-   }
-   ```
-6. Rebuild — the Profile tab shows “Synced” and your drops follow you across installs.
+5. Create the Firestore database in production mode. Use the reviewed
+   [rules candidate](web/firestore.rules) and the
+   [release verification/runbook](web/FIRESTORE-RELEASE.md). The former README v2
+   rules permitted cross-owner overwrite and shared-document enumeration and
+   must not be copied into a new project.
+6. Rebuild with the intended Firebase configuration. Cloud state must be earned
+   from acknowledged operations; configuring Firebase alone does not establish
+   synchronization or cross-device account recovery.
+
+The deployment target is recorded without credentials in
+[firestore-target.json](web/firestore-target.json). Local emulator results describe
+candidate/historical fixtures, not the active backend. Use the read-only verifier
+to capture a dated release ID and source hash before and after an authorized rollout.
 
 ## Sharing drops with everyone (Wave 3, flag-gated)
 

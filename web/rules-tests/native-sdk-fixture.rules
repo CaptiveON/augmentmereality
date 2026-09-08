@@ -1,0 +1,24 @@
+rules_version = '2';
+
+// SDK semantics fixture ONLY. This is never a deployment policy: the dedicated
+// demo emulator permits controlled anonymous reads so the native SDK test needs
+// no Firebase Auth, real credentials or production Firebase configuration.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /probe/{id} {
+      allow get: if resource == null || resource.data.readable == true;
+      allow delete: if resource == null || resource.data.allowDelete == true;
+      allow list, create, update: if false;
+    }
+    match /nativeReactions/{id} {
+      allow get, delete: if true;
+      allow create: if request.resource.data.keys().hasOnly(['id', 'emoji', 'uid', 'byName', 'at'])
+        && request.resource.data.id == id
+        && request.resource.data.emoji == '😂'
+        && request.resource.data.uid == 'fixture-user'
+        && request.resource.data.byName is string
+        && request.resource.data.at is timestamp;
+      allow list, update: if false;
+    }
+  }
+}

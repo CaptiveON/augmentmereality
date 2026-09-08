@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Historical v2 authorization fixture retained for client compatibility tests.
+// Imported from the repository snapshot recorded August 17, 2026.
+// This is NOT a statement of current production rules and must never be deployed.
+// Active deployment evidence belongs in a separately verified release record.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    match /drops/{id} {
+      // Owner full control; link/public drops readable by any signed-in user.
+      allow read: if request.auth != null
+        && (resource.data.ownerUid == request.auth.uid
+            || resource.data.visibility in ['link', 'public']);
+      allow create, update: if request.auth != null
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow delete: if request.auth != null
+        && resource.data.ownerUid == request.auth.uid;
+      match /reactions/{rid} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && request.resource.data.uid == request.auth.uid;
+      }
+    }
+  }
+}

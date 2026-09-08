@@ -1,188 +1,293 @@
-// Round 8 (counsel B5, PBS-10): emulator verification of firestore.rules v3.
-// One assertion per behavior the CLIENT depends on — including every error
-// path the client maps to a verdict (permission-denied → refusedByServer
-// terminal; absent-doc get answering → tombstone retirement + fetchSharedDrop).
-// Run via `npm test` (drift check first, then emulators:exec wraps this file).
+// Tests the reviewed local web/firestore.rules in a disposable emulator.
+// Passing these tests says nothing about a real project's deployed release.
+import assert from 'node:assert/strict';
+import test, { after, describe } from 'node:test';
+import { randomUUID } from 'node:crypto';
+import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
 import {
-  initializeTestEnvironment,
-  assertSucceeds,
-  assertFails,
-} from '@firebase/rules-unit-testing';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import {
-  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, query, where, getDocs,
-  orderBy, limit,
+  doc, getDocFromServer, getDocFromCache, setDoc, updateDoc, deleteDoc,
+  deleteField, collection, query, where, getDocs, orderBy, limit, Timestamp,
+  disableNetwork, enableNetwork, runTransaction,
 } from 'firebase/firestore';
 import { appEmojiList, appReactionKeys } from './drift-check.mjs';
+import { createRulesEnvironment } from './test-environment.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const rules = readFileSync(join(here, '..', 'firestore.rules'), 'utf8');
+describe('reviewed local rules', { timeout: 60_000 }, async () => {
+  const { env, firestore, cleanup } = await createRulesEnvironment(new URL('../firestore.rules', import.meta.url));
+  after(() => cleanup(), { timeout: 15_000 });
+  const check = (name, body) => test(name, { timeout: 15_000 }, body);
+  const OWNER = 'owner-uid';
+  const STRANGER = 'stranger-uid';
+  const owner = firestore(OWNER);
+  const stranger = firestore(STRANGER);
+  const signedOut = firestore();
+  const dropData = (uid, visibility = 'private') => ({
+    ownerUid: uid, geohash: 'u4pruydq', visibility,
+    drop: { id: 'seed', message: 'hi', visibility },
+  });
 
-const env = await initializeTestEnvironment({
-  projectId: 'demo-amr-rules',
-  firestore: { rules },
-});
-
-const OWNER = 'owner-uid';
-const STRANGER = 'stranger-uid';
-const owner = env.authenticatedContext(OWNER).firestore();
-const stranger = env.authenticatedContext(STRANGER).firestore();
-const anonymousViewer = env.unauthenticatedContext().firestore();
-
-const dropData = (uid, visibility) => ({
-  ownerUid: uid,
-  geohash: 'u4pruydq',
-  visibility,
-  drop: { id: 'seed', message: 'hi', visibility },
-});
-
-// Seed data outside the rules.
-await env.withSecurityRulesDisabled(async (context) => {
-  const db = context.firestore();
-  await setDoc(doc(db, 'drops/private-drop'), dropData(OWNER, 'private'));
-  await setDoc(doc(db, 'drops/link-drop'), dropData(OWNER, 'link'));
-});
-
-let failures = 0;
-async function check(name, promise) {
-  try {
-    await promise;
-    console.log('  ok –', name);
-  } catch (error) {
-    failures += 1;
-    console.error('  FAIL –', name, '\n    ', String(error).split('\n')[0]);
-  }
-}
-
-console.log('drops · get/list');
-// B5 correction: GET on a MISSING doc must ANSWER (exists=false), not deny —
-// fetchSharedDrop's `exists` check and the tombstone retirement probe
-// (serverConfirmsAbsent) both read absent documents on purpose.
-await check('get missing doc answers for signed-in user',
-  assertSucceeds(getDoc(doc(stranger, 'drops/never-existed'))));
-await check('get missing doc denied for signed-out user',
-  assertFails(getDoc(doc(anonymousViewer, 'drops/never-existed'))));
-await check('owner gets own private drop',
-  assertSucceeds(getDoc(doc(owner, 'drops/private-drop'))));
-await check('stranger denied another user\'s private drop',
-  assertFails(getDoc(doc(stranger, 'drops/private-drop'))));
-await check('stranger gets link-visible drop by exact id (magic link)',
-  assertSucceeds(getDoc(doc(stranger, 'drops/link-drop'))));
-await check('owner-scoped list allowed',
-  assertSucceeds(getDocs(query(collection(owner, 'drops'), where('ownerUid', '==', OWNER)))));
-await check('unscoped list denied (no enumeration of shared drops)',
-  assertFails(getDocs(collection(stranger, 'drops'))));
-
-console.log('drops · create/update/delete');
-await check('create with own ownerUid allowed',
-  assertSucceeds(setDoc(doc(owner, 'drops/new-own'), dropData(OWNER, 'private'))));
-await check('create stamped with a FOREIGN ownerUid denied',
-  assertFails(setDoc(doc(stranger, 'drops/forged'), dropData(OWNER, 'private'))));
-// permission-denied here is what the client maps to refusedByServer (B1).
-await check('update by non-owner denied (hijack blocked; terminal-verdict code)',
-  assertFails(updateDoc(doc(stranger, 'drops/link-drop'), { visibility: 'public' })));
-await check('update by owner allowed',
-  assertSucceeds(updateDoc(doc(owner, 'drops/link-drop'), { visibility: 'link' })));
-await check('update reassigning ownerUid denied (immutable)',
-  assertFails(updateDoc(doc(owner, 'drops/link-drop'), { ownerUid: STRANGER })));
-await check('delete of ABSENT doc succeeds (tombstone pipeline)',
-  assertSucceeds(deleteDoc(doc(owner, 'drops/never-existed'))));
-await check('delete of another user\'s doc denied',
-  assertFails(deleteDoc(doc(stranger, 'drops/private-drop'))));
-
-console.log('reactions (capability model: dropId UUID is the secret)');
-// Round 14 (counsel own-2): the emulator payload is DERIVED from the app's
-// actual DropReaction fields — if the struct grows a field, this suite
-// writes what the app will write and fails the moment the rules refuse it.
-const sampleValues = {
-  id: 'r1', emoji: '❤️', uid: 'placeholder', byName: 'Tester', at: new Date(),
-};
-const reaction = (uid, emoji, extra = {}) => {
-  const payload = {};
-  for (const key of appReactionKeys()) {
-    if (!(key in sampleValues)) {
-      throw new Error(`DropReaction gained field '${key}' with no sample value — update rules + drift lock + this map together`);
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    try {
+      for (const visibility of ['private', 'link', 'public']) {
+        await setDoc(doc(db, `drops/${visibility}-drop`), dropData(OWNER, visibility));
+      }
+      await setDoc(doc(db, 'drops/other-owned'), dropData(STRANGER));
+    } finally {
+      await db.terminate();
     }
-    payload[key] = sampleValues[key];
+  });
+
+  for (const [label, db] of [['owner', owner], ['other signed-in account', stranger]]) {
+    check(`drops GET: absent document answers exists=false for ${label}`, async () => {
+      const snapshot = await assertSucceeds(getDocFromServer(doc(db, 'drops/never-existed')));
+      assert.equal(snapshot.exists(), false);
+      assert.equal(snapshot.metadata.fromCache, false);
+    });
+    check(`drops DELETE: absent document is an acknowledged no-op for ${label}`, async () => {
+      await assertSucceeds(deleteDoc(doc(db, 'drops/never-existed')));
+      assert.equal((await getDocFromServer(doc(db, 'drops/never-existed'))).exists(), false);
+    });
   }
-  payload.uid = uid;
-  payload.emoji = emoji;
-  return { ...payload, ...extra };
-};
-for (const emoji of appEmojiList()) {
-  await check(`every UI emoji writable: ${emoji}`,
-    assertSucceeds(setDoc(
-      doc(stranger, `drops/link-drop/reactions/ok-${Math.random().toString(36).slice(2)}`),
-      reaction(STRANGER, emoji)
-    )));
-}
-await check('emoji outside the UI list denied (🎉)',
-  assertFails(setDoc(doc(stranger, 'drops/link-drop/reactions/bad-emoji'),
-    reaction(STRANGER, '🎉'))));
-await check('reaction with forged author uid denied',
-  assertFails(setDoc(doc(stranger, 'drops/link-drop/reactions/forged'),
-    reaction(OWNER, '❤️'))));
-await check('reaction with extra keys denied',
-  assertFails(setDoc(doc(stranger, 'drops/link-drop/reactions/extra'),
-    reaction(STRANGER, '❤️', { sneaky: true }))));
-// B5 correction: no parent-visibility get() on create — a reaction to a drop
-// whose upload hasn't flushed yet (offline share) must not be refused.
-await check('reaction under a not-yet-uploaded drop allowed (offline share)',
-  assertSucceeds(setDoc(doc(stranger, 'drops/not-yet-uploaded/reactions/early'),
-    reaction(STRANGER, '❤️'))));
-await check('reaction author may delete own reaction',
-  assertSucceeds((async () => {
-    await setDoc(doc(stranger, 'drops/link-drop/reactions/mine'),
-      reaction(STRANGER, '❤️'));
-    await deleteDoc(doc(stranger, 'drops/link-drop/reactions/mine'));
-  })()));
-await check('drop owner may delete any reaction on their drop (moderation)',
-  assertSucceeds((async () => {
-    await setDoc(doc(stranger, 'drops/link-drop/reactions/theirs'),
-      reaction(STRANGER, '🤯'));
-    await deleteDoc(doc(owner, 'drops/link-drop/reactions/theirs'));
-  })()));
-await check('stranger may NOT delete another author\'s reaction',
-  assertFails((async () => {
-    await setDoc(doc(stranger, 'drops/link-drop/reactions/protected'),
-      reaction(STRANGER, '🥹'));
-    const otherViewer = env.authenticatedContext('third-uid').firestore();
-    await deleteDoc(doc(otherViewer, 'drops/link-drop/reactions/protected'));
-  })()));
-await check('reaction update denied (immutable log)',
-  assertFails((async () => {
-    await setDoc(doc(stranger, 'drops/link-drop/reactions/frozen'),
-      reaction(STRANGER, '❤️'));
-    await updateDoc(doc(stranger, 'drops/link-drop/reactions/frozen'),
-      { emoji: '🤯' });
-  })()));
+  check('drops GET: signed-out absent read is denied', async () => {
+    await assertFails(getDocFromServer(doc(signedOut, 'drops/never-existed')));
+  });
+  check('drops DELETE: signed-out absent delete is denied', async () => {
+    await assertFails(deleteDoc(doc(signedOut, 'drops/never-existed')));
+  });
+  for (const visibility of ['private', 'link', 'public']) {
+    check(`drops GET: owner can read ${visibility}; signed-out client cannot`, async () => {
+      await assertSucceeds(getDocFromServer(doc(owner, `drops/${visibility}-drop`)));
+      await assertFails(getDocFromServer(doc(signedOut, `drops/${visibility}-drop`)));
+    });
+    check(`drops GET: exact-id stranger read is ${visibility === 'private' ? 'denied' : 'allowed'} for ${visibility}`, async () => {
+      const operation = getDocFromServer(doc(stranger, `drops/${visibility}-drop`));
+      await (visibility === 'private' ? assertFails(operation) : assertSucceeds(operation));
+    });
+  }
+  for (const [name, db, id, exists] of [
+    ['owner private drop', owner, 'private-drop', true],
+    ['viewer link drop', stranger, 'link-drop', true],
+    ['viewer public drop', stranger, 'public-drop', true],
+    ['absent drop', stranger, 'never-existed', false],
+  ]) {
+    check(`drops read-only transaction: ${name} completes its verification commit`, async () => {
+      const snapshot = await assertSucceeds(runTransaction(db, (transaction) =>
+        transaction.get(doc(db, `drops/${id}`)), { maxAttempts: 1 }));
+      assert.equal(snapshot.exists(), exists);
+      if (exists) assert.equal(snapshot.data().ownerUid, OWNER);
+    });
+  }
+  for (const [name, db, id] of [
+    ['foreign private drop', stranger, 'private-drop'],
+    ['signed-out shared drop', signedOut, 'link-drop'],
+    ['signed-out absent drop', signedOut, 'never-existed'],
+  ]) {
+    check(`drops read-only transaction: ${name} is denied`, async () => {
+      await assertFails(runTransaction(db, (transaction) =>
+        transaction.get(doc(db, `drops/${id}`)), { maxAttempts: 1 }));
+    });
+  }
+  check('drops LIST: owner-scoped client refresh returns only owned records', async () => {
+    const snapshot = await assertSucceeds(getDocs(query(collection(owner, 'drops'), where('ownerUid', '==', OWNER))));
+    assert.deepEqual(snapshot.docs.map((entry) => entry.id).sort(), ['link-drop', 'private-drop', 'public-drop']);
+    assert.ok(snapshot.docs.every((entry) => entry.data().ownerUid === OWNER));
+  });
+  for (const [name, build] of [
+    ['unscoped', (db) => collection(db, 'drops')],
+    ['limited but unscoped', (db) => query(collection(db, 'drops'), limit(1))],
+    ['foreign owner', (db) => query(collection(db, 'drops'), where('ownerUid', '==', OWNER))],
+    ['link visibility', (db) => query(collection(db, 'drops'), where('visibility', '==', 'link'))],
+    ['public visibility', (db) => query(collection(db, 'drops'), where('visibility', '==', 'public'))],
+  ]) {
+    check(`drops LIST: stranger cannot enumerate through ${name} query`, async () => {
+      await assertFails(getDocs(build(stranger)));
+    });
+  }
+  check('drops LIST: signed-out owner-filtered query is denied', async () => {
+    await assertFails(getDocs(query(collection(signedOut, 'drops'), where('ownerUid', '==', OWNER))));
+  });
 
-console.log('client read shapes (round 10, counsel seams-8)');
-// The sender-side toast listener issues exactly this query (order+limit on
-// the subcollection = a LIST operation) — assert the shape, not a plain get.
-await check('reactions LIST via order+limit (the sender listener query shape)',
-  assertSucceeds(getDocs(query(
-    collection(owner, 'drops/link-drop/reactions'),
-    orderBy('at', 'desc'), limit(1)
-  ))));
-// Profile seeding keys on a SERVER-CONFIRMED absence of users/{uid} — the
-// absent-doc get must answer, not deny (rule never touches resource).
-await check('own ABSENT user doc answers (profile seeding depends on it)',
-  assertSucceeds(getDoc(doc(
-    env.authenticatedContext('fresh-uid').firestore(), 'users/fresh-uid'
-  ))));
+  check('drops CREATE: own envelope succeeds and is readable from the server', async () => {
+    await assertSucceeds(setDoc(doc(owner, 'drops/new-own'), dropData(OWNER)));
+    assert.equal((await getDocFromServer(doc(owner, 'drops/new-own'))).data().ownerUid, OWNER);
+  });
+  check('drops CREATE: foreign owner stamp is denied', async () => {
+    await assertFails(setDoc(doc(stranger, 'drops/forged'), dropData(OWNER)));
+  });
+  check('drops CREATE: missing owner stamp is denied', async () => {
+    const { ownerUid, ...withoutOwner } = dropData(OWNER);
+    await assertFails(setDoc(doc(owner, 'drops/unstamped'), withoutOwner));
+  });
+  check('drops CREATE: signed-out write is denied', async () => {
+    await assertFails(setDoc(doc(signedOut, 'drops/signed-out'), dropData(OWNER)));
+  });
+  check('drops UPDATE: foreign partial update is denied', async () => {
+    await assertFails(updateDoc(doc(stranger, 'drops/link-drop'), { visibility: 'public' }));
+  });
+  check('drops UPDATE regression: full replacement cannot hijack by stamping the attacker uid', async () => {
+    await assertFails(setDoc(doc(stranger, 'drops/link-drop'), dropData(STRANGER, 'public')));
+    const snapshot = await getDocFromServer(doc(owner, 'drops/link-drop'));
+    assert.equal(snapshot.data().ownerUid, OWNER);
+    assert.equal(snapshot.data().visibility, 'link');
+  });
+  check('drops UPDATE: foreign merge overwrite is denied', async () => {
+    await assertFails(setDoc(doc(stranger, 'drops/link-drop'), { ownerUid: STRANGER }, { merge: true }));
+  });
+  check('drops UPDATE: owner may replace the client envelope without changing ownership', async () => {
+    await setDoc(doc(owner, 'drops/replace-own'), dropData(OWNER));
+    await assertSucceeds(setDoc(doc(owner, 'drops/replace-own'), dropData(OWNER, 'link')));
+    assert.equal((await getDocFromServer(doc(owner, 'drops/replace-own'))).data().visibility, 'link');
+  });
+  for (const [name, operation] of [
+    ['partial reassignment', () => updateDoc(doc(owner, 'drops/link-drop'), { ownerUid: STRANGER })],
+    ['full replacement reassignment', () => setDoc(doc(owner, 'drops/link-drop'), dropData(STRANGER, 'link'))],
+    ['owner field deletion', () => updateDoc(doc(owner, 'drops/link-drop'), { ownerUid: deleteField() })],
+  ]) {
+    check(`drops UPDATE: ownership is immutable during ${name}`, async () => {
+      await assertFails(operation());
+      assert.equal((await getDocFromServer(doc(owner, 'drops/link-drop'))).data().ownerUid, OWNER);
+    });
+  }
+  check('drops UPDATE: signed-out mutation is denied', async () => {
+    await assertFails(updateDoc(doc(signedOut, 'drops/link-drop'), { visibility: 'private' }));
+  });
+  check('drops DELETE: foreign and signed-out deletion are denied', async () => {
+    await assertFails(deleteDoc(doc(stranger, 'drops/private-drop')));
+    await assertFails(deleteDoc(doc(signedOut, 'drops/private-drop')));
+    assert.equal((await getDocFromServer(doc(owner, 'drops/private-drop'))).exists(), true);
+  });
+  check('drops DELETE: owner deletion answers absent on a subsequent server read', async () => {
+    await setDoc(doc(owner, 'drops/delete-own'), dropData(OWNER));
+    await assertSucceeds(deleteDoc(doc(owner, 'drops/delete-own')));
+    assert.equal((await getDocFromServer(doc(owner, 'drops/delete-own'))).exists(), false);
+  });
 
-console.log('users');
-await check('own user doc writable',
-  assertSucceeds(setDoc(doc(owner, `users/${OWNER}`), { displayName: 'Me' })));
-await check('foreign user doc read denied',
-  assertFails(getDoc(doc(stranger, `users/${OWNER}`))));
+  // Firestore-compatible representation of the current synthesized Swift Codable
+  // fields. drift-check.test.mjs verifies field types. This is not execution of
+  // Swift's Firestore.Encoder or proof of iOS offline persistence durability.
+  const reactionDate = new Date('2026-09-08T00:00:00.123Z');
+  const reaction = (id, uid, emoji = '❤️', extra = {}) => {
+    const sample = { id, uid, emoji, byName: 'Test viewer 👋', at: reactionDate };
+    const payload = {};
+    for (const key of appReactionKeys()) {
+      if (!(key in sample)) throw new Error(`Missing reaction fixture value for ${key}; update the client/rules contract together`);
+      payload[key] = sample[key];
+    }
+    return { ...payload, ...extra };
+  };
+  for (const emoji of appEmojiList()) {
+    check(`reactions CREATE: UI emoji ${emoji} and encoded field types round-trip`, async () => {
+      const id = randomUUID();
+      await assertSucceeds(setDoc(doc(stranger, `drops/link-drop/reactions/${id}`), reaction(id, STRANGER, emoji)));
+      const snapshot = await getDocFromServer(doc(owner, `drops/link-drop/reactions/${id}`));
+      const stored = snapshot.data();
+      assert.deepEqual(Object.keys(stored).sort(), appReactionKeys().sort());
+      assert.equal(stored.id, snapshot.id);
+      assert.equal(stored.uid, STRANGER);
+      assert.equal(stored.emoji, emoji);
+      assert.equal(stored.byName, 'Test viewer 👋');
+      assert.ok(stored.at instanceof Timestamp);
+      assert.equal(stored.at.toMillis(), reactionDate.getTime());
+    });
+  }
+  for (const [name, db, payload] of [
+    ['emoji outside the UI list', stranger, reaction('bad-emoji', STRANGER, '🎉')],
+    ['forged author uid', stranger, reaction('forged-author', OWNER)],
+    ['extra encoded field', stranger, reaction('extra', STRANGER, '❤️', { sneaky: true })],
+    ['signed-out writer', signedOut, reaction('signed-out', STRANGER)],
+  ]) {
+    check(`reactions CREATE: ${name} is denied`, async () => {
+      await assertFails(setDoc(doc(db, `drops/link-drop/reactions/${payload.id}`), payload));
+    });
+  }
+  check('reactions CREATE: offline queued write is accepted before its parent uploads', async () => {
+    const db = firestore('offline-viewer');
+    const parent = 'offline-parent';
+    const id = randomUUID();
+    const ref = doc(db, `drops/${parent}/reactions/${id}`);
+    await disableNetwork(db);
+    let outcome;
+    const pendingWrite = setDoc(ref, reaction(id, 'offline-viewer')).then(
+      () => { outcome = 'acknowledged'; },
+      (error) => { outcome = error; },
+    );
+    try {
+      const local = await getDocFromCache(ref);
+      assert.equal(local.exists(), true);
+      assert.equal(local.metadata.hasPendingWrites, true);
+      assert.equal(outcome, undefined);
+      assert.equal((await getDocFromServer(doc(owner, `drops/${parent}`))).exists(), false);
+      await enableNetwork(db);
+      await pendingWrite;
+      assert.equal(outcome, 'acknowledged');
+      const remote = await getDocFromServer(ref);
+      assert.equal(remote.metadata.hasPendingWrites, false);
+      assert.equal(remote.data().uid, 'offline-viewer');
+      assert.equal((await getDocFromServer(doc(owner, `drops/${parent}`))).exists(), false);
+      await setDoc(doc(owner, `drops/${parent}`), dropData(OWNER, 'link'));
+      assert.equal((await getDocFromServer(doc(owner, `drops/${parent}/reactions/${id}`))).exists(), true);
+    } finally {
+      await enableNetwork(db);
+    }
+  });
+  check('reactions CREATE: a private parent does not block the existing UUID capability contract', async () => {
+    await assertSucceeds(setDoc(doc(stranger, 'drops/private-drop/reactions/capability'), reaction('capability', STRANGER)));
+  });
+  check('reactions DELETE: author can remove their reaction with no parent document', async () => {
+    const path = 'drops/missing-reaction-parent/reactions/mine';
+    await setDoc(doc(stranger, path), reaction('mine', STRANGER));
+    await assertSucceeds(deleteDoc(doc(stranger, path)));
+  });
+  check('reactions DELETE: parent owner can moderate another author', async () => {
+    const path = 'drops/link-drop/reactions/moderated';
+    await setDoc(doc(stranger, path), reaction('moderated', STRANGER));
+    await assertSucceeds(deleteDoc(doc(owner, path)));
+  });
+  check('reactions DELETE: unrelated viewer cannot remove another author', async () => {
+    const path = 'drops/link-drop/reactions/protected';
+    await setDoc(doc(stranger, path), reaction('protected', STRANGER));
+    const other = firestore('third-uid');
+    await assertFails(deleteDoc(doc(other, path)));
+    assert.equal((await getDocFromServer(doc(stranger, path))).exists(), true);
+  });
+  check('reactions UPDATE: neither author nor parent owner may rewrite the immutable log', async () => {
+    const path = 'drops/link-drop/reactions/immutable';
+    await setDoc(doc(stranger, path), reaction('immutable', STRANGER));
+    await assertFails(updateDoc(doc(stranger, path), { emoji: '🤯' }));
+    await assertFails(setDoc(doc(stranger, path), reaction('immutable', STRANGER, '😂')));
+    await assertFails(updateDoc(doc(owner, path), { emoji: '🤯' }));
+    assert.equal((await getDocFromServer(doc(stranger, path))).data().emoji, '❤️');
+  });
+  check('reactions READ: sender order/limit listener shape succeeds and signed-out reads fail', async () => {
+    const snapshot = await assertSucceeds(getDocs(query(collection(owner, 'drops/link-drop/reactions'), orderBy('at', 'desc'), limit(1))));
+    assert.equal(snapshot.size, 1);
+    await assertFails(getDocs(query(collection(signedOut, 'drops/link-drop/reactions'), orderBy('at', 'desc'), limit(1))));
+    await assertFails(getDocFromServer(doc(signedOut, 'drops/link-drop/reactions/immutable')));
+  });
 
-await env.cleanup();
-if (failures > 0) {
-  console.error(`\n${failures} rules assertion(s) FAILED`);
-  process.exit(1);
-}
-console.log('\nall rules assertions passed');
+  check('users GET: own absent profile answers from server for profile seeding', async () => {
+    const fresh = firestore('fresh-uid');
+    const snapshot = await assertSucceeds(getDocFromServer(doc(fresh, 'users/fresh-uid')));
+    assert.equal(snapshot.exists(), false);
+    assert.equal(snapshot.metadata.fromCache, false);
+  });
+  check('users WRITE: owner can create, update, and delete their profile', async () => {
+    const ref = doc(owner, `users/${OWNER}`);
+    await assertSucceeds(setDoc(ref, { displayName: 'Me' }));
+    await assertSucceeds(updateDoc(ref, { displayName: 'Updated' }));
+    assert.equal((await getDocFromServer(ref)).data().displayName, 'Updated');
+    await assertSucceeds(deleteDoc(ref));
+  });
+  check('users: foreign and signed-out clients cannot read or write an existing profile', async () => {
+    await setDoc(doc(owner, `users/${OWNER}`), { displayName: 'Private profile' });
+    for (const db of [stranger, signedOut]) {
+      await assertFails(getDocFromServer(doc(db, `users/${OWNER}`)));
+      await assertFails(setDoc(doc(db, `users/${OWNER}`), { displayName: 'Overwrite' }));
+      await assertFails(deleteDoc(doc(db, `users/${OWNER}`)));
+    }
+  });
+  check('users: foreign absent profile read is denied rather than disclosing existence', async () => {
+    await assertFails(getDocFromServer(doc(stranger, 'users/not-my-uid')));
+  });
+});

@@ -1,0 +1,58 @@
+# Native Firestore authoritative-read regression
+
+This explicit, local test uses the pinned iOS Firestore SDK. It is separate from
+the JavaScript authorization suite and never runs `FirebaseIntegrationTests`.
+Its intentionally narrow SDK fixture rules **must never be deployed**.
+
+Prerequisites: Xcode with an available supported simulator, Python 3, Node,
+Firebase CLI and a Java runtime supported by the Firestore emulator. The
+September 2026 verification uses Xcode 26.6 and iOS 26.5. The separately tracked
+minimum-iOS launch problem is not fixed by this test.
+
+Run from the repository root, replacing the simulator identifier:
+
+```sh
+bash web/rules-tests/run-native-sdk-tests.sh SIMULATOR_UDID
+```
+
+CI uses the full local suite, including the opted-in native regression, while
+excluding only the separate live Firebase integration test:
+
+```sh
+AMR_ALL_LOCAL_TESTS=1 bash web/rules-tests/run-native-sdk-tests.sh SIMULATOR_UDID
+```
+
+An optional second argument points to an existing Xcode `SourcePackages` cache.
+The wrapper explicitly fetches the versions pinned in `Package.resolved` on a
+fresh runner, disables automatic package resolution during the build,
+builds a Debug host with signing disabled, and keeps derived data/logs/results in
+a new `/tmp/amr-native-sdk.*` directory. `AMR_TEST_OUTPUT_DIR` can select an empty
+artifact directory. Set `JAVA_HOME`/`PATH` if Java is not already available.
+
+Before launching, the wrapper verifies that neither `GoogleService-Info.plist`
+nor `Secrets.plist` was bundled. It writes an opt-in environment flag only into
+the generated `.xctestrun`. Normal unit runs skip the emulator test. The probe is
+compiled only for Debug, has no startup caller, creates a named Firebase app
+with synthetic options, and uses only `demo-amr-native-sdk` and fixed loopback
+ports: control `8187`, Firestore `8188`, HTTP/2 proxy `8189`.
+
+The proxy holds Firestore's streaming Write RPC while allowing Listen and
+transaction reads/commits. The native test proves all of the following:
+
+- With a real local pending delete, the old `.server` read reports missing and
+  `hasPendingWrites == false` even though the remote document still exists.
+- The transaction-backed helper still sees the remote document, and continues
+  to see it after the fixture rejects the queued delete.
+- An acknowledged delete produces authoritative absence.
+- A read-denied document produces permission denied, never absence.
+- A stalled transaction read returns no snapshot by its deadline. A subsequent
+  read succeeds after releasing the gate, exercising late completion.
+- The native `DropReaction` encoder and acknowledged-write seam produce exactly
+  the expected five fields, including a Firestore timestamp, in a server round trip.
+
+Nonzero gate counters are asserted so accidentally bypassing either proxy path
+cannot pass. The fixture seeds synthetic documents using the emulator's local
+admin interface; it does not use credentials, the default Firebase app, account
+creation, or any production endpoint. It validates SDK semantics and the helper;
+the normal rules suite still owns actual authorization policy. Review the
+`.xcresult` and logs: a skipped/unexecuted native test is not a passing regression.

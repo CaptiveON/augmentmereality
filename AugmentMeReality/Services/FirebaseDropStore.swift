@@ -185,34 +185,32 @@ final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropS
         }
     }
 
-    /// Round 8 (counsel B3): the ONLY evidence that retires a tombstone — a
-    /// per-document read forced to the SERVER. `.server` bypasses the local
-    /// cache entirely: offline or unreachable, this throws and we answer
-    /// false (no proof), never "gone".
+    /// A per-document transaction read supplies server evidence without the
+    /// local mutation overlay that ordinary `.server` reads still include.
+    /// Offline, denied, timed-out or cancelled reads never prove absence.
     func serverConfirmsAbsent(_ id: UUID) async -> Bool {
         guard Auth.auth().currentUser != nil else { return false }
         do {
-            let snapshot = try await Firestore.firestore().collection("drops")
-                .document(id.uuidString).getDocument(source: .server)
+            let snapshot = try await FirestoreServerRead.document(
+                Firestore.firestore().collection("drops").document(id.uuidString)
+            )
             return !snapshot.exists
         } catch {
-            // Includes permission-denied: under the current owner-gated rules
-            // an absent doc denies the read — that is NOT proof of absence
-            // until the corrected v3 rules (get tolerates absence) deploy.
+            // Permission denials and other failures do not prove absence,
+            // regardless of which rules release is currently active.
             return false
         }
     }
 
-    /// Round 10 (counsel seams-1c): can the DEPLOYED rules answer an
-    /// absent-document read at all? A random UUID cannot exist, so a served
-    /// answer proves capability, a permission-denied proves the pre-v3 rules
-    /// are live (probing per-tombstone would be pure waste), and anything
-    /// else — offline, transient — is inconclusive and retried next refresh.
+    /// Can the active backend answer an absent-document read? A random UUID
+    /// is overwhelmingly likely to be absent; an unexpected hit is inconclusive.
+    /// Permission denial reports capability, not the identity of a rules release.
     func probeAbsenceCapability() async -> AbsenceCapability {
         guard Auth.auth().currentUser != nil else { return .inconclusive }
         do {
-            let snapshot = try await Firestore.firestore().collection("drops")
-                .document(UUID().uuidString).getDocument(source: .server)
+            let snapshot = try await FirestoreServerRead.document(
+                Firestore.firestore().collection("drops").document(UUID().uuidString)
+            )
             return snapshot.exists ? .inconclusive : .answers
         } catch {
             let nsError = error as NSError
@@ -221,6 +219,75 @@ final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropS
                 return .denied
             }
             return .inconclusive
+        }
+    }
+}
+
+/// Reads used to assert server facts must exclude pending local mutations.
+/// Firebase 11.15's `.server` source still overlays pending writes, and deleted
+/// snapshots report `hasPendingWrites == false`, so metadata cannot fix that.
+/// Transaction reads use a remote lookup and do not include uncommitted changes
+/// (Firebase's FIRFirestore.h transaction contract). This transaction writes no data.
+enum FirestoreServerRead {
+    enum ReadError: Error {
+        case timedOut
+        case missingResult
+    }
+
+    static func document(
+        _ reference: DocumentReference, timeout: TimeInterval = 10
+    ) async throws -> DocumentSnapshot {
+        try Task.checkCancellation()
+        let responses = AsyncThrowingStream<DocumentSnapshot, Error> { continuation in
+            let options = TransactionOptions()
+            // A concurrent server change is unknown for this read; callers
+            // already offer retry. Do not multiply RPCs behind a short deadline.
+            options.maxAttempts = 1
+            reference.firestore.runTransaction(with: options, block: { transaction, errorPointer in
+                do {
+                    return try transaction.getDocument(reference)
+                } catch {
+                    errorPointer?.pointee = error as NSError
+                    return nil
+                }
+            }, completion: { result, error in
+                if let error {
+                    continuation.finish(throwing: error)
+                } else if let snapshot = result as? DocumentSnapshot {
+                    continuation.yield(snapshot)
+                    continuation.finish()
+                } else {
+                    continuation.finish(throwing: ReadError.missingResult)
+                }
+            })
+        }
+        return try await race(responses, timeout: timeout)
+    }
+
+    /// Bounds the caller's wait without parking a continuation after cancellation.
+    /// The SDK cannot cancel an in-flight transaction; its eventual completion
+    /// only touches this terminated stream, never caller state or persisted data.
+    static func race<Value: Sendable>(
+        _ responses: AsyncThrowingStream<Value, Error>, timeout: TimeInterval
+    ) async throws -> Value {
+        try Task.checkCancellation()
+        return try await withThrowingTaskGroup(of: Value.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                for try await response in responses {
+                    try Task.checkCancellation()
+                    return response
+                }
+                try Task.checkCancellation()
+                throw ReadError.missingResult
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                throw ReadError.timedOut
+            }
+            guard let response = try await group.next() else { throw ReadError.missingResult }
+            try Task.checkCancellation()
+            return response
         }
     }
 }
