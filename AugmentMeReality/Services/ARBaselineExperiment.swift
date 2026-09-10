@@ -4,6 +4,7 @@ import Foundation
 /// shipping workload; -ARBaselineExperiment is independent of -ARBaselineMetrics
 /// so the identical experiment can run with instrumentation on and off.
 struct ARBaselineExperiment: Sendable {
+    enum HeroSource: String, Sendable { case nearest, roomDrop }
     enum Subsystem: String, CaseIterable, Sendable {
         case reconstruction, localization, neuralDepth, personSegmentation
         case sentinel, postprocess, assetPreload
@@ -17,19 +18,26 @@ struct ARBaselineExperiment: Sendable {
     let disabled: Set<Subsystem>
     let delayedAsset: String?
     let missingAsset: String?
+    let heroSource: HeroSource
     let assetDelaySeconds: Double
     let invalidOptions: [String]
 
     init(arguments: [String], environment: [String: String]) {
         enabled = arguments.contains("-ARBaselineExperiment")
         guard enabled else {
-            disabled = []; delayedAsset = nil; missingAsset = nil; assetDelaySeconds = 0; invalidOptions = []
+            disabled = []; delayedAsset = nil; missingAsset = nil; heroSource = .nearest
+            assetDelaySeconds = 0; invalidOptions = []
             return
         }
         let names = (environment["AR_BASELINE_DISABLE"] ?? "")
             .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         disabled = Set(names.compactMap(Subsystem.init(rawValue:)))
         var invalid = names.filter { Subsystem(rawValue: $0) == nil }
+        let requestedHeroSource = environment["AR_BASELINE_HERO_SOURCE"] ?? "nearest"
+        heroSource = HeroSource(rawValue: requestedHeroSource) ?? .nearest
+        if HeroSource(rawValue: requestedHeroSource) == nil {
+            invalid.append("AR_BASELINE_HERO_SOURCE must be nearest or roomDrop")
+        }
         let delay = Double(environment["AR_BASELINE_ASSET_DELAY_SECONDS"] ?? "0")
         if delay == nil || !(0...10).contains(delay!) {
             invalid.append("AR_BASELINE_ASSET_DELAY_SECONDS must be 0...10")
@@ -58,9 +66,13 @@ struct ARBaselineExperiment: Sendable {
             ? "__ARBaselineMissingResource__" : asset
     }
 
+    var selectsRoomHero: Bool {
+        enabled && invalidOptions.isEmpty && heroSource == .roomDrop
+    }
+
     var description: String {
         if !enabled { return "shipping defaults" }
         if !invalidOptions.isEmpty { return "INVALID: \(invalidOptions.joined(separator: "; ")); shipping defaults retained" }
-        return "disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ",")); delayedAsset=\(delayedAsset ?? "none"); delaySeconds=\(assetDelaySeconds); missingAsset=\(missingAsset ?? "none")"
+        return "disabled=\(disabled.map(\.rawValue).sorted().joined(separator: ",")); delayedAsset=\(delayedAsset ?? "none"); delaySeconds=\(assetDelaySeconds); missingAsset=\(missingAsset ?? "none"); heroSource=\(heroSource.rawValue)"
     }
 }

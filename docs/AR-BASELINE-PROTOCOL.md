@@ -222,6 +222,15 @@ fixture event names the redirect, and the ordinary failure/negative-cache path r
 Use a fresh process; negative-cache failures never become readiness.
 Never relabel an experiment variant as U.
 
+When the library already contains geo drops, use `AR_BASELINE_HERO_SOURCE=roomDrop`
+with `-ARBaselineExperiment` for Room Test readiness fixtures. The first Room Test
+placement pins the measured hero ID before entity construction; pre-existing geo
+drops cannot claim it. Camera intent and generation are preserved, so any operator
+delay before placement remains part of the epoch. This changes target selection
+only, not workload defaults, and must be labeled as a separate experiment. Without
+this option the first nearest target is pinned as usual; inspect its ID/distance
+before correlating a visible Room Test object with its readiness milestones.
+
 Make short **separate** screen recordings for these scenarios to correlate the
 reveal, camera image, placeholder, intended hero and interruption behavior with
 epoch markers. Record the video-to-log time alignment and its uncertainty.

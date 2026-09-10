@@ -758,6 +758,17 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         roomDrops[drop.id] = drop
         placedDrops[drop.id] = drop
 
+        // A baseline Room Test must not inherit an unrelated saved geo drop
+        // selected before the operator places the intended fixture. Keep the
+        // camera epoch's origin and generation, then pin its first Room Test ID.
+        if ARBaselineExperiment.current.selectsRoomHero, readinessActive,
+           var epoch = readiness, epoch.heroID == nil {
+            epoch.selectHero(drop.id)
+            readiness = epoch
+            ARBaselineMetrics.shared.event("selectedHero", details:
+                "id=\(drop.id) asset=\(assetName ?? content.rawValue) source=roomSelection")
+        }
+
         let holder = makeHolder(for: drop)
         let center = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
         if let hit = arView.raycast(from: center, allowing: .estimatedPlane, alignment: .any).first {
@@ -2450,7 +2461,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private func observeSelectedContentReadiness() {
         guard readinessActive, let arView, var epoch = readiness,
               epoch.heroSceneUpdateProxyAt == nil else { return }
-        if epoch.heroID == nil {
+        if epoch.heroID == nil, !ARBaselineExperiment.current.selectsRoomHero {
             let id = nearestDrop?.id ?? placedHolders.min {
                 simd_length($0.value.position - arView.cameraTransform.translation)
                     < simd_length($1.value.position - arView.cameraTransform.translation)

@@ -46,4 +46,18 @@ final class ARBaselineExperimentTests: XCTestCase {
             environment.merging(["AR_BASELINE_DISABLE": "typo"]) { _, new in new })
         XCTAssertEqual(invalid.resourceName(for: "robot"), "robot")
     }
+
+    func testRoomHeroSelectionRequiresExplicitValidExperiment() {
+        let environment = ["AR_BASELINE_HERO_SOURCE": "roomDrop"]
+        XCTAssertFalse(ARBaselineExperiment(arguments: ["-ARBaselineMetrics"], environment: environment).selectsRoomHero)
+        let fixture = ARBaselineExperiment(arguments: ["-ARBaselineExperiment"], environment: environment)
+        XCTAssertTrue(fixture.selectsRoomHero)
+        XCTAssertTrue(ARBaselineExperiment.Subsystem.allCases.allSatisfy(fixture.allows))
+        let invalid = ARBaselineExperiment(arguments: ["-ARBaselineExperiment"], environment: [
+            "AR_BASELINE_HERO_SOURCE": "typo", "AR_BASELINE_DISABLE": "reconstruction"
+        ])
+        XCTAssertFalse(invalid.selectsRoomHero)
+        XCTAssertFalse(invalid.invalidOptions.isEmpty)
+        XCTAssertTrue(invalid.allows(.reconstruction))
+    }
 }
