@@ -1,0 +1,14 @@
+{
+  "observed_warmth": "cool before launch; warm after placement; very hot near ten minutes and after trace ended, with text visible",
+  "initially_cool": true,
+  "screen_recording": false,
+  "raw_trace_locations": [
+    "/Users/captiveon/Documents/AR-Baselines/issue-3-2026-09-08/runs/I-on.trace"
+  ],
+  "build_manifest": "../builds/I/build-manifest.json",
+  "measurement_limits": [
+    "September 10 I-on versus September 8 I-off; ambient temperature and I-off brightness unmeasured",
+    "Wireless Time Profiler on both I runs; additional recorder-container copies during I-on",
+    "Visible Room Test object differs from selected pre-existing geo hero at about 406 m; no hero presentation milestone inferred"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "observed_warmth": "not measured for this quality run; initial ProcessInfo serious",
+  "initially_cool": false,
+  "screen_recording": true,
+  "charging": "USB connected, batteryState=2",
+  "raw_trace_locations": [
+    "runs/quality/Q-missing-dragon-attempts.mov",
+    "runs/quality/Q-missing-only-final/baseline-F23A8CBC-25CB-4C95-881C-0BDD58FA61CB.json"
+  ],
+  "external_trace": "none for successful Q-missing-dragon-only process; first incomplete attempt has Q-missing-dragon.trace",
+  "build_manifest": "builds/Q/build-manifest.json",
+  "purpose": "USB separate missing-asset readiness validation; no thermal or presentation-rate inference"
+}

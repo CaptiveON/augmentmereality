@@ -1,0 +1,11 @@
+{
+  "observed_warmth": "not measured for this quality run; previous thermal run ended very hot",
+  "initially_cool": false,
+  "screen_recording": true,
+  "raw_trace_locations": [
+    "runs/quality/Q-readiness-supported.trace",
+    "runs/quality/Q-readiness.mov"
+  ],
+  "build_manifest": "builds/Q/build-manifest.json",
+  "purpose": "USB-connected separate visual validation, not thermal acceptance"
+}

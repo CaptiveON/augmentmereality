@@ -50,6 +50,38 @@
       "textVisible": true,
       "requestedCheckpoint": "after recording ended",
       "source": "operator reply; requested close camera and cool afterward"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T22:27:06.761589+00:00",
+      "run": "I-on",
+      "warmth": "cool",
+      "unplugged": true,
+      "source": "operator replied done after explicit unplug-and-cool request; resumed validation on September 10",
+      "conditionsCaveat": "Same room, viewing position and brightness requested; no independently measured September 8 brightness or ambient temperature"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T22:28:51.145428+00:00",
+      "run": "I-on",
+      "warmth": "warm",
+      "textVisible": true,
+      "source": "operator reply after requested camera-open, 10-second wait and 3D text placement; exact event time unmeasured"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T22:38:45.430700+00:00",
+      "run": "I-on",
+      "warmth": "very hot",
+      "textVisible": true,
+      "requestedCheckpoint": "10 minutes from trace start",
+      "source": "operator reply; exact observation time can differ from requested checkpoint"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T22:47:55.273422+00:00",
+      "run": "I-on",
+      "warmth": "very hot",
+      "textVisible": true,
+      "unpluggedThroughout": true,
+      "screenRecordingThroughout": false,
+      "source": "operator final reply; phone plugged in afterward for separate quality validation"
     }
   ],
   "screen_recording": false,
