@@ -77,7 +77,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// This is a proxy; RealityKit does not expose proof of hero presentation here.
     @Published private(set) var timeToFirstHeroProxyMs: Int?
     @Published private(set) var readinessEpochKind = ARReadinessEpoch.Kind.coldStart
-    private var readiness: ARReadinessEpoch?
+    private(set) var readiness: ARReadinessEpoch?
     private var readinessActive = false
     private var sessionGeneration = 0
     private var hasRunSession = false
@@ -640,7 +640,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     func markCameraHidden() {
         cameraVisible = false
         readinessActive = false
-        readiness = nil
+        // Keep the selected identity for the next warm epoch. Its milestones
+        // are inactive here and beginReadinessEpoch creates fresh ones on return.
         ARBaselineMetrics.shared.setWorkload("cameraVisible", enabled: false)
         ARBaselineMetrics.shared.event("cameraHidden")
         ARBaselineMetrics.shared.endEpoch(reason: "cameraHidden")
@@ -1603,7 +1604,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             lastBaselineExportAt = uptime
             ARBaselineMetrics.shared.event("health", details:
                 "thermalState=\(ProcessInfo.processInfo.thermalState.rawValue) tier=\(powerTier.description) content=\(placedHolders.count) brightness=\(UIScreen.main.brightness) batteryState=\(UIDevice.current.batteryState.rawValue)")
-            if let start = readiness?.startedAt {
+            if readinessActive, let start = readiness?.startedAt {
                 for milestone in [10, 120, 300, 600, 900]
                 where uptime - start >= Double(milestone) && !baselineHealthMilestones.contains(milestone) {
                     baselineHealthMilestones.insert(milestone)

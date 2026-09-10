@@ -4,6 +4,23 @@ import XCTest
 final class ARReadinessEpochTests: XCTestCase {
     private let hero = UUID()
 
+    func testCameraHidePreservesSelectionAndExplicitNewIntentReplacesIt() async {
+        await MainActor.run {
+            let manager = GeoARSessionManager()
+            let firstHero = UUID()
+            manager.markCameraIntent(heroID: firstHero)
+            manager.markCameraHidden()
+            XCTAssertEqual(manager.readiness?.heroID, firstHero,
+                           "A hidden camera must retain the intended target for warm resume")
+            let replacement = UUID()
+            manager.markCameraIntent(heroID: replacement)
+            XCTAssertEqual(manager.readiness?.heroID, replacement)
+            XCTAssertEqual(manager.readiness?.generation, 2)
+            XCTAssertNil(manager.readiness?.firstFreshFrameAt)
+            XCTAssertNil(manager.readiness?.heroSceneUpdateProxyAt)
+        }
+    }
+
     func testRetainedHolderAndStaleFrameCannotSatisfyResume() {
         var epoch = ARReadinessEpoch(kind: .warmResume, generation: 2, startedAt: 10)
         epoch.selectHero(hero)
