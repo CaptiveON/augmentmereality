@@ -4,7 +4,7 @@ Issue [#4](https://github.com/CaptiveON/augmentmereality/issues/4) follows the
 completed [baseline](AR-BASELINE-2026-09-08.md) and its
 [physical measurement protocol](AR-BASELINE-PROTOCOL.md). This report separates
 implementation checks from device observations. **Device validation is pending;
-no thermal, cost, presentation or visual improvement is established by this draft.**
+no thermal, cost, presentation or visual improvement is established.**
 Keep #4 open until the required policy tests and physical validation are complete.
 
 ## Preserved baseline and source identity
@@ -37,9 +37,29 @@ audit/research files remain untracked. Recorded SHA-256 values:
 | `IMPLEMENTATION-PLAN-2026-09-08.md` | `31e4f16f5cb2a4cfeef124dcf2a251ebf2c219c677dee337d019a811391dd2db` |
 | `TECHNICAL-AUDIT-2026-09-07.md` | `b7209f849639ce7be475df0892fa86a19f0c8e794f717a72cec8a697635dffeb` |
 
-The implementation Release manifest and source identity are recorded below after
-the final build. Test provenance identifies the exact tested source hash; a
-manifest from the starting main cannot identify the later implementation binary.
+The tested implementation is commit `82ae3f5273e2b9330e49ef620be1d17eabc55004` on
+`fix/issue-4-perception-demand`. Its signed Release build has a clean app-source
+tree, embedded verified build identity and the same source hash as the 215-test run:
+
+| Implementation identity | Value |
+| --- | --- |
+| Source hash | `07ecef1e2d58cbd0aa38737baf7665b76a5c5454132b7339dd51968fbbd1ffa1` |
+| Executable SHA-256 | `a8a241c1da254bd20c28f369c014f042616ac0ad106257f084a72d1394be95e4` |
+| Configuration | Release, signed with the existing development team |
+| Version / SDK / minimum OS | 0.9.0 (1) / iphoneos26.5 / 17.0 |
+
+The [Release build manifest](ar-perception-evidence/2026-09-11/release-build-manifest.json)
+and [artifact record](ar-perception-evidence/2026-09-11/artifact-info.json) identify
+the build. The app and dSYM are retained at
+`/Users/captiveon/Documents/AR-Baselines/issue-4-2026-09-11/builds/P/`.
+Their binary UUIDs match and `codesign --verify --deep --strict` passed.
+The app bundle contains the existing service configuration and stays local.
+
+Installation on the baseline iPhone 15 Pro Max succeeded at **00:47 BST,
+September 11**, using the archived app. `install.json` and `install.log` are
+retained beside it. No issue #4 camera scenario or thermal trace has been run:
+the phone reported a required passcode unlock, and operator availability/scene
+conditions have not been confirmed. Installation is not a physical-validation pass.
 
 ## Implementation under validation
 
@@ -116,7 +136,7 @@ Policy and coordinator tests exercise injected-clock transitions through fake
 granular subsystem adapters. The coordinator tests exercise the production
 ordering, admission-token invalidation and callback dwell, rather than only
 copying the resulting plan. Separate tests cover real feed generation rejection.
-Their execution results remain pending below; fake SDK outcomes cannot establish
+Their local execution results are recorded below; fake SDK outcomes cannot establish
 device API success, quality, presentation or cost.
 
 ## Local environment and checks
@@ -217,9 +237,9 @@ sanitizer, GPU or physical-device pass is claimed by this test run.
 | Projected-content identity prevents nearby offscreen content from activating unrelated neural work | Pass in local iOS suite |
 | Glass/transit changes and two-finger edit ownership | Pass in local iOS suite |
 | Hidden/suspended/interrupted/failed admission and generation rejection after resume | Pass in local iOS suite |
-| Normal recovery hysteresis, supported warm resume and stable reconstruction | Pass in local iOS suite |
+| Policy invariants for recovery hysteresis, warm resume and stable reconstruction | Pass in local iOS suite; physical behavior pending |
 | Focused existing baseline/readiness and occlusion regression tests | Pass in local iOS suite |
-| Signed Release compilation and embedded source provenance | Pending build |
+| Signed Release compilation and embedded source provenance | Pass; signed Release installed, matching app/dSYM UUIDs |
 
 ## GitHub Actions restriction
 
@@ -255,15 +275,15 @@ sustained thermal run.
 
 | Device scenario | Evidence required | Result |
 | --- | --- | --- |
-| Far visible content while thermal state becomes Serious | GAR semantics request and consumer activity both fall; retain natural thermal timeline and relevant visibility | Pass in local iOS suite |
-| Critical admission | Next-update plan drops immediately; generation/activity records show rejected late work; distinguish physical fixture from natural state | Pass in local iOS suite |
-| Nearby offscreen object plus distant visible content | Exact IDs, camera view and distances; unrelated depth/sentinel work does not start | Pass in local iOS suite |
-| Supported near/person occlusion, glass and transit | Visual occlusion remains usable where supported; display thermal degradation honestly; no persistent oscillation | Pass in local iOS suite |
-| Two-finger editing | Second held gesture retains the captured editing target; no wrong-drop commit or producer oscillation | Pass in local iOS suite |
-| Camera → Map → Camera inside 5 s grace | One retained AR session and stable mesh; hidden camera admits no new perception work; fresh results resume | Pass in local iOS suite |
-| Camera → Map for 15 s → Camera | Paused then warm-resumed session; supported placements survive; old results cannot reactivate consumers | Pass in local iOS suite |
-| Background for 10 s then return | Capture/perception stop; generation advances and fresh samples restore supported perception | Pass in local iOS suite |
-| Actual interruption/failure and recovery | Trigger recorded, no stale result revival, fresh-frame recovery; compare with Q's known Room Test loss | Pass in local iOS suite |
+| Far visible content while thermal state becomes Serious | GAR semantics request and consumer activity both fall; retain natural thermal timeline and relevant visibility | Pending physical validation |
+| Critical admission | Next-update plan drops immediately; generation/activity records show rejected late work; distinguish physical fixture from natural state | Pending physical validation |
+| Nearby offscreen object plus distant visible content | Exact IDs, camera view and distances; unrelated depth/sentinel work does not start | Pending physical validation |
+| Supported near/person occlusion, glass and transit | Visual occlusion remains usable where supported; display thermal degradation honestly; no persistent oscillation | Pending physical validation |
+| Two-finger editing | Second held gesture retains the captured editing target; no wrong-drop commit or producer oscillation | Pending physical validation |
+| Camera → Map → Camera inside 5 s grace | One retained AR session and stable mesh; hidden camera admits no new perception work; fresh results resume | Pending physical validation |
+| Camera → Map for 15 s → Camera | Paused then warm-resumed session; supported placements survive; old results cannot reactivate consumers | Pending physical validation |
+| Background for 10 s then return | Capture/perception stop; generation advances and fresh samples restore supported perception | Pending physical validation |
+| Actual interruption/failure and recovery | Trigger recorded, no stale result revival, fresh-frame recovery; compare with Q's known Room Test loss | Pending physical validation |
 
 Repeat controlled Release sustained observations for **15 minutes**, beginning
 cool, Nominal and unplugged with screen recording off. Record brightness, battery,
@@ -284,6 +304,8 @@ workload into a device cooling or presentation claim.
 
 ## Result and closure status
 
-Implementation checks and physical evidence will be entered after acquisition.
-At the inspection stage there is no issue #4 device trace, quality result or
-measured subsystem-cost change. Issue #4 remains open.
+The 215-test local iOS suite passed and the exact signed Release build is installed.
+There is no issue #4 device trace, quality result or measured subsystem-cost change
+yet. The phone requires an operator unlock and the controlled physical scenes/runs
+remain pending. Issue #4 remains open; no thermal or presentation improvement is
+claimed. No GitHub issue status, PR, remote branch or billing setting was changed.
