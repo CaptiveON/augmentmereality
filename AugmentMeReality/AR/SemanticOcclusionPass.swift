@@ -10,31 +10,50 @@ import os
 /// Thread-safe hand-off of the latest Scene Semantics buffers from the GARSession
 /// update (main actor) to the RealityKit render thread.
 final class SemanticFeed: @unchecked Sendable {
+    struct Sample {
+        let labels: CVPixelBuffer
+        let confidence: CVPixelBuffer
+        let sessionGeneration: UInt64
+    }
+
     private let lock = NSLock()
     private var labels: CVPixelBuffer?
     private var confidence: CVPixelBuffer?
     private var enabled = false
+    private var workAdmission = PerceptionWorkAdmission()
 
-    func update(labels: CVPixelBuffer?, confidence: CVPixelBuffer?) {
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
         lock.lock()
+        if workAdmission.setAllowed(allowed, generation: generation) {
+            labels = nil
+            confidence = nil
+            enabled = false
+        }
+        lock.unlock()
+    }
+
+    func update(labels: CVPixelBuffer?, confidence: CVPixelBuffer?, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard workAdmission.allowed, workAdmission.sessionGeneration == generation else { return }
         self.labels = labels
         self.confidence = confidence
-        lock.unlock()
     }
 
     /// Far-mode gate, set by the session manager (ADR-011: the matte only applies
     /// when every rendered drop is beyond the far threshold).
     func setEnabled(_ value: Bool) {
         lock.lock()
-        enabled = value
+        enabled = value && workAdmission.allowed
         lock.unlock()
     }
 
-    func snapshot() -> (labels: CVPixelBuffer, confidence: CVPixelBuffer)? {
+    func snapshot(generation: UInt64) -> Sample? {
         lock.lock()
         defer { lock.unlock() }
-        guard enabled, let labels, let confidence else { return nil }
-        return (labels, confidence)
+        guard workAdmission.allowed, workAdmission.sessionGeneration == generation,
+              enabled, let labels, let confidence else { return nil }
+        return Sample(labels: labels, confidence: confidence, sessionGeneration: generation)
     }
 
     /// Round 2 (counsel RSCH-2): shedding the matte RELEASES the producer's
@@ -80,6 +99,10 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// may be held while taking a feed lock; a feed lock is never held while
     /// taking this one.
     private let stateLock = NSLock()
+    private var workAdmission = PerceptionWorkAdmission()
+    private var admittedSince: TimeInterval = .infinity
+    private var personAdmitted = false
+    private var depthAdmitted = false
     private var device: MTLDevice?
     private var pipeline: MTLComputePipelineState?
     private var textureCache: CVMetalTextureCache?
@@ -176,6 +199,29 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         return callbacksActiveStorage
     }
 
+    /// Callback attachment may dwell; source consumption must still stop at
+    /// the policy edge. A retained pre-pause ARFrame cannot satisfy a new run.
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64, person: Bool, depth: Bool) {
+        stateLock.lock()
+        let changed = workAdmission.setAllowed(allowed, generation: generation)
+        let sourcesChanged = personAdmitted != (allowed && person)
+            || depthAdmitted != (allowed && depth)
+        personAdmitted = allowed && person
+        depthAdmitted = allowed && depth
+        if changed {
+            admittedSince = allowed ? ProcessInfo.processInfo.systemUptime : .infinity
+            releaseCaptureResources()
+        }
+        if changed || sourcesChanged { matteHistoryValid = false }
+        let metrics = ARBaselineMetrics.shared
+        if !allowed || feed.snapshot(generation: generation) == nil {
+            metrics.setWorkload("Semantic matte consuming", enabled: false)
+        }
+        if !personAdmitted { metrics.setWorkload("Person matte consuming", enabled: false) }
+        if !depthAdmitted { metrics.setWorkload("Depth matte consuming", enabled: false) }
+        stateLock.unlock()
+    }
+
     /// Attach/detach the render callbacks. Pipeline and matte history are kept
     /// across detaches; re-attach is cheap and the EMA re-converges in ~3 frames.
     /// (ADR-035: an attached pass with no work still forces RealityKit through
@@ -191,6 +237,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             // wrappers and flushes — the detached steady state must not pin
             // IOSurfaces in the capture pool.
             releaseCaptureResources()
+            recordConsumption()
         }
         stateLock.unlock()
         guard changed, let arView else { return }
@@ -314,10 +361,12 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         // The contract with RealityKit: once postProcess is set, EVERY frame must
         // write target. Fall back to a plain blit when nothing to composite.
         guard
+            callbacksActiveStorage, workAdmission.allowed,
             let pipeline,
             let textureCache,
             let dummyUint, let dummyUnorm, let dummyFloat,
             let frame = session?.currentFrame,
+            frame.timestamp > admittedSince,
             let yTexture = makeTexture(frame.capturedImage, format: .r8Unorm, plane: 0, cache: textureCache),
             let cbcrTexture = makeTexture(frame.capturedImage, format: .rg8Unorm, plane: 1, cache: textureCache)
         else {
@@ -329,7 +378,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         }
 
         // Semantic (building/tree) matte — only when VPS armed it (far mode).
-        let semantic = feed.snapshot()
+        let semantic = feed.snapshot(generation: workAdmission.sessionGeneration)
         let labelsTexture = semantic.flatMap {
             makeTexture($0.labels, format: .r8Uint, cache: textureCache)
         }
@@ -341,7 +390,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         // Person occlusion — stencil (high-res) + LiDAR scene depth (metric).
         var stencilTexture: MTLTexture?
         var sceneDepthTexture: MTLTexture?
-        if personOcclusionEnabled,
+        if personAdmitted, personOcclusionEnabled,
            let stencil = frame.segmentationBuffer,
            let depthMap = frame.sceneDepth?.depthMap {
             stencilTexture = makeTexture(stencil, format: .r8Unorm, cache: textureCache)
@@ -354,8 +403,9 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         var midA: Float = 0, midB: Float = 0
         var midRelMin: Float = 0, midRelMax: Float = 0
         var midMaxDepth = AppConfig.midDepthMaxDistance
-        if let midSample = midDepthFeed?.snapshot(
-            forFrameAt: frame.timestamp, maxAge: AppConfig.midDepthMaxSampleAge
+        if depthAdmitted, let midSample = midDepthFeed?.snapshot(
+            forFrameAt: frame.timestamp, maxAge: AppConfig.midDepthMaxSampleAge,
+            generation: workAdmission.sessionGeneration
         ) {
             metrics.sample(
                 "Depth sample age", milliseconds:
@@ -466,6 +516,10 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         )
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadgroup)
         encoder.endEncoding()
+        recordConsumption(semantic: semanticEnabled, person: personEnabled, depth: midEnabled)
+        if semanticEnabled { metrics.observe("Semantic sample used") }
+        if personEnabled { metrics.observe("Person sample used") }
+        if midEnabled { metrics.observe("Depth sample used") }
         // Keep the CV wrappers alive until the GPU is done sampling them.
         let retained = inFlightTextures
         inFlightTextures = []
@@ -487,11 +541,21 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// Caller holds `stateLock`.
     private func bailOut(context: ARView.PostProcessContext) {
         ARBaselineMetrics.shared.observe("Postprocess blit fallback")
+        recordConsumption()
         inFlightTextures.removeAll()
         if let textureCache {
             CVMetalTextureCacheFlush(textureCache, 0)
         }
         blit(context: context)
+    }
+
+    /// Textures accepted by the most recent compute encode, not presentation
+    /// or proof of GPU completion. Caller holds `stateLock`.
+    private func recordConsumption(semantic: Bool = false, person: Bool = false, depth: Bool = false) {
+        let metrics = ARBaselineMetrics.shared
+        metrics.setWorkload("Semantic matte consuming", enabled: semantic)
+        metrics.setWorkload("Person matte consuming", enabled: person)
+        metrics.setWorkload("Depth matte consuming", enabled: depth)
     }
 
     /// Round 2 (counsel RENDER-3): detach releases capture resources — the

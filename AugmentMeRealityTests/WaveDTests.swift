@@ -54,9 +54,7 @@ final class VideoFormatPolicyTests: XCTestCase {
     }
 }
 
-/// Wave D (counsel SWE-11/ARP-8 + ARP-13): the perception request set as a
-/// pure table — the sensor REQUEST must derive from the same predicate as the
-/// sensor's USE.
+/// Capability and render-mode cases exercise the shared perception policy.
 final class PerceptionPlanTests: XCTestCase {
     private func plan(
         tierAboveIdle: Bool = true,
@@ -74,22 +72,34 @@ final class PerceptionPlanTests: XCTestCase {
         supportsSceneReconstruction: Bool = true,
         supportsSceneDepth: Bool = true,
         midFieldEnabled: Bool = true
-    ) -> (reconstruction: Bool, person: Bool, depth: Bool) {
-        GeoARSessionManager.perceptionPlan(
-            tierAboveIdle: tierAboveIdle, fullTier: fullTier,
-            cameraVisible: cameraVisible,
-            cameraRecentlyVisible: cameraRecentlyVisible ?? cameraVisible,
-            pedestrian: pedestrian,
-            windowModeActive: windowModeActive, personLikely: personLikely,
-            contentInViewRecently: contentInViewRecently,
-            midFieldServiceable: midFieldServiceable,
-            thermalSerious: thermalSerious,
-            thermalCritical: thermalCritical,
-            supportsCustomPersonOcclusion: supportsCustomPersonOcclusion,
-            supportsSceneReconstruction: supportsSceneReconstruction,
-            supportsSceneDepth: supportsSceneDepth,
-            midFieldEnabled: midFieldEnabled
-        )
+    ) -> PerceptionPolicy.Plan {
+        var demand = PerceptionDemand()
+        demand.cameraVisible = cameraVisible
+        demand.sessionRunning = true
+        demand.cameraRecentlyVisible = cameraRecentlyVisible ?? cameraVisible
+        demand.content = [.init(
+            distance: fullTier && midFieldServiceable ? 4.5 : 80,
+            isInView: contentInViewRecently && tierAboveIdle
+        )]
+        demand.pedestrian = pedestrian
+        demand.windowModeActive = windowModeActive
+        demand.personLikely = personLikely
+        demand.thermalSerious = thermalSerious
+        demand.thermalCritical = thermalCritical
+        demand.supportsPersonSegmentation = true
+        demand.supportsCustomPersonOcclusion = supportsCustomPersonOcclusion
+        demand.supportsSceneReconstruction = supportsSceneReconstruction
+        demand.supportsSceneDepth = supportsSceneDepth
+        demand.hasSemanticPass = true
+        demand.midFieldEnabled = midFieldEnabled
+        var policy = PerceptionPolicy()
+        if !cameraVisible && demand.cameraRecentlyVisible {
+            // Grace retains an existing mesh; it must never start hidden work.
+            demand.cameraVisible = true
+            policy.update(demand)
+            demand.cameraVisible = false
+        }
+        return policy.update(demand)
     }
 
     func testTransitShedsReconstructionAndMidFieldDepth() {
@@ -107,10 +117,13 @@ final class PerceptionPlanTests: XCTestCase {
         XCTAssertTrue(result.depth, "the custom person path needs its depth test")
     }
 
-    func testThermalCriticalShedsReconstructionOnly() {
+    func testThermalCriticalShedsAllPerceptionImmediately() {
         let result = plan(thermalCritical: true)
         XCTAssertFalse(result.reconstruction)
-        XCTAssertTrue(result.person, "person occlusion correctness survives heat shedding")
+        XCTAssertFalse(result.person)
+        XCTAssertFalse(result.depth)
+        XCTAssertFalse(result.semantics)
+        XCTAssertFalse(result.midField)
     }
 
     func testReconstructionIsStableAcrossTierAndPresenceCycles() {
@@ -598,6 +611,8 @@ final class SemanticPassCrossThreadTests: XCTestCase {
         DispatchQueue(label: "toggler").async {
             started.signal()
             for index in 0..<4000 {
+                pass.setWorkAdmission(index % 2 == 0, generation: UInt64(index / 2),
+                                      person: false, depth: false)
                 pass.setCallbacksActive(index % 2 == 0)
             }
             group.leave()
@@ -630,6 +645,7 @@ final class SemanticPassCrossThreadTests: XCTestCase {
 final class PersonSentinelCrossQueueTests: XCTestCase {
     func testTwoQueueFeedersAndAReaderAreLockSafe() throws {
         let sentinel = PersonSentinel()
+        sentinel.setWorkAdmission(true, generation: 1)
         var created: CVPixelBuffer?
         CVPixelBufferCreate(nil, 64, 64, kCVPixelFormatType_32BGRA, nil, &created)
         let buffer = try XCTUnwrap(created, "CVPixelBufferCreate failed")

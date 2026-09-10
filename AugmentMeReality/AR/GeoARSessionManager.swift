@@ -23,7 +23,7 @@ import os
 /// slides) as better fixes arrive, and far content is scaled up to a minimum apparent
 /// size that hands over to true perspective as you approach.
 @MainActor
-final class GeoARSessionManager: NSObject, ObservableObject {
+final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystemAdapter, PerceptionSubsystemSink {
     enum Mode: Equatable {
         case starting, geoTracking, gpsCompass, unsupported
 
@@ -139,18 +139,21 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private let midDepth = MidFieldDepthEstimator()
     @Published private(set) var midDepthActive = false
 
-    /// ADR-033 power governor: every expensive subsystem runs only while the
-    /// scene needs it. Heat is prevented, not reacted to.
-    private var governor = PowerGovernor()
+    /// One demand snapshot governs both requests and frame-driven consumers.
+    private var perceptionPolicy = PerceptionPolicy()
+    private var currentPerceptionPlan = PerceptionPolicy.Plan()
+    private lazy var perceptionCoordinator = PerceptionCoordinator(sink: self)
     @Published private(set) var powerTier: PowerGovernor.Tier = .idle
     /// Actual capture format in use (ADR-034 field instrument — shows in HUD so
     /// a heat report always carries the resolution/fps evidence).
     @Published private(set) var videoFormatDescription = "?"
     private var cameraVisible = false
+    /// Tracking can stay warm during the bounded tab grace. This is distinct
+    /// from admission to any frame-driven producer or consumer.
+    private var sessionRunning = false
+    private var workGeneration: UInt64 { perceptionCoordinator.generation }
+    private var workFramesAfter: TimeInterval = 0
     private var lastBatteryLogAt = Date.distantPast
-    /// Person-segmentation ML lingers this long after content leaves the view so
-    /// glance-away/glance-back doesn't churn session reconfigurations.
-    private var lastContentInViewAt = Date.distantPast
     /// ADR-037: 2 Hz human-presence probe — the 14–29 ms/frame segmentation
     /// stream is requested only while someone is actually in frame.
     private let personSentinel = PersonSentinel()
@@ -393,6 +396,9 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     }
 
     func detach() {
+        sessionRunning = false
+        cameraVisible = false
+        invalidatePerceptionWork(reason: "detach")
         tickTask?.cancel()
         tickTask = nil
         frameSubscription?.cancel()
@@ -426,9 +432,29 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         semanticPass?.setCallbacksActive(false)
     }
 
+    private func invalidatePerceptionWork(reason: String) {
+        if reason != "cameraHidden" { perceptionPolicy.resetSessionRequests() }
+        perceptionCoordinator.invalidate()
+        currentPerceptionPlan = perceptionCoordinator.currentPlan
+        workFramesAfter = ProcessInfo.processInfo.systemUptime
+        midDepthActive = false
+        powerTier = .idle
+        if reason != "cameraHidden" { occlusionActive = false }
+        for name in ["Perception localization admitted", "Perception sentinel admitted",
+                     "Perception person admitted", "Perception depth admitted",
+                     "Perception semantics requested", "Perception semantics admitted"] {
+            ARBaselineMetrics.shared.setWorkload(name, enabled: false)
+        }
+        disarmSemanticMatte()
+        ARBaselineMetrics.shared.event("perceptionInvalidated", details:
+            "generation=\(workGeneration) reason=\(reason)")
+    }
+
     /// ADR-013: the AR session outlives the camera tab (pre-warm). Suspend pauses
     /// tracking without tearing down the view, VPS session, or Metal pass.
     func suspendSession() {
+        sessionRunning = false
+        invalidatePerceptionWork(reason: "suspend")
         tickTask?.cancel()
         tickTask = nil
         cameraVisible = false
@@ -444,8 +470,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // session.run at the reveal moment). Round 2 (counsel FLOW-5): a drag
         // interrupted by the suspend terminates without a commit.
         appliedPerception = (reconstruction: false, person: false, depth: false)
-        personDownSince = nil
-        depthDownSince = nil
         cancelLiveEdit()
         arView?.session.pause()
         recordSessionPaused()
@@ -559,7 +583,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     nonisolated static func passShouldDetach(
         idleFor: TimeInterval, attachedFor: TimeInterval
     ) -> Bool {
-        idleFor > 5 && attachedFor > 10
+        PerceptionCoordinator.callbacksShouldDetach(idleFor: idleFor, attachedFor: attachedFor)
     }
 
     /// Counsel ARP-4/SWE-2: resume is NOT a cold start. The pre-fix path
@@ -616,6 +640,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
                 ),
                 pedestrian: renderPath == .pedestrian,
                 thermalCritical: ProcessInfo.processInfo.thermalState == .critical
+                    || perceptionPolicy.plan.recoveringFromCritical
             ),
             person: false,
             depth: false
@@ -639,6 +664,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// off-screen (pre-warm, other tabs) — the map tab must not cook the phone.
     func markCameraHidden() {
         cameraVisible = false
+        invalidatePerceptionWork(reason: "cameraHidden")
         readinessActive = false
         // Keep the selected identity for the next warm epoch. Its milestones
         // are inactive here and beginReadinessEpoch creates fresh ones on return.
@@ -655,6 +681,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // dragging on — abandon it now, never at the next commit that will
         // never come.
         cancelLiveEdit()
+        // Shed fast streams now; reconstruction keeps its existing grace.
+        updatePowerTier()
     }
 
     /// Camera intent precedes session startup, including Receive warmup.
@@ -673,6 +701,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     }
 
     func markCameraVisible() {
+        if !cameraVisible { workFramesAfter = ProcessInfo.processInfo.systemUptime }
         cameraVisible = true
         markCameraIntent()
         ARBaselineMetrics.shared.setWorkload("cameraVisible", enabled: true)
@@ -811,18 +840,21 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     // MARK: - Session setup
 
     private func decideModeAndRun() {
+        // Compass mode immediately; upgrades only if this run remains current.
+        runGPSCompass()
         if AppConfig.appleGeoAnchorsEnabled, ARGeoTrackingConfiguration.isSupported {
+            let generation = workGeneration
             ARGeoTrackingConfiguration.checkAvailability { [weak self] available, _ in
                 Task { @MainActor in
-                    guard let self, self.arView != nil else { return }
+                    guard let self, self.arView != nil, self.sessionRunning,
+                          self.cameraVisible, self.workGeneration == generation,
+                          !self.isInterrupted, !self.sessionFailed else { return }
                     if available {
                         self.runGeoTracking()
                     }
                 }
             }
         }
-        // Compass mode immediately; upgrades to geo tracking if the check succeeds.
-        runGPSCompass()
     }
 
     private func runGeoTracking() {
@@ -881,7 +913,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // gate requested a stencil the pass could never composite: full
         // segmentation cost, zero occlusion, on most of the install base).
         if personSeg {
-            if Self.supportsCustomPersonOcclusion {
+            if Self.supportsCustomPersonOcclusion, semanticPass != nil,
+               ARBaselineExperiment.current.allows(.postprocess) {
                 config.frameSemantics.insert(.personSegmentation)
             } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
                 config.frameSemantics.insert(.personSegmentationWithDepth)
@@ -1128,6 +1161,40 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         return arView.bounds.insetBy(dx: -80, dy: -80).contains(point)
     }
 
+    /// Perception uses projected content bounds, not the position-correction
+    /// margin. A nearby object entirely outside the viewport cannot lend its
+    /// distance to another visible object; partially visible content still counts.
+    private func isProjectedContentRelevant(_ content: Entity?, at position: SIMD3<Float>,
+                                            arView: ARView) -> Bool {
+        guard let content else {
+            guard let point = arView.project(position) else { return false }
+            return arView.bounds.contains(point) && isInView(position, arView: arView)
+        }
+        let bounds = content.visualBounds(relativeTo: nil)
+        let camera = arView.cameraTransform
+        let forward = -SIMD3<Float>(camera.matrix.columns.2.x, camera.matrix.columns.2.y,
+                                    camera.matrix.columns.2.z)
+        var projected: [CGPoint] = []
+        for x in [bounds.min.x, bounds.max.x] {
+            for y in [bounds.min.y, bounds.max.y] {
+                for z in [bounds.min.z, bounds.max.z] {
+                    let corner = SIMD3<Float>(x, y, z)
+                    if simd_dot(corner - camera.translation, forward) > 0,
+                       let point = arView.project(corner), point.x.isFinite, point.y.isFinite {
+                        projected.append(point)
+                    }
+                }
+            }
+        }
+        guard let first = projected.first else { return false }
+        let minX = projected.reduce(first.x) { min($0, $1.x) }
+        let maxX = projected.reduce(first.x) { max($0, $1.x) }
+        let minY = projected.reduce(first.y) { min($0, $1.y) }
+        let maxY = projected.reduce(first.y) { max($0, $1.y) }
+        return maxX >= arView.bounds.minX && minX <= arView.bounds.maxX
+            && maxY >= arView.bounds.minY && minY <= arView.bounds.maxY
+    }
+
     /// Per render frame: apply queued corrections the moment their drop leaves the
     /// view (or grows past the forced threshold).
     private func drainDeferredCorrections(arView: ARView) {
@@ -1198,7 +1265,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // Deferred session-failure recovery (Wave B review C6/C13/C18):
         // consumed here so a pending retry dies naturally with the tick loop
         // when the camera surface goes away (suspend cancels the deadline).
-        if sessionFailed, let deadline = failureRetryDeadline, Date() >= deadline {
+        if cameraVisible, sessionRunning, sessionFailed,
+           let deadline = failureRetryDeadline, Date() >= deadline {
             failureRetryDeadline = nil
             lastSessionFailureRecoveryAt = Date()
             metricsLog.log("Deferred session-failure recovery firing")
@@ -1208,7 +1276,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // while suspended) would sit in .limited(.relocalizing) forever. After a
         // bounded wait, restart cold — reset tracking AND re-request every GAR
         // anchor in the fresh frame — rather than hang on a frozen world.
-        if let since = relocalizingSince,
+        if cameraVisible, sessionRunning, !isInterrupted, !sessionFailed,
+           let since = relocalizingSince,
            Date().timeIntervalSince(since) > relocalizeGiveUpSeconds {
             relocalizingSince = nil
             metricsLog.log("Relocalization stalled — falling back to cold restart")
@@ -1217,7 +1286,11 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // Final check F2: while interrupted or failed, the frozen frame must
         // not feed VPS inference (the app's #1 heat source) and the session
         // must not be reconfigured out from under ARKit's own recovery.
-        guard !isInterrupted, !sessionFailed else { return }
+        guard sessionRunning, !isInterrupted, !sessionFailed else { return }
+        if !cameraVisible {
+            updatePowerTier()
+            return
+        }
         updateNearest()
         applyRenderPathIfNeeded()
         updateWindowMode()
@@ -1230,12 +1303,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         updateRenderDiagnostics()
         updateHealthMetrics()
 
-        // Pre-warm (ADR-013): while the ARView is off-screen the render loop idles,
-        // so keep the VPS session fed from here (2.5 Hz is plenty to converge).
-        if Date().timeIntervalSince(lastFrameUpdateAt) > 0.5,
-           let frame = arView?.session.currentFrame {
-            geospatial.update(with: frame)
-        }
+        // All frame-fed producers run in frameUpdate, under the same demand
+        // and freshness guard. A frozen currentFrame cannot drive a fallback.
     }
 
     /// ADR-044: is the nearest FAR drop blocked by real-mesh geometry at
@@ -1286,241 +1355,146 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         metricsLog.log("Window mode \(active ? "ON (mesh-vs-geo conflict)" : "off")")
     }
 
-    /// ADR-033: feed the governor the scene's actual demands, apply the verdict.
+    /// Snapshot projection and distance together, including the captured edit
+    /// target while either slider finger remains down.
     private func updatePowerTier() {
-        // Round 2 (counsel STATE-1/FLOW-5) corrected in round 3 (STATE-L1)
-        // and round 4 (F-D3-03): abandonment never fires on a HELD gesture,
-        // and the backstop is UNGATED on the capture — a latched hold with no
-        // capture (lost end event before any tick) must still expire.
+        let now = Date()
         if editingDropID != nil || gestureHeld,
-           Self.gestureAbandoned(
-               now: Date(), lastTick: lastLiveEditTickAt, held: gestureHeld
-           ) {
+           Self.gestureAbandoned(now: now, lastTick: lastLiveEditTickAt, held: gestureHeld) {
             cancelLiveEdit()
         }
-        if cameraVisible { lastCameraVisibleAt = Date() }
-        var contentInView = false
-        var nearestRendered: Float?
-        var anyContentMidServiceable = false
-        if let arView, !placedHolders.isEmpty {
-            let camPos = arView.cameraTransform.translation
-            for holder in placedHolders.values {
-                let distance = simd_length(holder.position - camPos)
-                nearestRendered = min(nearestRendered ?? .infinity, distance)
-                if Self.midFieldServiceable(distance: distance) {
-                    anyContentMidServiceable = true
-                }
-                if !contentInView, isInView(holder.position, arView: arView) {
-                    contentInView = true
-                }
+        if cameraVisible { lastCameraVisibleAt = now }
+        var demand = PerceptionDemand()
+        demand.cameraVisible = cameraVisible
+        demand.sessionRunning = sessionRunning && !isInterrupted && !sessionFailed
+        demand.cameraRecentlyVisible = Self.visibilityTerm(
+            cameraVisible: cameraVisible, now: now, lastVisible: lastCameraVisibleAt)
+        if cameraVisible, demand.sessionRunning, let arView {
+            let camera = arView.cameraTransform.translation
+            demand.content = placedHolders.compactMap { id, holder in
+                guard holder.isEnabled else { return nil }
+                let position = holder.position(relativeTo: nil)
+                return .init(distance: simd_length(position - camera),
+                             isInView: isProjectedContentRelevant(contentEntities[id], at: position, arView: arView),
+                             isEditing: editingDropID == id || liveEditingDrops.contains(id))
             }
         }
+        demand.heldGestures = heldGestures
+        demand.hasLiveEditing = !liveEditingDrops.isEmpty
+        demand.vpsConverging = geospatial.isConverging
+        demand.pedestrian = renderPath == .pedestrian
+        demand.windowModeActive = windowModeActive
+        demand.personLikely = personSentinel.personLikely
         let thermal = ProcessInfo.processInfo.thermalState
-        let tier = governor.evaluate(.init(
-            cameraVisible: cameraVisible,
-            hasRenderedContent: !placedHolders.isEmpty,
-            contentInView: contentInView,
-            nearestRenderedDistance: nearestRendered,
-            vpsConverging: geospatial.isConverging,
-            isLiveEditing: !liveEditingDrops.isEmpty,
-            thermalSerious: thermal == .serious,
-            thermalCritical: thermal == .critical
-        ))
-        if tier != powerTier {
-            powerTier = tier
-            metricsLog.log("Power tier → \(tier.description)")
-        }
-        if contentInView {
-            lastContentInViewAt = Date()
-        }
-        // Track convergence attempts for the sprint ladder (ADR-036).
-        if geospatial.isConverging {
-            if convergenceSprintStart == nil {
-                convergenceSprintStart = Date()
-                metricsLog.log("VPS convergence sprint started")
-            }
+        thermalSerious = thermal == .serious || thermal == .critical
+        demand.thermalSerious = thermalSerious
+        demand.thermalCritical = thermal == .critical
+        demand.supportsCustomPersonOcclusion = Self.supportsCustomPersonOcclusion
+            && semanticPass != nil && ARBaselineExperiment.current.allows(.postprocess)
+        demand.supportsPersonSegmentation = demand.supportsCustomPersonOcclusion
+            || ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth)
+        demand.supportsSceneReconstruction = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        demand.supportsSceneDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+        demand.hasSemanticPass = semanticPass != nil && ARBaselineExperiment.current.allows(.postprocess)
+        demand.supportsSemantics = geospatial.semanticSupported
+        demand.geospatialAvailable = geospatial.isAvailable && ARBaselineExperiment.current.allows(.localization)
+        demand.allowsPersonSegmentation = ARBaselineExperiment.current.allows(.personSegmentation)
+        demand.allowsReconstruction = ARBaselineExperiment.current.allows(.reconstruction)
+        demand.allowsSentinel = ARBaselineExperiment.current.allows(.sentinel)
+        demand.midFieldEnabled = AppConfig.midFieldDepthEnabled && ARBaselineExperiment.current.allows(.neuralDepth)
+        demand.midFieldMinimumDistance = Float(AppConfig.midDepthMinContentDistance)
+        demand.midFieldMaximumDistance = Float(AppConfig.midDepthLiDARBandMax * AppConfig.midDepthSupportMargin)
+        demand.semanticMatteMinimumDistance = AppConfig.semanticMatteTreeDistance
+        perceptionPolicy.update(demand, applyingTo: self)
+
+        if currentPerceptionPlan.localization && geospatial.isConverging {
+            if convergenceSprintStart == nil { convergenceSprintStart = now }
         } else {
             convergenceSprintStart = nil
         }
-        // Perception ML above idle. Person segmentation (14–29 ms/frame, the
-        // single hottest ARKit stream) only while content is in view AND a human
-        // is actually present (ADR-037 sentinel). The scene-depth ML fusion runs
-        // only for its real consumers: the person depth-test or mid-field
-        // alignment with far content.
-        // Window mode (ADR-044): reflections misfire the person model and the
-        // LiDAR band is all pane — both depth consumers shed.
-        // Wave D (counsel SWE-11/ARP-8): the request set is a PURE function of
-        // its inputs — the sensor REQUEST derives from the same predicate as
-        // the sensor's USE — with hysteresis so a person stepping out of frame
-        // (5 s sentinel decay) can't cycle `session.run` on the 400 ms tick.
-        let plan = Self.perceptionPlan(
-            tierAboveIdle: tier > .idle,
-            fullTier: tier == .full,
-            cameraVisible: cameraVisible,
-            cameraRecentlyVisible: Self.visibilityTerm(
-                cameraVisible: cameraVisible, now: Date(),
-                lastVisible: lastCameraVisibleAt
-            ),
-            pedestrian: renderPath == .pedestrian,
-            windowModeActive: windowModeActive,
-            personLikely: personSentinel.personLikely
-                && ARBaselineExperiment.current.allows(.personSegmentation),
-            contentInViewRecently: Date().timeIntervalSince(lastContentInViewAt) < 30,
-            midFieldServiceable: anyContentMidServiceable,
-            thermalSerious: thermal == .serious || thermal == .critical,
-            thermalCritical: thermal == .critical,
-            supportsCustomPersonOcclusion: Self.supportsCustomPersonOcclusion,
-            supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
-                    && ARBaselineExperiment.current.allows(.reconstruction),
-            supportsSceneDepth: ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth),
-            midFieldEnabled: AppConfig.midFieldDepthEnabled
-        )
-        let person = applyPerceptionHysteresis(
-            desired: plan.person, applied: appliedPerception.person,
-            downSince: &personDownSince
-        )
-        let depth = applyPerceptionHysteresis(
-            desired: plan.depth, applied: appliedPerception.depth,
-            downSince: &depthDownSince
-        )
-        setPerception(reconstruction: plan.reconstruction, person: person, depth: depth)
-        // Wave D (SWE-11 tail): the HUD chip reports what is ACTUALLY
-        // configured this session — and the plan now carries the capability
-        // terms, so this can never claim a stream the hardware lacks
-        // (round 2, counsel ARPCFG-7/FLOW-8).
-        occlusionActive = appliedPerception.reconstruction
-        // Round 2 (counsel ARPCFG-3/STATE-2): the occlusion OPTION is derived
-        // here every tick — transitions (window mode, render path) set only
-        // their own flags and can no longer strand the option removed.
+    }
+
+    /// This adapter is also the boundary used by deterministic transition tests.
+    /// Consumers never infer a second policy from independently gathered facts.
+    func applyPerceptionPlan(_ plan: PerceptionPolicy.Plan) {
+        let previous = currentPerceptionPlan
+        currentPerceptionPlan = plan
+        if powerTier != plan.tier {
+            powerTier = plan.tier
+            metricsLog.log("Power tier → \(plan.tier.description)")
+        }
+        perceptionCoordinator.applyPerceptionPlan(plan)
+        occlusionActive = sessionRunning && !isInterrupted && !sessionFailed
+            && appliedPerception.reconstruction
+        semanticMatteArmed = perceptionCoordinator.semanticConsumerEnabled
+        if !plan.midField { midDepthActive = false }
+
         if let arView {
-            let wanted = Self.occlusionOptionDesired(
-                capable: occlusionCapable,
-                pedestrian: renderPath == .pedestrian,
-                windowModeActive: windowModeActive
-            )
+            let wanted = !plan.hardShutdown && Self.occlusionOptionDesired(
+                capable: occlusionCapable, pedestrian: renderPath == .pedestrian,
+                windowModeActive: windowModeActive)
             if wanted {
                 arView.environment.sceneUnderstanding.options.insert(.occlusion)
             } else {
                 arView.environment.sceneUnderstanding.options.remove(.occlusion)
             }
         }
-
-        // ADR-035 range-based exclusivity: Google's semantic NN only exists for
-        // the >60 m band (and transit, where it is the only occluder). With no
-        // content out there, the model must not run at all.
-        let needsSemantics = renderPath == .transit
-            || (nearestRendered != nil && placedHolders.values.contains { holder in
-                arView.map { simd_length(holder.position - $0.cameraTransform.translation) > 55 }
-                    ?? false
-            })
-        geospatial.setSemanticsActive(needsSemantics && tier > .idle)
-
-        // The Metal pass costs a full-screen copy per frame just by being
-        // attached — attach only while some job has work; detach after 5 s idle.
-        // Wave B review C7: on hardware without the custom person path the pass
-        // was built with personOcclusionEnabled=false — person semantics alone
-        // give it NO work there (RealityKit's built-in occlusion carries it),
-        // so attaching would burn an offscreen render + blit for nothing.
-        let passNeeded = (Self.supportsCustomPersonOcclusion && appliedPerception.person)
-            || semanticMatteArmed || midDepthActive
-        // Round 2 (counsel RENDER-1 step 1) re-derived in round 3 (counsel
-        // RENDER-LENS-1): a DWELL FLOOR on the callback slots — their toggle
-        // frequency IS the race surface. Both conjuncts BIND now: 5 s of no
-        // work AND 10 s attached (the round-2 15 s idle term dominated the
-        // attach term, making it dead code and tripling the idle-attached
-        // heat window over ADR-035's measured 5 s). Step 2, the on-device
-        // TSan run, is a field task.
-        if passNeeded {
-            passIdleSince = nil
-            if !(semanticPass?.callbacksActive ?? false) {
-                passAttachedAt = Date()
-            }
-            // Round 5 (counsel F-D4-DETACH): the attach/detach instrument
-            // lives INSIDE setCallbacksActive's changed-region — the round-4
-            // logs here covered 2 of 6 detach sites (disarmSemanticMatte's
-            // four production paths were silent, so the FT-28/31 toggle
-            // count and dwell histogram undercounted every interruption).
-            semanticPass?.setCallbacksActive(true)
-        } else if let since = passIdleSince {
-            if semanticPass?.callbacksActive == true,
-               Self.passShouldDetach(
-                   idleFor: Date().timeIntervalSince(since),
-                   attachedFor: Date().timeIntervalSince(passAttachedAt)
-               ) {
-                semanticPass?.setCallbacksActive(false)
-            }
-        } else {
-            passIdleSince = Date()
+        let metrics = ARBaselineMetrics.shared
+        metrics.setWorkload("Perception localization admitted", enabled: perceptionCoordinator.localizationAdmitted)
+        metrics.setWorkload("Perception sentinel admitted", enabled: plan.sentinel)
+        metrics.setWorkload("Perception person admitted", enabled: plan.personAdmitted)
+        metrics.setWorkload("Perception depth admitted", enabled: plan.midField)
+        metrics.setWorkload("Perception semantics requested", enabled: plan.semantics)
+        metrics.setWorkload("Perception semantics admitted", enabled: semanticMatteArmed)
+        if previous != plan {
+            metrics.event("perceptionPlan", details:
+                "generation=\(workGeneration) tier=\(plan.tier) recon=\(plan.reconstruction) person=\(plan.person)/\(plan.personUse) depth=\(plan.depth)/\(plan.midField) semantics=\(plan.semantics)/\(semanticMatteArmed) localization=\(plan.localization) hardStop=\(plan.hardShutdown) recovery=\(plan.recoveringFromCritical)")
         }
     }
-    private var passIdleSince: Date?
-    private var passAttachedAt = Date.distantPast
-    private var personDownSince: Date?
-    private var depthDownSince: Date?
-
-    /// Wave D (counsel SWE-11/ARP-8 + ARP-13's testability ask): the perception
-    /// request set as a PURE function — table-tested on device, no ARKit needed.
-    /// Reconstruction is stateful (rebuilds leave multi-second occlusion holes)
-    /// so it keys ONLY on stable session facts: camera visible, pedestrian
-    /// path, not thermally critical. Person/depth are the fast semantics; each
-    /// depth term carries its own preconditions so a request can never outlive
-    /// its use (the transit-meshing and transit-depth leaks).
-    nonisolated static func perceptionPlan(
-        tierAboveIdle: Bool,
-        fullTier: Bool,
-        cameraVisible: Bool,
-        cameraRecentlyVisible: Bool,
-        pedestrian: Bool,
-        windowModeActive: Bool,
-        personLikely: Bool,
-        contentInViewRecently: Bool,
-        midFieldServiceable: Bool,
-        thermalSerious: Bool,
-        thermalCritical: Bool,
-        supportsCustomPersonOcclusion: Bool,
-        supportsSceneReconstruction: Bool,
-        supportsSceneDepth: Bool,
-        midFieldEnabled: Bool
-    ) -> (reconstruction: Bool, person: Bool, depth: Bool) {
-        // Round 2 (counsel ARPCFG-7/FLOW-8): CAPABILITY terms live in the plan
-        // — appliedPerception must record what the configuration actually
-        // requests, never a desire the hardware can't deliver (the LiDAR chip
-        // lit on non-LiDAR phones and setPerception churned no-op runs).
-        // Round 2 (counsel ARPCFG-4): reconstruction keys on RECENT visibility
-        // (the pause-grace window) so a sub-5 s tab flip cannot destroy and
-        // rebuild the mesh the app already decided to smooth over; the
-        // per-frame ML keeps the hard visibility term.
-        let reconstruction = reconstructionDesired(
-            supportsSceneReconstruction: supportsSceneReconstruction,
-            cameraRecentlyVisible: cameraRecentlyVisible,
-            pedestrian: pedestrian,
-            thermalCritical: thermalCritical
-        )
-        let person = cameraVisible
-            && tierAboveIdle
-            && contentInViewRecently
-            && personLikely
-            && !windowModeActive
-        // Round 2 (counsel ARPCFG-1): the mid-field depth term is the
-        // CONSUMER's real predicate — serviceable band (4–5 m), pedestrian,
-        // full tier, not thermally serious — never the unbounded "anything
-        // beyond 4 m" that ran the 60 Hz depth ML with zero consumer.
-        let depth = supportsSceneDepth
-            && cameraVisible
-            && ((person && supportsCustomPersonOcclusion)
-                || (midFieldEnabled && midFieldServiceable && fullTier
-                    && pedestrian && !thermalSerious))
-            && !windowModeActive
-        return (reconstruction, person, depth)
+    // Granular adapters contain no policy. The coordinator's production
+    // ordering, admission invalidation and callback dwell are tested with fakes.
+    func configure(reconstruction: Bool, person: Bool, depth: Bool) {
+        guard sessionRunning, !isInterrupted, !sessionFailed else { return }
+        setPerception(reconstruction: reconstruction, person: person, depth: depth)
     }
 
-    /// Round 2 (counsel ARPCFG-1): the ONE predicate shared by the request
-    /// side (perceptionPlan) and the use side (frameUpdate's mid-depth gate) —
-    /// a drop is mid-field-serviceable only inside the band LiDAR can
-    /// calibrate (4 m … 4 m × 1.25).
+    func setLocalizationAdmission(allowed: Bool, generation: UInt64) {
+        geospatial.setWorkAdmission(allowed, generation: generation)
+    }
+
+    func setSemanticsRequested(_ requested: Bool) -> Bool {
+        geospatial.setSemanticsActive(requested)
+        return geospatial.semanticActive
+    }
+
+    var localizationCanUpdate: Bool { geospatial.canUpdate }
+
+    func setSentinelAdmission(allowed: Bool, generation: UInt64) {
+        personSentinel.setWorkAdmission(allowed, generation: generation)
+    }
+
+    func setDepthAdmission(allowed: Bool, generation: UInt64) {
+        midDepth.setWorkAdmission(allowed, generation: generation)
+    }
+
+    func setPassAdmission(allowed: Bool, generation: UInt64, person: Bool, depth: Bool) {
+        semanticPass?.setWorkAdmission(allowed, generation: generation, person: person, depth: depth)
+    }
+
+    func setSemanticConsumerEnabled(_ enabled: Bool) {
+        geospatial.semanticFeed.setEnabled(enabled)
+        semanticMatteArmed = enabled
+    }
+
+    func setCallbacksActive(_ active: Bool) {
+        semanticPass?.setCallbacksActive(active)
+    }
+
+    /// The existing LiDAR calibration band, shared with the demand policy.
     nonisolated static func midFieldServiceable(distance: Float) -> Bool {
-        distance > Float(AppConfig.midDepthMinContentDistance)
-            && distance < Float(AppConfig.midDepthLiDARBandMax * AppConfig.midDepthSupportMargin)
+        PerceptionDemand.midFieldServiceable(
+            distance: distance, minimum: Float(AppConfig.midDepthMinContentDistance),
+            maximum: Float(AppConfig.midDepthLiDARBandMax * AppConfig.midDepthSupportMargin))
     }
 
     /// Round 2 (counsel ARPCFG-3/STATE-2): the sceneUnderstanding occlusion
@@ -1532,32 +1506,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         capable: Bool, pedestrian: Bool, windowModeActive: Bool
     ) -> Bool {
         capable && pedestrian && !windowModeActive
-    }
-
-    /// Wave D (counsel SWE-11): semantics engage IMMEDIATELY (occlusion
-    /// correctness can't wait on a timer) but disengage only after the desire
-    /// has been continuously absent for 10 s AND the stream is actually on —
-    /// never re-raising a stream that is already off.
-    private func applyPerceptionHysteresis(
-        desired: Bool, applied: Bool, downSince: inout Date?
-    ) -> Bool {
-        if desired {
-            downSince = nil
-            return true
-        }
-        guard applied else {
-            downSince = nil
-            return false
-        }
-        if let since = downSince {
-            if Date().timeIntervalSince(since) >= 10 {
-                downSince = nil
-                return false
-            }
-            return true
-        }
-        downSince = Date()
-        return true
     }
 
     /// When the current VPS convergence attempt began; nil once localized.
@@ -2548,9 +2496,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private func runMeasuredSession(_ configuration: ARConfiguration,
                                     options: ARSession.RunOptions = []) {
         guard let arView else { return }
+        if options.contains(.resetTracking) {
+            invalidatePerceptionWork(reason: "trackingReset")
+        }
         let trace = ARBaselineMetrics.shared.measure("Session configuration")
         defer { ARBaselineMetrics.shared.end(trace) }
         arView.session.run(configuration, options: options)
+        sessionRunning = true
         sessionRunSince = ProcessInfo.processInfo.systemUptime
         hasRunSession = true
         let metrics = ARBaselineMetrics.shared
@@ -2569,6 +2521,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     }
 
     private func recordSessionPaused() {
+        sessionRunning = false
         readinessActive = false
         let metrics = ARBaselineMetrics.shared
         for name in ["cameraVisible", "cameraSessionRunning", "reconstructionRequested",
@@ -2769,7 +2722,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // RealityKit keeps rendering (and firing SceneEvents) on a frozen or
         // dead camera — render callbacks are NOT proof of session health, so
         // hold all per-frame work while interrupted/failed (Wave B review C19).
-        guard mode == .gpsCompass, let arView, !isInterrupted, !sessionFailed
+        guard mode == .gpsCompass, let arView, cameraVisible, sessionRunning,
+              !isInterrupted, !sessionFailed
         else { return }
         if !sessionFrameReady,
            let frame = arView.session.currentFrame,
@@ -2791,80 +2745,23 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
         lastFrameAt = now
 
-        // Feed VPS at the governor's cadence (ADR-033): every frame while
-        // converging (full), maintenance rate when settled (cruise), keep-warm
-        // when idle. The GARSession VPS+semantics inference is the single
-        // biggest controllable heat source in the app.
-        if let frame = arView.session.currentFrame {
-            if now.timeIntervalSince(lastGARFeedAt) >= garFeedInterval {
+        // Fresh frames and one shared plan admit every producer. Off-dwell
+        // requests never independently re-enable a consumer.
+        if let frame = arView.session.currentFrame,
+           frame.timestamp > max(workFramesAfter, sessionRunSince),
+           ProcessInfo.processInfo.systemUptime - frame.timestamp >= 0,
+           ProcessInfo.processInfo.systemUptime - frame.timestamp < 0.25 {
+            if currentPerceptionPlan.localization,
+               now.timeIntervalSince(lastGARFeedAt) >= garFeedInterval {
                 geospatial.update(with: frame)
                 lastGARFeedAt = now
             }
-            // ADR-037: 2 Hz person probe, only while occlusion could matter.
-            if cameraVisible, !placedHolders.isEmpty, ARBaselineExperiment.current.allows(.sentinel) {
+            if currentPerceptionPlan.sentinel {
                 personSentinel.update(pixelBuffer: frame.capturedImage)
             }
-        }
-
-        // ADR-018: the matte gates per pixel on the content's metric depth, so near
-        // drops protect themselves — the pass only needs to run at all when some
-        // drop is far enough for any pixel to qualify. (The old all-or-nothing 40 m
-        // gate disarmed occlusion entirely the moment anything came close — field
-        // report 2026-07-07: content drew over every tree on the walk-up.)
-        // ADR-031: run the mid-field depth model only when it can matter — some
-        // drop beyond its minimum band, pedestrian world-lock (in transit the
-        // LiDAR alignment sees the vehicle interior/glass), device not hot.
-        if AppConfig.midFieldDepthEnabled, semanticPass != nil {
-            let camPosition = arView.cameraTransform.translation
-            // Neural depth is a full-tier luxury (ADR-033).
-            // Wave B review C8: with the MATH-1 support bound, no fit can claim
-            // beyond the LiDAR reference band × margin (~5 m today) — content
-            // farther than that cannot be matted by this source, and running
-            // the ANE for it is pure heat. ADR-031's 4–60 m ambition needs a
-            // farther calibration reference first (Wave E: MATH-7).
-            // Round 3 (counsel ARPCFG-R2-3/STATE-L4): the USE side shares the
-            // SAME predicate the request side uses (`midFieldServiceable`),
-            // and carries the capability term — without LiDAR scene depth no
-            // fit can ever publish, so loading the ~50 MB model there was
-            // pure memory and launch heat with a structurally-impossible
-            // consumer.
-            let useful = renderPath == .pedestrian && !thermalSerious
-                && powerTier == .full
-                && ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
-                && placedHolders.values.contains {
-                    Self.midFieldServiceable(
-                        distance: simd_length($0.position - camPosition)
-                    )
-                }
-            if useful, let frame = arView.session.currentFrame {
-                // Lazy first load (ADR-035): the CoreML/ANE compile is a launch
-                // heat spike — pay it only when far content actually exists.
+            if currentPerceptionPlan.midField {
                 midDepth.loadIfNeeded()
                 midDepth.update(frame: frame, hz: AppConfig.midDepthHz)
-            } else if !useful, midDepth.feed.hasSample {
-                midDepth.feed.invalidate()
-            }
-        }
-
-        // Wave C (counsel ARP-3): computed UNCONDITIONALLY so the flag can
-        // fall. It used to be written only inside a `geospatial.semanticActive`
-        // branch — when semantics switched off (drop closer than 55 m) with the
-        // flag true, it latched forever: the Metal pass stayed attached every
-        // frame (ADR-035's exact heat regression) and the SEM chip lied.
-        // Derived state is computed from its inputs each tick, never written
-        // inside the branch its own precondition guards.
-        if semanticPass != nil {
-            let camPosition = arView.cameraTransform.translation
-            // Thermal guard (ADR-024) + governor gate (ADR-033): the matte's
-            // compute pass runs only above idle and never while hot.
-            let farMode = geospatial.semanticActive
-                && !thermalSerious && powerTier > .idle
-                && placedHolders.values.contains {
-                    simd_length($0.position - camPosition) > AppConfig.semanticMatteTreeDistance
-                }
-            geospatial.semanticFeed.setEnabled(farMode)
-            if farMode != semanticMatteArmed {
-                semanticMatteArmed = farMode
             }
         }
 
@@ -3052,6 +2949,7 @@ extension GeoARSessionManager: ARSessionDelegate {
             self.readinessActive = false
             ARBaselineMetrics.shared.endEpoch(reason: "sessionInterrupted")
             self.isInterrupted = true
+            self.invalidatePerceptionWork(reason: "interruption")
             self.sessionFrameReady = false
             self.disarmSemanticMatte() // arui-4: the flag can't fall on its own here
             self.statusText = "Paused"
@@ -3061,7 +2959,9 @@ extension GeoARSessionManager: ARSessionDelegate {
 
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
         Task { @MainActor in
+            guard self.sessionRunning, self.isInterrupted else { return }
             self.isInterrupted = false
+            self.workFramesAfter = ProcessInfo.processInfo.systemUptime
             if self.cameraVisible { self.beginReadinessEpoch(.recovery) }
             self.statusText = "Resuming…"
             self.metricsLog.log("ARSession interruption ended — relocalizing")
@@ -3080,6 +2980,7 @@ extension GeoARSessionManager: ARSessionDelegate {
             self.metricsLog.error("ARSession failed (\(nsError.code)): \(nsError.localizedDescription)")
             self.sessionFrameReady = false
             self.sessionFailed = true
+            self.invalidatePerceptionWork(reason: "failure")
             ARBaselineMetrics.shared.setWorkload("cameraSessionRunning", enabled: false)
             self.readinessActive = false
             ARBaselineMetrics.shared.event("sessionFailed", details: "code=\(nsError.code)")
@@ -3101,7 +3002,12 @@ extension GeoARSessionManager: ARSessionDelegate {
                 // hidden — the tick loop's existence IS "camera surface active"
                 // (suspend cancels it). A failure landing after suspend keeps
                 // sessionFailed set; the next resume cold-restarts (F1).
-                guard self.tickTask != nil else { return }
+                guard self.tickTask != nil, self.sessionRunning, self.cameraVisible else {
+                    // A short return inside grace does not call resumeSession.
+                    // Keep recovery pending for its first visible policy tick.
+                    self.failureRetryDeadline = Date()
+                    return
+                }
                 self.lastSessionFailureRecoveryAt = Date()
                 self.runGPSCompass()
             } else {

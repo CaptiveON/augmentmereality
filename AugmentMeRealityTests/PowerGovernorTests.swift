@@ -2,8 +2,7 @@ import XCTest
 
 @testable import AugmentMeReality
 
-/// ADR-033: the power policy is the product ("hours without heat") — every rule
-/// is pinned here with an injectable clock.
+/// Tier transitions are driven by supplied dates; device cost is tested separately.
 final class PowerGovernorTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
@@ -84,13 +83,35 @@ final class PowerGovernorTests: XCTestCase {
         XCTAssertEqual(governor.evaluate(inputs(serious: true), at: t0), .full)
     }
 
-    func testThermalCriticalForcesIdleAfterDelay() {
+    func testThermalCriticalBypassesPendingOrdinaryDowngrade() {
         var governor = PowerGovernor(downgradeDelay: 6)
         XCTAssertEqual(governor.evaluate(inputs(), at: t0), .full)
-        _ = governor.evaluate(inputs(critical: true), at: t0.addingTimeInterval(1))
+        XCTAssertEqual(governor.evaluate(inputs(inView: false), at: t0.addingTimeInterval(1)), .full)
         XCTAssertEqual(
-            governor.evaluate(inputs(critical: true), at: t0.addingTimeInterval(8)), .idle
+            governor.evaluate(inputs(critical: true), at: t0.addingTimeInterval(1.1)), .idle
         )
+    }
+
+    func testCameraHiddenBypassesPendingOrdinaryDowngrade() {
+        var governor = PowerGovernor(downgradeDelay: 6)
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0), .full)
+        XCTAssertEqual(governor.evaluate(inputs(inView: false), at: t0.addingTimeInterval(1)), .full)
+        XCTAssertEqual(
+            governor.evaluate(inputs(cameraVisible: false), at: t0.addingTimeInterval(1.1)), .idle
+        )
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0.addingTimeInterval(2)), .full)
+    }
+
+    func testCriticalRecoveryRequiresContinuousCoolInterval() {
+        var governor = PowerGovernor(criticalRecoveryDelay: 6)
+        _ = governor.evaluate(inputs(critical: true), at: t0)
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0.addingTimeInterval(1)), .idle)
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0.addingTimeInterval(6.9)), .idle)
+        XCTAssertEqual(governor.evaluate(inputs(critical: true), at: t0.addingTimeInterval(7)), .idle)
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0.addingTimeInterval(8)), .idle)
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0.addingTimeInterval(13.9)), .idle)
+        XCTAssertEqual(governor.evaluate(inputs(), at: t0.addingTimeInterval(14)), .full)
+        XCTAssertFalse(governor.isRecoveringFromCritical)
     }
 
     func testLiveEditingHoldsFull() {

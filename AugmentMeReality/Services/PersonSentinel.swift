@@ -27,18 +27,31 @@ final class PersonSentinel {
     private var busy = false
     private var lastRunAt = Date.distantPast
     private var lastSeenAt = Date.distantPast
+    private var workAdmission = PerceptionWorkAdmission()
+
+    /// The manager closes admission before a lifecycle edge or policy shed.
+    /// Existing Vision work may finish, but can no longer publish presence.
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
+        lock.lock()
+        if workAdmission.setAllowed(allowed, generation: generation) {
+            lastSeenAt = .distantPast
+            lastRunAt = .distantPast
+        }
+        lock.unlock()
+    }
 
     /// True while a person was detected within the last few seconds.
     var personLikely: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return Date().timeIntervalSince(lastSeenAt) < 5
+        return workAdmission.allowed && Date().timeIntervalSince(lastSeenAt) < 5
     }
 
     /// Feed camera frames; runs at most every `1/hz` seconds, never overlapping.
     func update(pixelBuffer: CVPixelBuffer, hz: Double = 2) {
         lock.lock()
-        guard !busy, Date().timeIntervalSince(lastRunAt) > 1.0 / hz else {
+        guard let token = workAdmission.token, hz > 0,
+              !busy, Date().timeIntervalSince(lastRunAt) > 1.0 / hz else {
             lock.unlock()
             return
         }
@@ -70,6 +83,10 @@ final class PersonSentinel {
                     self.log.error("PersonSentinel buffer hold exceeded 100 ms (\(Int(held * 1000)) ms incl. queue wait) — capture pool under pressure")
                 }
             }
+            self.lock.lock()
+            let admitted = self.workAdmission.accepts(token)
+            self.lock.unlock()
+            guard admitted else { return }
             let request: VNDetectHumanRectanglesRequest
             if let existing = self.request {
                 request = existing
@@ -103,7 +120,9 @@ final class PersonSentinel {
             guard inferenceSucceeded else { return }
             if let results = request.results, !results.isEmpty {
                 self.lock.lock()
-                self.lastSeenAt = Date()
+                if self.workAdmission.accepts(token) {
+                    self.lastSeenAt = Date()
+                }
                 self.lock.unlock()
             }
         }

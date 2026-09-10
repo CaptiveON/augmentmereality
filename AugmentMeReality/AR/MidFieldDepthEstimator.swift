@@ -26,17 +26,47 @@ final class MidFieldDepthFeed: @unchecked Sendable {
         /// ARFrame.timestamp the inference ran on — stale samples are unusable
         /// (the camera has rotated away from the pixels they describe).
         let frameTimestamp: TimeInterval
+        /// Lifecycle identity only; issue #11 owns the full synchronized pose,
+        /// calibration and render-frame association contract.
+        let sessionGeneration: UInt64
     }
 
     private let lock = NSLock()
     private var sample: Sample?
     private var publishedAt = Date.distantPast
+    private var workAdmission = PerceptionWorkAdmission()
 
-    func publish(_ new: Sample) {
+    @discardableResult
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        let changed = workAdmission.setAllowed(allowed, generation: generation)
+        if changed { sample = nil }
+        return changed
+    }
+
+    func admissionToken() -> PerceptionWorkAdmission.Token? {
+        lock.lock()
+        defer { lock.unlock() }
+        return workAdmission.token
+    }
+
+    func accepts(_ token: PerceptionWorkAdmission.Token) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return workAdmission.accepts(token)
+    }
+
+    @discardableResult
+    func publish(_ new: Sample, token: PerceptionWorkAdmission.Token) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard workAdmission.accepts(token), new.sessionGeneration == token.sessionGeneration else {
+            return false
+        }
         sample = new
         publishedAt = Date()
-        lock.unlock()
+        return true
     }
 
     func invalidate() {
@@ -50,18 +80,24 @@ final class MidFieldDepthFeed: @unchecked Sendable {
     /// the matte at the inference rate). The sample ages out naturally; clear
     /// it only once stale so `hasSample` (the DPT chip) can't advertise an
     /// expired fit.
-    func invalidateIfStale(maxAge: TimeInterval) {
+    func invalidateIfStale(maxAge: TimeInterval, token: PerceptionWorkAdmission.Token) {
         lock.lock()
         defer { lock.unlock() }
+        guard workAdmission.accepts(token) else { return }
         if sample != nil, Date().timeIntervalSince(publishedAt) > maxAge {
             sample = nil
         }
     }
 
-    func snapshot(forFrameAt timestamp: TimeInterval, maxAge: TimeInterval) -> Sample? {
+    func snapshot(
+        forFrameAt timestamp: TimeInterval, maxAge: TimeInterval, generation: UInt64
+    ) -> Sample? {
         lock.lock()
         defer { lock.unlock() }
-        guard let sample, timestamp - sample.frameTimestamp <= maxAge else { return nil }
+        guard workAdmission.allowed, workAdmission.sessionGeneration == generation,
+              let sample, sample.sessionGeneration == generation,
+              timestamp >= sample.frameTimestamp,
+              timestamp - sample.frameTimestamp <= maxAge else { return nil }
         return sample
     }
 
@@ -93,16 +129,31 @@ final class MidFieldDepthEstimator {
     private var lastRunAt = Date.distantPast
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "middepth")
 
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
+        stateLock.lock()
+        if feed.setWorkAdmission(allowed, generation: generation) {
+            lastRunAt = .distantPast
+        }
+        stateLock.unlock()
+    }
+
     /// Decode the model off the main thread at app start; ~50 MB of weights.
     func loadIfNeeded() {
         stateLock.lock()
-        let shouldLoad = model == nil && !loading
+        let token = feed.admissionToken()
+        let shouldLoad = token != nil && model == nil && !loading
         if shouldLoad { loading = true }
         stateLock.unlock()
-        guard shouldLoad else { return }
+        guard shouldLoad, let token else { return }
 
         queue.async { [weak self] in
             guard let self else { return }
+            guard self.feed.accepts(token) else {
+                self.stateLock.lock()
+                self.loading = false
+                self.stateLock.unlock()
+                return
+            }
             let metrics = ARBaselineMetrics.shared
             let trace = metrics.measure("Depth model prepare")
             defer { metrics.end(trace) }
@@ -136,7 +187,8 @@ final class MidFieldDepthEstimator {
     /// Requires LiDAR scene depth in the frame for the metric alignment.
     func update(frame: ARFrame, hz: Double) {
         stateLock.lock()
-        guard let model, !busy, Date().timeIntervalSince(lastRunAt) > 1.0 / hz else {
+        guard let token = feed.admissionToken(), let model, hz > 0,
+              !busy, Date().timeIntervalSince(lastRunAt) > 1.0 / hz else {
             stateLock.unlock()
             return
         }
@@ -164,6 +216,10 @@ final class MidFieldDepthEstimator {
                 self.busy = false
                 self.stateLock.unlock()
             }
+            guard self.feed.accepts(token) else {
+                sources.empty()
+                return
+            }
             let image = sources.image.flatMap { self.pooledCopy($0) }
             let lidar = sources.lidar.flatMap { self.pooledCopy($0) }
             sources.empty() // ARKit's buffers release HERE, pre-inference
@@ -171,6 +227,7 @@ final class MidFieldDepthEstimator {
                 ARBaselineMetrics.shared.event("Depth input copy failed")
                 return
             }
+            guard self.feed.accepts(token) else { return }
             let request: VNCoreMLRequest
             if let existing = self.request {
                 request = existing
@@ -195,6 +252,10 @@ final class MidFieldDepthEstimator {
                 }
             }()
             guard inferenceSucceeded else { return }
+            guard self.feed.accepts(token) else {
+                metrics.event("Depth stale completion rejected")
+                return
+            }
             guard let observation = request.results?.first as? VNPixelBufferObservation else {
                 metrics.event("Depth inference missing output")
                 return
@@ -202,20 +263,25 @@ final class MidFieldDepthEstimator {
             let relative = observation.pixelBuffer
 
             if let fit = Self.fitInverseDepth(relative: relative, lidar: lidar) {
-                self.feed.publish(.init(
+                let published = self.feed.publish(.init(
                     relativeDepth: relative,
                     a: fit.a,
                     b: fit.b,
                     relMin: fit.relMin,
                     relMax: fit.relMax,
                     maxTrustedDepth: fit.maxTrustedDepth,
-                    frameTimestamp: timestamp
-                ))
+                    frameTimestamp: timestamp,
+                    sessionGeneration: token.sessionGeneration
+                ), token: token)
+                guard published else {
+                    metrics.event("Depth stale completion rejected")
+                    return
+                }
                 metrics.sample("Depth publication age", milliseconds: (ProcessInfo.processInfo.systemUptime - timestamp) * 1000)
                 metrics.observe("Depth sample published")
             } else {
                 metrics.event("Depth alignment rejected")
-                self.feed.invalidateIfStale(maxAge: AppConfig.midDepthMaxSampleAge)
+                self.feed.invalidateIfStale(maxAge: AppConfig.midDepthMaxSampleAge, token: token)
             }
         }
     }

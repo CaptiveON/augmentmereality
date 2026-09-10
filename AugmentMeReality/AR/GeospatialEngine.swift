@@ -38,8 +38,34 @@ final class GeospatialEngine {
     /// actually needs the >60 m matte (or transit). Toggled via GARSession
     /// reconfiguration; costs nothing when off.
     private(set) var semanticActive = false
-    private var semanticSupported = false
+    private(set) var semanticRequested = false
+    private(set) var semanticSupported = false
     private var configuration: GARSessionConfiguration?
+    private var workAdmission = PerceptionWorkAdmission()
+    var isAvailable: Bool { garSession != nil }
+    /// If ARCore refuses a semantic disable, stop feeding it until a later
+    /// policy update successfully retries that configuration. Otherwise its
+    /// unusable model would keep running as a side effect of localization.
+    var canUpdate: Bool {
+        workAdmission.allowed && !(semanticActive && !semanticRequested)
+    }
+
+    /// Suspend asynchronous publication while retaining the warm GAR session
+    /// and already installed anchors/meshes. New work must use a fresh token.
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
+        guard workAdmission.setAllowed(allowed, generation: generation) else { return }
+        semanticFeed.setWorkAdmission(allowed, generation: generation)
+        requestedDrops.subtract(inFlightAnchorTokens.keys)
+        inFlightAnchorTokens.removeAll()
+        meshBuildsInFlight.removeAll()
+        seenGeometry.replace([], token: workAdmission.token)
+        // A pending coverage reply from before this edge is no longer valid.
+        // Reset its coordinate gate so a fresh update can issue the check again.
+        lastCoverageCheck = nil
+        headingErrorSample = nil
+        if !allowed { setSemanticsActive(false) }
+        recordSemanticBlock()
+    }
 
     /// ADR-017: session heading error measured by VPS — the yaw difference between
     /// the AR frame and true north, from `eastUpSouthQTarget`. Compass-free, so it
@@ -132,6 +158,7 @@ final class GeospatialEngine {
             configuration.semanticMode = .disabled
             semanticSupported = session.isSemanticModeSupported(.enabled)
             semanticActive = false
+            semanticRequested = false
             var error: NSError?
             session.setConfiguration(configuration, error: &error)
             if let error { throw error }
@@ -159,14 +186,15 @@ final class GeospatialEngine {
     /// Queries coverage once per ~300 m of movement (Google's recommended
     /// pattern: check availability instead of running VPS blind).
     func checkCoverage(at coordinate: CLLocationCoordinate2D) {
-        guard let garSession else { return }
+        guard let token = workAdmission.token, let garSession else { return }
         if let last = lastCoverageCheck {
             let moved = GeoMath.enuOffset(from: last, to: coordinate)
             guard simd_length(moved) > 300 else { return }
         }
         lastCoverageCheck = coordinate
         garSession.checkVPSAvailability(coordinate: coordinate) { [weak self] availability in
-            self?.vpsCoverageAvailable = availability == .available
+            guard let self, self.workAdmission.accepts(token) else { return }
+            self.vpsCoverageAvailable = availability == .available
         }
     }
 
@@ -188,6 +216,10 @@ final class GeospatialEngine {
     /// ADR-035: toggle Google's semantic segmentation NN at runtime. GARSession
     /// accepts reconfiguration; when off the model simply doesn't run per feed.
     func setSemanticsActive(_ on: Bool) {
+        semanticRequested = on && workAdmission.allowed
+        let on = semanticRequested
+        defer { recordSemanticBlock() }
+        if !on { semanticFeed.clear() }
         guard on != semanticActive, semanticSupported,
               let garSession, let configuration else { return }
         configuration.semanticMode = on ? .enabled : .disabled
@@ -199,12 +231,15 @@ final class GeospatialEngine {
         }
         semanticActive = on
         ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: on)
-        if !on {
-            semanticFeed.update(labels: nil, confidence: nil)
-        }
+    }
+
+    private func recordSemanticBlock() {
+        ARBaselineMetrics.shared.setWorkload("GAR blocked by semantic disable", enabled:
+            semanticActive && !semanticRequested)
     }
 
     func stop() {
+        setWorkAdmission(false, generation: workAdmission.sessionGeneration &+ 1)
         ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
         ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
         garSession = nil
@@ -222,9 +257,11 @@ final class GeospatialEngine {
         // Round 2 (counsel STATE-8): the build pipeline dies with the engine —
         // in-flight landings see an empty seen-set and self-discard.
         meshBuildsInFlight.removeAll()
-        seenGeometry.replace([])
+        seenGeometry.replace([], token: nil)
         headingErrorSample = nil
         semanticActive = false
+        semanticRequested = false
+        recordSemanticBlock()
         semanticSupported = false
         configuration = nil
         vpsCoverageAvailable = nil
@@ -237,7 +274,7 @@ final class GeospatialEngine {
     /// Feed every ARKit frame. Results surface via `state`, `onDropTransform`,
     /// and the occluder entities this engine maintains in the scene.
     func update(with frame: ARFrame) {
-        guard let garSession else { return }
+        guard canUpdate, let token = workAdmission.token, let garSession else { return }
         let metrics = ARBaselineMetrics.shared
         let updatedFrame: GARFrame?
         do {
@@ -272,7 +309,8 @@ final class GeospatialEngine {
         if semanticActive {
             semanticFeed.update(
                 labels: garFrame.semanticImage,
-                confidence: garFrame.semanticConfidenceImage
+                confidence: garFrame.semanticConfidenceImage,
+                generation: token.sessionGeneration
             )
         }
     }
@@ -337,7 +375,7 @@ final class GeospatialEngine {
     /// Pin a drop to the terrain at its exact coordinate; Google resolves the
     /// ground elevation, `heightAboveGround` rides on top of it.
     func requestAnchor(for drop: GeoDrop, viewer: CLLocation?) {
-        guard let garSession, isAccuratelyLocalized,
+        guard let workToken = workAdmission.token, let garSession, isAccuratelyLocalized,
               !requestedDrops.contains(drop.id) else { return }
         requestedDrops.insert(drop.id)
         anchorRequestCounter += 1
@@ -367,8 +405,9 @@ final class GeospatialEngine {
                     Task { @MainActor in
                         guard let self else { return }
                         // Stale request (invalidated or superseded): discard.
-                        guard self.inFlightAnchorTokens[drop.id] == token else {
-                            if let anchor { self.garSession?.remove(anchor) }
+                        guard self.workAdmission.accepts(workToken),
+                              self.inFlightAnchorTokens[drop.id] == token else {
+                            if let anchor { garSession.remove(anchor) }
                             return
                         }
                         self.inFlightAnchorTokens[drop.id] = nil
@@ -392,8 +431,9 @@ final class GeospatialEngine {
                     Task { @MainActor in
                         guard let self else { return }
                         // Stale request (invalidated or superseded): discard.
-                        guard self.inFlightAnchorTokens[drop.id] == token else {
-                            if let anchor { self.garSession?.remove(anchor) }
+                        guard self.workAdmission.accepts(workToken),
+                              self.inFlightAnchorTokens[drop.id] == token else {
+                            if let anchor { garSession.remove(anchor) }
                             return
                         }
                         self.inFlightAnchorTokens[drop.id] = nil
@@ -456,17 +496,23 @@ final class GeospatialEngine {
     /// of main-thread stall exactly when far occlusion should engage (the
     /// main-thread class ADR-032 banned for USDZ, resurrected for buildings).
     private let meshQueue = DispatchQueue(label: "streetscape-mesh", qos: .userInitiated)
-    private var meshBuildsInFlight: Set<UUID> = []
+    private var meshBuildsInFlight: [UUID: PerceptionWorkAdmission.Token] = [:]
     /// Round 2 (counsel STATE-8): geometry ids present in the LATEST update,
     /// readable from the mesh queue — the relevance check runs BEFORE the
     /// expensive extraction, so a departed building costs nothing.
     private final class SeenGeometryBox: @unchecked Sendable {
         private let lock = NSLock()
         private var ids: Set<UUID> = []
-        func replace(_ new: Set<UUID>) { lock.lock(); ids = new; lock.unlock() }
-        func contains(_ id: UUID) -> Bool {
+        private var token: PerceptionWorkAdmission.Token?
+        func replace(_ new: Set<UUID>, token: PerceptionWorkAdmission.Token?) {
+            lock.lock()
+            ids = new
+            self.token = token
+            lock.unlock()
+        }
+        func contains(_ id: UUID, token: PerceptionWorkAdmission.Token) -> Bool {
             lock.lock(); defer { lock.unlock() }
-            return ids.contains(id)
+            return self.token == token && ids.contains(id)
         }
     }
     private let seenGeometry = SeenGeometryBox()
@@ -476,7 +522,7 @@ final class GeospatialEngine {
     private static let meshBuildBudgetPerPass = 8
 
     private func syncOccluders(_ geometries: [GARStreetscapeGeometry]) {
-        guard let arView else { return }
+        guard let token = workAdmission.token, let arView else { return }
         let camPos = arView.cameraTransform.translation
         var seen: Set<UUID> = []
         var pending: [(geometry: GARStreetscapeGeometry, id: UUID, distance: Float)] = []
@@ -487,44 +533,48 @@ final class GeospatialEngine {
                 entity.setTransformMatrix(geometry.meshTransform, relativeTo: nil)
                 continue
             }
-            guard !meshBuildsInFlight.contains(id) else { continue }
+            guard meshBuildsInFlight[id] == nil else { continue }
             let t = geometry.meshTransform.columns.3
             pending.append((geometry, id, simd_length(SIMD3(t.x, t.y, t.z) - camPos)))
         }
-        seenGeometry.replace(seen)
+        seenGeometry.replace(seen, token: token)
         // Nearest first — the buildings most likely to occlude content now.
         for build in pending.sorted(by: { $0.distance < $1.distance })
             .prefix(Self.meshBuildBudgetPerPass) {
             let id = build.id
             let geometry = build.geometry
-            meshBuildsInFlight.insert(id)
+            meshBuildsInFlight[id] = token
             // The GARStreetscapeGeometry is retained by the closure, keeping
             // its vertex buffers valid for the background extraction.
             meshQueue.async { [weak self, seenGeometry] in
                 // STATE-8: relevance BEFORE extraction — a building that
                 // streamed out while queued costs zero mesh work.
-                guard seenGeometry.contains(id) else {
+                guard seenGeometry.contains(id, token: token) else {
                     Task { @MainActor [weak self] in
-                        self?.meshBuildsInFlight.remove(id)
+                        if self?.meshBuildsInFlight[id] == token {
+                            self?.meshBuildsInFlight[id] = nil
+                        }
                     }
                     return
                 }
                 let descriptor = Self.makeMeshDescriptor(from: geometry.mesh)
                 var mesh: MeshResource?
-                if let descriptor {
+                if let descriptor, seenGeometry.contains(id, token: token) {
                     // ARP-7: a malformed geometry is a DIAGNOSTIC (logged on
                     // the main hop below), never a silently missing occluder.
                     mesh = try? MeshResource.generate(from: [descriptor])
                 }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.meshBuildsInFlight.remove(id)
+                    guard self.workAdmission.accepts(token),
+                          self.meshBuildsInFlight[id] == token else { return }
+                    self.meshBuildsInFlight[id] = nil
                     guard let mesh else {
                         self.log.error("Streetscape mesh generate failed for \(id) — occluder skipped")
                         return
                     }
                     guard self.occluders[id] == nil,
-                          self.seenGeometry.contains(id),
+                          self.seenGeometry.contains(id, token: token),
                           let arView = self.arView else { return }
                     let entity = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
                     self.ensureOccluderRoot(in: arView).addChild(entity)
