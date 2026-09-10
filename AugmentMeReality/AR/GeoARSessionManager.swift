@@ -73,9 +73,18 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     @Published private(set) var renderDiagnostics: String?
     /// True when LiDAR scene occlusion is active (real objects hide virtual content).
     @Published private(set) var occlusionActive = false
-    /// Killer-#1 metric (BRIEF): ms from AR attach to first rendered object.
-    @Published private(set) var timeToFirstObjectMs: Int?
-    /// ADR-043 reveal signal: true once the running session has rendered a frame.
+    /// First subsequent scene update with the selected asset ready and in view.
+    /// This is a proxy; RealityKit does not expose proof of hero presentation here.
+    @Published private(set) var timeToFirstHeroProxyMs: Int?
+    @Published private(set) var readinessEpochKind = ARReadinessEpoch.Kind.coldStart
+    private(set) var readiness: ARReadinessEpoch?
+    private var readinessActive = false
+    private var sessionGeneration = 0
+    private var hasRunSession = false
+    private var readyContentIDs: Set<UUID> = []
+    private var lastBaselineExportAt: TimeInterval = 0
+    private var baselineHealthMilestones: Set<Int> = []
+    /// Reveal signal: a fresh camera frame was observed after the current intent/run.
     @Published private(set) var sessionFrameReady = false
     /// Wave C round 2 (C20): failures that happen while the user is IN AR must
     /// be visible IN AR — a failed slider-commit persist or a failed 3D-model
@@ -159,7 +168,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         rebuildContentEntities()
     }
 
-    // Systems-health metrics (§10): render fps, frame-time p95, thermal state,
+    // Systems-health metrics: scene-update cadence (proxy), p95, thermal state,
     // cumulative VPS anchor corrections (drift proxy), motion classification.
     @Published private(set) var renderFPS: Int?
     @Published private(set) var frameP95Ms: Int?
@@ -174,7 +183,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private var lastFrameAt: Date?
     private var lastFrameUpdateAt = Date.distantPast
     private var lastGARFeedAt = Date.distantPast
-    private var cameraVisibleAt: Date?
+
 
     private weak var arView: ARView?
     private weak var locationService: LocationService?
@@ -260,7 +269,6 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// down, not sliding around after every sensor twitch.
     private var lastRefinementSync = Date.distantPast
     private var headingSampleCount = 0
-    private var attachedAt: Date?
     private let metricsLog = Logger(
         subsystem: "com.adnan.augmentmereality", category: "metrics"
     )
@@ -324,8 +332,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         self.arView = arView
         self.locationService = locationService
         self.library = library
-        attachedAt = Date()
-        timeToFirstObjectMs = nil
+        markCameraIntent()
 
         guard Self.isDeviceSupported else {
             mode = .unsupported
@@ -399,6 +406,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         geospatial.stop()
         resetPlacements()
         arView?.session.pause()
+        recordSessionPaused()
         arView = nil
         mode = .starting
         statusText = "Starting camera…"
@@ -440,6 +448,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         depthDownSince = nil
         cancelLiveEdit()
         arView?.session.pause()
+        recordSessionPaused()
         statusText = "Paused"
     }
 
@@ -563,7 +572,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// `sessionShouldAttemptRelocalization` with true) and placements survive —
     /// the exact contract `setPerception` already relies on (ADR-033/034).
     func resumeSession() {
-        guard let arView, mode != .unsupported else { return }
+        guard arView != nil, mode != .unsupported else { return }
         // Final check F1: a FAILED session cannot be warm-resumed — the cold
         // run is its documented recovery (and clears the failure state).
         if sessionFailed {
@@ -577,7 +586,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
                 // too rather than silently demoting to compass (final check F4).
                 let config = ARGeoTrackingConfiguration()
                 config.planeDetection = [.horizontal]
-                arView.session.run(config)
+                runMeasuredSession(config)
                 sessionRunSince = ProcessInfo.processInfo.systemUptime
                 startTicking()
             } else {
@@ -599,7 +608,8 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // including on the beginRevealWarmup path inside the grace window).
         let resumePlan = (
             reconstruction: Self.reconstructionDesired(
-                supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),
+                supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+                    && ARBaselineExperiment.current.allows(.reconstruction),
                 cameraRecentlyVisible: Self.visibilityTerm(
                     cameraVisible: cameraVisible, now: Date(),
                     lastVisible: lastCameraVisibleAt
@@ -611,7 +621,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             depth: false
         )
         appliedPerception = resumePlan
-        arView.session.run(makeConfiguration(
+        runMeasuredSession(makeConfiguration(
             reconstruction: resumePlan.reconstruction,
             personSeg: false,
             sceneDepth: false
@@ -629,6 +639,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// off-screen (pre-warm, other tabs) — the map tab must not cook the phone.
     func markCameraHidden() {
         cameraVisible = false
+        readinessActive = false
+        // Keep the selected identity for the next warm epoch. Its milestones
+        // are inactive here and beginReadinessEpoch creates fresh ones on return.
+        ARBaselineMetrics.shared.setWorkload("cameraVisible", enabled: false)
+        ARBaselineMetrics.shared.event("cameraHidden")
+        ARBaselineMetrics.shared.endEpoch(reason: "cameraHidden")
+        ARBaselineMetrics.shared.export()
         // Round 3 (counsel ARPCFG-R2-1): the TRUE hide edge is stamped here —
         // the per-tick stamp was up to 400 ms stale, so the grace expired
         // just before the 5 s pause it exists to cover and roughly half of
@@ -640,22 +657,59 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         cancelLiveEdit()
     }
 
-    /// Killer-#1 measurement point: TTFO counts from the moment the user can see
-    /// the camera, not from session start. Pre-warmed content ⇒ 0 ms.
+    /// Camera intent precedes session startup, including Receive warmup.
+    func markCameraIntent(heroID: UUID? = nil) {
+        if let heroID, let previous = readiness?.heroID, heroID != previous {
+            readiness = nil
+            readinessActive = false
+        }
+        if !readinessActive {
+            beginReadinessEpoch(sessionFailed ? .recovery : (hasRunSession ? .warmResume : .coldStart))
+        }
+        if let heroID, readiness?.heroID == nil {
+            readiness?.selectHero(heroID)
+            ARBaselineMetrics.shared.event("selectedHero", details: "id=\(heroID) source=receivedDrop")
+        }
+    }
+
     func markCameraVisible() {
         cameraVisible = true
-        cameraVisibleAt = Date()
-        ttfoEpochIsRecovery = false
-        // Round 6 (counsel F-D5-05): a FAILED session cannot claim a 0 ms
-        // pre-warm — its pre-failure holders are about to be destroyed by the
-        // cold recovery run, and the false "0 ms" line previously landed in
-        // the exact metrics stream the field debrief reads (the flattering
-        // direction, the one a field run cannot detect).
-        if !placedHolders.isEmpty, !sessionFailed {
-            timeToFirstObjectMs = 0
-            metricsLog.log("TTFO: 0 ms (pre-warmed; content already placed)")
-        } else {
-            timeToFirstObjectMs = nil
+        markCameraIntent()
+        ARBaselineMetrics.shared.setWorkload("cameraVisible", enabled: true)
+        ARBaselineMetrics.shared.event("cameraVisible")
+    }
+
+    private func beginReadinessEpoch(_ kind: ARReadinessEpoch.Kind) {
+        sessionGeneration += 1
+        readinessActive = true
+        readinessEpochKind = kind
+        let retainedHero = kind != .coldStart ? readiness?.heroID : nil
+        readiness = ARReadinessEpoch(kind: kind, generation: sessionGeneration,
+                                     startedAt: ProcessInfo.processInfo.systemUptime)
+        if let retainedHero { readiness?.selectHero(retainedHero) }
+        timeToFirstHeroProxyMs = nil
+        baselineHealthMilestones.removeAll()
+        lastBaselineExportAt = ProcessInfo.processInfo.systemUptime
+        sessionFrameReady = false
+        frameCounter = 0
+        fpsWindowStart = Date()
+        frameIntervalsMs.removeAll(keepingCapacity: true)
+        lastFrameAt = nil
+        renderFPS = nil
+        frameP95Ms = nil
+        ARBaselineMetrics.shared.beginEpoch(kind: kind.rawValue, generation: sessionGeneration,
+                                            at: readiness?.startedAt)
+        let metrics = ARBaselineMetrics.shared
+        if metrics.isEnabled {
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            metrics.condition("brightness", value: String(Double(UIScreen.main.brightness)))
+            metrics.condition("batteryState", value: String(UIDevice.current.batteryState.rawValue))
+            metrics.condition("batteryFraction", value: String(UIDevice.current.batteryLevel))
+            metrics.condition("initialThermalState", value: String(ProcessInfo.processInfo.thermalState.rawValue))
+        }
+        metrics.event(kind == .recovery ? "recoveryIntent" : "cameraIntent")
+        if let retainedHero {
+            ARBaselineMetrics.shared.event("selectedHero", details: "id=\(retainedHero) source=retainedSelection")
         }
     }
 
@@ -705,6 +759,17 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         roomDrops[drop.id] = drop
         placedDrops[drop.id] = drop
 
+        // A baseline Room Test must not inherit an unrelated saved geo drop
+        // selected before the operator places the intended fixture. Keep the
+        // camera epoch's origin and generation, then pin its first Room Test ID.
+        if ARBaselineExperiment.current.selectsRoomHero, readinessActive,
+           var epoch = readiness, epoch.heroID == nil {
+            epoch.selectHero(drop.id)
+            readiness = epoch
+            ARBaselineMetrics.shared.event("selectedHero", details:
+                "id=\(drop.id) asset=\(assetName ?? content.rawValue) source=roomSelection")
+        }
+
         let holder = makeHolder(for: drop)
         let center = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
         if let hit = arView.raycast(from: center, allowing: .estimatedPlane, alignment: .any).first {
@@ -727,7 +792,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         placedHolders[drop.id] = holder
         DropEntityFactory.startAnimations(on: holder)
         renderedDropCount = placedHolders.count
-        recordTTFOIfNeeded()
+        observeSelectedContentReadiness()
     }
 
     func clearRoomDrops() {
@@ -761,10 +826,14 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     }
 
     private func runGeoTracking() {
-        guard let arView else { return }
+        guard arView != nil else { return }
+        if hasRunSession, readiness?.kind != .recovery || !readinessActive
+            || readiness?.firstFreshFrameAt != nil {
+            beginReadinessEpoch(.recovery)
+        }
         let config = ARGeoTrackingConfiguration()
         config.planeDetection = [.horizontal]
-        arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+        runMeasuredSession(config, options: [.resetTracking, .removeExistingAnchors])
         resetPlacements()
         geospatial.invalidateAllAnchors() // ARP-4: anchors die with the old frame
         mode = .geoTracking
@@ -882,6 +951,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 
     private func runGPSCompass() {
         guard let arView else { return }
+        if hasRunSession, readiness?.kind != .recovery || !readinessActive
+            || readiness?.firstFreshFrameAt != nil {
+            beginReadinessEpoch(.recovery)
+        }
         // Sessions start on the idle diet (pre-warm often precedes any content);
         // the governor upgrades perception the moment something renders.
         let config = makeConfiguration(reconstruction: false, personSeg: false, sceneDepth: false)
@@ -897,7 +970,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         // no reconstruction yet; the first governor tick raises it honestly.
         occlusionActive = false
 
-        arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+        runMeasuredSession(config, options: [.resetTracking, .removeExistingAnchors])
         resetPlacements()
         // Counsel ARP-4: the reset created a NEW world frame — every GARAnchor
         // still lives in the old one. Drop them (keeping the GARSession itself,
@@ -919,9 +992,9 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     private var appliedPerception = (reconstruction: false, person: false, depth: false)
     private func setPerception(reconstruction: Bool, person: Bool, depth: Bool) {
         let desired = (reconstruction: reconstruction, person: person, depth: depth)
-        guard desired != appliedPerception, mode == .gpsCompass, let arView else { return }
+        guard desired != appliedPerception, mode == .gpsCompass, arView != nil else { return }
         appliedPerception = desired
-        arView.session.run(makeConfiguration(
+        runMeasuredSession(makeConfiguration(
             reconstruction: desired.reconstruction,
             personSeg: desired.person,
             sceneDepth: desired.depth
@@ -978,15 +1051,9 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         vpsCorrectionTotals.removeAll()
         vpsCorrectionCm = nil
         renderedDropCount = 0
-        // Round 5 (counsel F-D4-TTFO): re-arm the Killer-#1 instrument WHERE
-        // PLACEMENTS DIE, so no restorer call ordering can decide it. The
-        // round-4 reorder let a failed-session resume latch TTFO = 0 from
-        // pre-failure holders that this very reset then destroyed — the
-        // metric failed in the flattering direction, the one a field run
-        // cannot detect. attach() clears it on entry; this is the twin.
-        timeToFirstObjectMs = nil
-        cameraVisibleAt = Date()
-        ttfoEpochIsRecovery = true
+        readyContentIDs.removeAll()
+        timeToFirstHeroProxyMs = nil
+
     }
 
     /// VPS resolved (or refined) a drop's exact pose: glide to it once, then track
@@ -1296,13 +1363,15 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             ),
             pedestrian: renderPath == .pedestrian,
             windowModeActive: windowModeActive,
-            personLikely: personSentinel.personLikely,
+            personLikely: personSentinel.personLikely
+                && ARBaselineExperiment.current.allows(.personSegmentation),
             contentInViewRecently: Date().timeIntervalSince(lastContentInViewAt) < 30,
             midFieldServiceable: anyContentMidServiceable,
             thermalSerious: thermal == .serious || thermal == .critical,
             thermalCritical: thermal == .critical,
             supportsCustomPersonOcclusion: Self.supportsCustomPersonOcclusion,
-            supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh),
+            supportsSceneReconstruction: ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+                    && ARBaselineExperiment.current.allows(.reconstruction),
             supportsSceneDepth: ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth),
             midFieldEnabled: AppConfig.midFieldDepthEnabled
         )
@@ -1527,9 +1596,24 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         return interval
     }
 
-    /// §10 systems health: render fps (from the per-frame callback) + thermal state.
+    /// Scene-update callback cadence (a proxy) and ProcessInfo thermal state.
     private func updateHealthMetrics() {
         let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if ARBaselineMetrics.shared.isEnabled, uptime - lastBaselineExportAt >= 10 {
+            lastBaselineExportAt = uptime
+            ARBaselineMetrics.shared.event("health", details:
+                "thermalState=\(ProcessInfo.processInfo.thermalState.rawValue) tier=\(powerTier.description) content=\(placedHolders.count) brightness=\(UIScreen.main.brightness) batteryState=\(UIDevice.current.batteryState.rawValue)")
+            if readinessActive, let start = readiness?.startedAt {
+                for milestone in [10, 120, 300, 600, 900]
+                where uptime - start >= Double(milestone) && !baselineHealthMilestones.contains(milestone) {
+                    baselineHealthMilestones.insert(milestone)
+                    ARBaselineMetrics.shared.event("health_\(milestone)s", details:
+                        "actualElapsed=\(uptime - start) thermalState=\(ProcessInfo.processInfo.thermalState.rawValue); warmth unmeasured")
+                }
+            }
+            ARBaselineMetrics.shared.export()
+        }
         let window = now.timeIntervalSince(fpsWindowStart)
         if window >= 2 {
             renderFPS = Int((Double(frameCounter) / window).rounded())
@@ -1538,6 +1622,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
         let thermal = ProcessInfo.processInfo.thermalState
         thermalSerious = thermal == .serious || thermal == .critical
+        if ARBaselineMetrics.shared.isEnabled, thermalSerious {
+            // First occurrence survives bounded recent-event eviction.
+            ARBaselineMetrics.shared.event("thermalSeriousOrCritical", details: "state=\(thermal.rawValue)")
+        }
 
         let midActive = midDepth.feed.hasSample
         if midActive != midDepthActive {
@@ -1670,6 +1758,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         placedDrops[id] = nil
         markers[id] = nil
         contentEntities[id] = nil
+        readyContentIDs.remove(id)
         appliedCompensation[id] = nil
         groundDiscs[id] = nil
         groundLockBaseY[id] = nil
@@ -1965,7 +2054,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         }
         renderedDropCount = placedHolders.count
 
-        recordTTFOIfNeeded()
+        observeSelectedContentReadiness()
     }
 
     /// Content shared by both render paths: content + grounding disc + way-point
@@ -1987,6 +2076,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         let content = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
         holder.addChild(content)
         contentEntities[drop.id] = content
+        recordContentReadiness(for: drop)
 
         // ADR-023 grounding disc (see `groundDiscs`): translucent dark ellipse
         // sitting just above the estimated ground, footprint-sized to the content.
@@ -2260,6 +2350,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             let fresh = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
             holder.addChild(fresh)
             contentEntities[id] = fresh
+            recordContentReadiness(for: drop)
             appliedCompensation[id] = nil // ADR-049: re-applied on the next frame
             DropEntityFactory.startAnimations(on: fresh)
             // Re-seat the marker and grounding disc for the real model's bounds.
@@ -2360,29 +2451,133 @@ final class GeoARSessionManager: NSObject, ObservableObject {
             let fresh = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
             holder.addChild(fresh)
             contentEntities[id] = fresh
+            recordContentReadiness(for: drop)
             appliedCompensation[id] = nil // fresh entity carries no factor yet
             DropEntityFactory.startAnimations(on: fresh)
         }
     }
 
-    /// Round 6 (counsel F-D5-05/F-R5-10): a measurement epoch that began at
-    /// `resetPlacements` (mid-session cold restart, failed-session recovery)
-    /// is a RECOVERY number, not a Killer-#1 cold-start number — the field
-    /// debrief must be able to tell them apart in the metrics stream.
-    private var ttfoEpochIsRecovery = false
-
-    /// Killer-#1 metric: measure, then claim (BRIEF bar: median ≤ 400 ms).
-    private func recordTTFOIfNeeded() {
-        if timeToFirstObjectMs == nil, !placedHolders.isEmpty,
-           let reference = cameraVisibleAt ?? attachedAt {
-            let ms = Int(Date().timeIntervalSince(reference) * 1000)
-            timeToFirstObjectMs = ms
-            if ttfoEpochIsRecovery {
-                metricsLog.log("TTFO (recovery): \(ms) ms from session restart to first rendered object")
-            } else {
-                metricsLog.log("TTFO: \(ms) ms from camera visible to first rendered object")
+    /// Pin the intended hero before consulting asset readiness. A ready neighbor
+    /// must never replace a missing/heavy selected asset in the measurement.
+    private func observeSelectedContentReadiness() {
+        guard readinessActive, let arView, var epoch = readiness,
+              epoch.heroSceneUpdateProxyAt == nil else { return }
+        if epoch.heroID == nil, !ARBaselineExperiment.current.selectsRoomHero {
+            let id = nearestDrop?.id ?? placedHolders.min {
+                simd_length($0.value.position - arView.cameraTransform.translation)
+                    < simd_length($1.value.position - arView.cameraTransform.translation)
+            }?.key
+            if let id {
+                epoch.selectHero(id)
+                let drop = placedDrops[id] ?? nearestDrop
+                ARBaselineMetrics.shared.event("selectedHero", details:
+                    "id=\(id) asset=\(drop?.assetName ?? drop?.content.rawValue ?? "unmeasured")")
             }
         }
+        if let id = epoch.heroID, let holder = placedHolders[id] {
+            if epoch.assetReadyAt == nil, epoch.placeholderAt == nil {
+                let metrics = ARBaselineMetrics.shared
+                metrics.condition("heroID", value: id.uuidString)
+                metrics.condition("asset", value: placedDrops[id]?.assetName ?? placedDrops[id]?.content.rawValue ?? "unmeasured")
+                metrics.condition("distanceMetersAtPlacement", value: String(simd_length(holder.position - arView.cameraTransform.translation)))
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            let oldPlaceholder = epoch.placeholderAt
+            let oldReady = epoch.assetReadyAt
+            epoch.observeContent(id: id, ready: readyContentIDs.contains(id), at: now)
+            if oldPlaceholder == nil, epoch.placeholderAt != nil {
+                ARBaselineMetrics.shared.event("placeholderPlaced", details: "id=\(id)")
+            }
+            if oldReady == nil, epoch.assetReadyAt != nil {
+                ARBaselineMetrics.shared.event("selectedAssetReady", details: "id=\(id)")
+            }
+        }
+        readiness = epoch
+    }
+
+    private func recordContentReadiness(for drop: GeoDrop) {
+        let ready = drop.content != .animated
+            || drop.assetName.map { DropEntityFactory.isAssetReady($0) } == true
+        if ready { readyContentIDs.insert(drop.id) }
+        else { readyContentIDs.remove(drop.id) }
+    }
+
+    private func observeFreshCamera(arView: ARView) {
+        guard readinessActive, !isInterrupted, !sessionFailed,
+              var epoch = readiness, epoch.firstFreshFrameAt == nil,
+              let frame = arView.session.currentFrame else { return }
+        epoch.observeCamera(capturedAt: frame.timestamp,
+            observedAt: ProcessInfo.processInfo.systemUptime, sessionRunAt: sessionRunSince)
+        if epoch.firstFreshFrameAt != nil {
+            ARBaselineMetrics.shared.setWorkload("cameraSessionRunning", enabled: true)
+            ARBaselineMetrics.shared.event("firstFreshCameraFrameObserved",
+                details: "captureUptime=\(frame.timestamp)")
+        }
+        readiness = epoch
+    }
+
+    private func observeHeroSceneUpdate(arView: ARView) {
+        guard cameraVisible, readinessActive, !isInterrupted, !sessionFailed,
+              var epoch = readiness, epoch.heroSceneUpdateProxyAt == nil,
+              let frame = arView.session.currentFrame else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let id = epoch.heroID, readyContentIDs.contains(id),
+           let content = contentEntities[id], content.isActive {
+            let bounds = content.visualBounds(relativeTo: nil)
+            guard bounds.extents.x.isFinite, bounds.extents.y.isFinite, bounds.extents.z.isFinite,
+                  simd_length(bounds.extents) > 0.0001 else { return }
+            let center = bounds.center
+            let point = arView.project(center)
+            let visible = isInView(center, arView: arView)
+                && point.map { arView.bounds.contains($0) } == true
+            epoch.observeSceneUpdate(id: id, contentReady: readyContentIDs.contains(id),
+                inViewport: visible,
+                freshCamera: frame.timestamp > max(epoch.startedAt, sessionRunSince)
+                    && now - frame.timestamp >= 0 && now - frame.timestamp < 0.25, at: now)
+            if timeToFirstHeroProxyMs == nil,
+               let ms = epoch.milliseconds(to: epoch.heroSceneUpdateProxyAt) {
+                timeToFirstHeroProxyMs = ms
+                ARBaselineMetrics.shared.event("firstHeroSceneUpdateProxy", details: "id=\(id) ms=\(ms); presentation unmeasured")
+                metricsLog.log("Hero scene-update proxy (\(epoch.kind.rawValue), generation \(epoch.generation)): \(ms) ms; presentation unmeasured")
+            }
+        }
+        readiness = epoch
+    }
+
+    /// Record the configuration actually passed to ARKit, not feature-flag intent.
+    private func runMeasuredSession(_ configuration: ARConfiguration,
+                                    options: ARSession.RunOptions = []) {
+        guard let arView else { return }
+        let trace = ARBaselineMetrics.shared.measure("Session configuration")
+        defer { ARBaselineMetrics.shared.end(trace) }
+        arView.session.run(configuration, options: options)
+        sessionRunSince = ProcessInfo.processInfo.systemUptime
+        hasRunSession = true
+        let metrics = ARBaselineMetrics.shared
+        metrics.setWorkload("cameraSessionRunning", enabled: true)
+        let reconstruction = (configuration as? ARWorldTrackingConfiguration)
+            .map { !$0.sceneReconstruction.isEmpty } ?? false
+        metrics.setWorkload("reconstructionRequested", enabled: reconstruction)
+        metrics.setWorkload("personSegmentationRequested", enabled:
+            configuration.frameSemantics.contains(.personSegmentation)
+                || configuration.frameSemantics.contains(.personSegmentationWithDepth))
+        metrics.setWorkload("sceneDepthRequested", enabled:
+            configuration.frameSemantics.contains(.sceneDepth)
+                || configuration.frameSemantics.contains(.smoothedSceneDepth))
+        metrics.event("sessionConfiguration", details:
+            "type=\(type(of: configuration)) format=\(configuration.videoFormat.imageResolution) fps=\(configuration.videoFormat.framesPerSecond) semantics=\(configuration.frameSemantics.rawValue) reset=\(options.rawValue)")
+    }
+
+    private func recordSessionPaused() {
+        readinessActive = false
+        let metrics = ARBaselineMetrics.shared
+        for name in ["cameraVisible", "cameraSessionRunning", "reconstructionRequested",
+                     "personSegmentationRequested", "sceneDepthRequested"] {
+            metrics.setWorkload(name, enabled: false)
+        }
+        metrics.event("sessionPaused")
+        metrics.endEpoch(reason: "sessionPaused")
+        metrics.export()
     }
 
     /// Feeds one heading-error sample into the smoothed estimate.
@@ -2523,7 +2718,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
                 max(fix.speed, 0) * 3.6, fix.horizontalAccuracy
             )
         }
-        recordTTFOIfNeeded()
+        observeSelectedContentReadiness()
     }
 
     /// Per render frame in transit: re-express every drop relative to the camera
@@ -2567,6 +2762,10 @@ final class GeoARSessionManager: NSObject, ObservableObject {
     /// content itself is never touched — it stays world-locked and true-scale, so
     /// perspective, parallax and occlusion behave like a real physical object.
     private func frameUpdate() {
+        ARBaselineMetrics.shared.observe("sceneUpdateProxy")
+        let trace = ARBaselineMetrics.shared.measure("Scene update elapsed")
+        defer { ARBaselineMetrics.shared.end(trace) }
+        if let arView { observeFreshCamera(arView: arView) }
         // RealityKit keeps rendering (and firing SceneEvents) on a frozen or
         // dead camera — render callbacks are NOT proof of session health, so
         // hold all per-frame work while interrupted/failed (Wave B review C19).
@@ -2574,11 +2773,13 @@ final class GeoARSessionManager: NSObject, ObservableObject {
         else { return }
         if !sessionFrameReady,
            let frame = arView.session.currentFrame,
-           frame.timestamp > sessionRunSince {
+           frame.timestamp > max(sessionRunSince, readiness?.startedAt ?? sessionRunSince) {
             // ADR-043 reveal signal: only a camera frame captured AFTER the
             // (re)run proves the session is live (final check F5).
             sessionFrameReady = true
         }
+        observeSelectedContentReadiness()
+        observeHeroSceneUpdate(arView: arView)
         frameCounter += 1
         let now = Date()
         lastFrameUpdateAt = now
@@ -2600,7 +2801,7 @@ final class GeoARSessionManager: NSObject, ObservableObject {
                 lastGARFeedAt = now
             }
             // ADR-037: 2 Hz person probe, only while occlusion could matter.
-            if cameraVisible, !placedHolders.isEmpty {
+            if cameraVisible, !placedHolders.isEmpty, ARBaselineExperiment.current.allows(.sentinel) {
                 personSentinel.update(pixelBuffer: frame.capturedImage)
             }
         }
@@ -2833,8 +3034,23 @@ final class GeoARSessionManager: NSObject, ObservableObject {
 /// here. Before this extension existed, a phone call froze the viewfinder
 /// permanently and a session error died silently behind a black screen.
 extension GeoARSessionManager: ARSessionDelegate {
+    nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        let metrics = ARBaselineMetrics.shared
+        guard metrics.isEnabled else { return }
+        let trace = metrics.measure("Capture delivery observation")
+        defer { metrics.end(trace) }
+        let now = ProcessInfo.processInfo.systemUptime
+        metrics.observe("captureDelivery", at: now)
+        metrics.observe("captureTimestamp", at: frame.timestamp)
+        metrics.sample("captureSampleAge", milliseconds: (now - frame.timestamp) * 1000)
+    }
+
     nonisolated func sessionWasInterrupted(_ session: ARSession) {
         Task { @MainActor in
+            ARBaselineMetrics.shared.event("sessionInterrupted")
+            ARBaselineMetrics.shared.setWorkload("cameraSessionRunning", enabled: false)
+            self.readinessActive = false
+            ARBaselineMetrics.shared.endEpoch(reason: "sessionInterrupted")
             self.isInterrupted = true
             self.sessionFrameReady = false
             self.disarmSemanticMatte() // arui-4: the flag can't fall on its own here
@@ -2846,6 +3062,7 @@ extension GeoARSessionManager: ARSessionDelegate {
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
         Task { @MainActor in
             self.isInterrupted = false
+            if self.cameraVisible { self.beginReadinessEpoch(.recovery) }
             self.statusText = "Resuming…"
             self.metricsLog.log("ARSession interruption ended — relocalizing")
         }
@@ -2863,6 +3080,10 @@ extension GeoARSessionManager: ARSessionDelegate {
             self.metricsLog.error("ARSession failed (\(nsError.code)): \(nsError.localizedDescription)")
             self.sessionFrameReady = false
             self.sessionFailed = true
+            ARBaselineMetrics.shared.setWorkload("cameraSessionRunning", enabled: false)
+            self.readinessActive = false
+            ARBaselineMetrics.shared.event("sessionFailed", details: "code=\(nsError.code)")
+            ARBaselineMetrics.shared.endEpoch(reason: "sessionFailed")
             self.disarmSemanticMatte() // arui-4
             if nsError.domain == ARError.errorDomain,
                nsError.code == ARError.Code.cameraUnauthorized.rawValue {

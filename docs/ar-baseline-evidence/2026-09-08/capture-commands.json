@@ -1,0 +1,134 @@
+{
+  "U-steady": {
+    "class": "U",
+    "sourceCommit": "a4aeff7f9d1b6fd4e3cf9a57bd88eecda192df35",
+    "recordCommand": [
+      "xcrun",
+      "xctrace",
+      "record",
+      "--template",
+      "Time Profiler",
+      "--device",
+      "00008130-0014091836D2001C",
+      "--time-limit",
+      "16m",
+      "--output",
+      "/tmp/augmentme-issue3-evidence/U-steady.trace",
+      "--attach",
+      "AugmentMeReality"
+    ],
+    "appArguments": [],
+    "recorderEnabled": false,
+    "experimentEnabled": false,
+    "cameraIntentTime": "unmeasured; trace attached to already-launched process"
+  },
+  "I-off": {
+    "class": "I-off",
+    "sourceCommit": "d5d7a7f3c5693e6b17b7d04774c8db353a4ffa41",
+    "recordCommand": [
+      "xcrun",
+      "xctrace",
+      "record",
+      "--template",
+      "Time Profiler",
+      "--device",
+      "00008130-0014091836D2001C",
+      "--time-limit",
+      "16m",
+      "--output",
+      "/tmp/augmentme-issue3-evidence/I-off.trace",
+      "--launch",
+      "--",
+      "com.adnan.augmentmereality"
+    ],
+    "appArguments": [],
+    "recorderEnabled": false,
+    "experimentEnabled": false,
+    "cameraIntentTime": "unmeasured; app launched by Instruments, camera opened by operator"
+  },
+  "I-on": {
+    "class": "I-on",
+    "sourceCommit": "d5d7a7f3c5693e6b17b7d04774c8db353a4ffa41",
+    "recordCommand": [
+      "xcrun",
+      "xctrace",
+      "record",
+      "--template",
+      "Time Profiler",
+      "--device",
+      "00008130-0014091836D2001C",
+      "--time-limit",
+      "16m",
+      "--output",
+      "/tmp/augmentme-issue3-evidence/I-on.trace",
+      "--env",
+      "AR_BASELINE_RUN_KIND=I-on",
+      "--env",
+      "AR_BASELINE_ASSET=ROOM_TEST_TEXT",
+      "--env",
+      "AR_BASELINE_CHARGING=unplugged",
+      "--env",
+      "AR_BASELINE_OBSERVED_WARMTH=cool",
+      "--env",
+      "AR_BASELINE_TRACE_LOCATION=/tmp/augmentme-issue3-evidence/I-on.trace",
+      "--launch",
+      "--",
+      "com.adnan.augmentmereality",
+      "-ARBaselineMetrics"
+    ],
+    "appArguments": [
+      "-ARBaselineMetrics"
+    ],
+    "recorderEnabled": true,
+    "experimentEnabled": false,
+    "dateUTC": "2026-09-10",
+    "earlyExportCollection": "Wireless app-container copies at early launch, startup and about camera +336 s; additional observer activity present only in I-on"
+  },
+  "Q-readiness": {
+    "class": "Q",
+    "sourceCommit": "b45f43725166c156dfd69a8f871660d665f35923",
+    "appArguments": [
+      "-ARBaselineMetrics",
+      "-ARBaselineExperiment"
+    ],
+    "fixtureFromExport": "disabled=; delayedAsset=none; delaySeconds=0.0; missingAsset=none; heroSource=roomDrop",
+    "recorderRunID": "9B2BF558-569F-4FD0-A310-4C9252DDCF4D",
+    "externalTrace": "runs/quality/Q-readiness-supported.trace",
+    "video": "runs/quality/Q-readiness.mov",
+    "conditions": "USB connected; QuickTime iPhone Screen + iPhone Speaker; no Mac microphone; separate quality trial",
+    "launchMethod": "xctrace Time Profiler, os_signpost",
+    "inputProvenance": "fixture verified from recorder metadata; video device selections observed in QuickTime UI",
+    "additionalInstrument": "Core Animation FPS (estimate only)"
+  },
+  "Q-delayed-dragon": {
+    "class": "Q",
+    "sourceCommit": "b45f43725166c156dfd69a8f871660d665f35923",
+    "appArguments": [
+      "-ARBaselineMetrics",
+      "-ARBaselineExperiment"
+    ],
+    "fixtureFromExport": "disabled=assetPreload; delayedAsset=DragonAnim; delaySeconds=3.0; missingAsset=none; heroSource=roomDrop",
+    "recorderRunID": "F3301204-B73F-41A0-929D-A7F6752578BF",
+    "externalTrace": "runs/quality/Q-delayed-dragon.trace",
+    "video": "runs/quality/Q-delayed-dragon.mov",
+    "conditions": "USB connected; QuickTime iPhone Screen + iPhone Speaker; no Mac microphone; separate quality trial",
+    "launchMethod": "xctrace Time Profiler, os_signpost",
+    "inputProvenance": "fixture verified from recorder metadata; video device selections observed in QuickTime UI"
+  },
+  "Q-missing-dragon-only": {
+    "class": "Q",
+    "sourceCommit": "b45f43725166c156dfd69a8f871660d665f35923",
+    "appArguments": [
+      "-ARBaselineMetrics",
+      "-ARBaselineExperiment"
+    ],
+    "fixtureFromExport": "disabled=assetPreload; delayedAsset=none; delaySeconds=0.0; missingAsset=DragonAnim; heroSource=roomDrop",
+    "recorderRunID": "F23A8CBC-25CB-4C95-881C-0BDD58FA61CB",
+    "externalTrace": null,
+    "video": "runs/quality/Q-missing-dragon-attempts.mov",
+    "conditions": "USB connected; QuickTime iPhone Screen + iPhone Speaker; no Mac microphone; separate quality trial",
+    "launchMethod": "devicectl, no external time limit",
+    "inputProvenance": "fixture verified from recorder metadata; video device selections observed in QuickTime UI",
+    "launchResult": "runs/quality/Q-missing-only-launch.json"
+  }
+}

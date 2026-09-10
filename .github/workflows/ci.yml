@@ -21,6 +21,7 @@ jobs:
           node-version: 22
       - run: node web/rules-tests/drift-check.mjs
       - run: node --test scripts/verify-firestore-release.test.mjs
+      - run: python3 scripts/ar-baseline.test.py
 
   # The Firestore rules suite (candidate + historical-v2 fixture) against the
   # emulator — the gate that must be green before any rules deploy.

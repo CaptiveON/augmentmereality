@@ -1,0 +1,10 @@
+{
+  "observed_warmth": "not measured; hot-state HUD visible; separate quality run",
+  "initially_cool": false,
+  "screen_recording": true,
+  "raw_trace_locations": [
+    "runs/quality/Q-delayed-dragon.trace",
+    "runs/quality/Q-delayed-dragon.mov"
+  ],
+  "build_manifest": "builds/Q/build-manifest.json"
+}

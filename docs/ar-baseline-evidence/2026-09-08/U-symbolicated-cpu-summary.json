@@ -1,0 +1,418 @@
+{
+  "source": "/tmp/augmentme-issue3-evidence/U-symbolicated-time-profile.xml",
+  "traceDurationSeconds": 961.969691,
+  "count": 776760,
+  "firstSampleSeconds": 0.520159541,
+  "lastSampleSeconds": 961.9691515,
+  "weightedCPUSeconds": 776.759999988544,
+  "sampledCPUPercentOneCore": 80.74682677175366,
+  "definition": "Summarize xctrace Time Profiler export; all times are nanoseconds from trace start.\nWeights estimate sampled on-CPU work. They are not scheduler CPU accounting,\npower, GPU work, elapsed duration of an individual operation, or presentation.",
+  "windows": {
+    "whole": {
+      "count": 776760,
+      "weightedCPUSeconds": 776.759999988544,
+      "windowSeconds": 961.969691,
+      "sampledCPUPercentOneCore": 80.74682677175366
+    },
+    "0-10s": {
+      "count": 517,
+      "weightedCPUSeconds": 0.5170000000000003,
+      "windowSeconds": 10,
+      "sampledCPUPercentOneCore": 5.1700000000000035
+    },
+    "minute00": {
+      "count": 21760,
+      "weightedCPUSeconds": 21.76000000000361,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 36.266666666672684
+    },
+    "after10s": {
+      "count": 776243,
+      "weightedCPUSeconds": 776.2429999885562,
+      "windowSeconds": 951.969691,
+      "sampledCPUPercentOneCore": 81.54072627807604
+    },
+    "minute01": {
+      "count": 51044,
+      "weightedCPUSeconds": 51.04399999997174,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 85.07333333328623
+    },
+    "minute02": {
+      "count": 51761,
+      "weightedCPUSeconds": 51.76099999997007,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 86.26833333328344
+    },
+    "minute03": {
+      "count": 50251,
+      "weightedCPUSeconds": 50.25099999997359,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 83.75166666662265
+    },
+    "minute04": {
+      "count": 48440,
+      "weightedCPUSeconds": 48.43999999997781,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 80.73333333329634
+    },
+    "minute05": {
+      "count": 49148,
+      "weightedCPUSeconds": 49.14799999997616,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 81.9133333332936
+    },
+    "minute06": {
+      "count": 49576,
+      "weightedCPUSeconds": 49.57599999997516,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 82.62666666662527
+    },
+    "minute07": {
+      "count": 49525,
+      "weightedCPUSeconds": 49.52499999997528,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 82.54166666662547
+    },
+    "minute08": {
+      "count": 49174,
+      "weightedCPUSeconds": 49.1739999999761,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 81.95666666662683
+    },
+    "minute09": {
+      "count": 49778,
+      "weightedCPUSeconds": 49.77799999997469,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 82.96333333329115
+    },
+    "minute10": {
+      "count": 52821,
+      "weightedCPUSeconds": 52.8209999999676,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 88.034999999946
+    },
+    "minute11": {
+      "count": 49787,
+      "weightedCPUSeconds": 49.78699999997467,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 82.9783333332911
+    },
+    "minute12": {
+      "count": 49800,
+      "weightedCPUSeconds": 49.79999999997464,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 82.99999999995774
+    },
+    "minute13": {
+      "count": 50411,
+      "weightedCPUSeconds": 50.410999999973214,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 84.01833333328868
+    },
+    "minute14": {
+      "count": 50329,
+      "weightedCPUSeconds": 50.328999999973405,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 83.88166666662235
+    },
+    "minute15": {
+      "count": 51464,
+      "weightedCPUSeconds": 51.46399999997076,
+      "windowSeconds": 60,
+      "sampledCPUPercentOneCore": 85.7733333332846
+    },
+    "minute16": {
+      "count": 1691,
+      "weightedCPUSeconds": 1.6909999999999246,
+      "windowSeconds": 1.9696910000000116,
+      "sampledCPUPercentOneCore": 85.8510294254233
+    }
+  },
+  "threadsWeightedCPUSeconds": [
+    [
+      "Main Thread (0x158d4db) (AugmentMeReality, pid: 9552)",
+      78.72200000001183
+    ],
+    [
+      "Render (0x158d552) (AugmentMeReality, pid: 9552)",
+      45.23899999998527
+    ],
+    [
+      "AugmentMeReality (0x158efad) (AugmentMeReality, pid: 9552)",
+      35.12500000000884
+    ],
+    [
+      "AugmentMeReality (0x158ee90) (AugmentMeReality, pid: 9552)",
+      34.60100000001006
+    ],
+    [
+      "AugmentMeReality (0x158e88a) (AugmentMeReality, pid: 9552)",
+      27.133000000010178
+    ],
+    [
+      "AugmentMeReality (0x158e0b6) (AugmentMeReality, pid: 9552)",
+      24.014000000006366
+    ],
+    [
+      "AugmentMeReality (0x158e4e4) (AugmentMeReality, pid: 9552)",
+      21.372000000003137
+    ],
+    [
+      "AugmentMeReality (0x158ea8b) (AugmentMeReality, pid: 9552)",
+      21.257000000002996
+    ],
+    [
+      "AugmentMeReality (0x158f3c8) (AugmentMeReality, pid: 9552)",
+      19.756000000001162
+    ],
+    [
+      "AugmentMeReality (0x158e405) (AugmentMeReality, pid: 9552)",
+      18.212999999999276
+    ],
+    [
+      "AugmentMeReality (0x158e563) (AugmentMeReality, pid: 9552)",
+      16.714999999997445
+    ],
+    [
+      "AugmentMeReality (0x158f51e) (AugmentMeReality, pid: 9552)",
+      16.533999999997224
+    ],
+    [
+      "AugmentMeReality (0x158e5cd) (AugmentMeReality, pid: 9552)",
+      16.470999999997147
+    ],
+    [
+      "AugmentMeReality (0x158f2f5) (AugmentMeReality, pid: 9552)",
+      14.968999999997143
+    ],
+    [
+      "AugmentMeReality (0x158e0b7) (AugmentMeReality, pid: 9552)",
+      14.41599999999745
+    ],
+    [
+      "AugmentMeReality (0x158f618) (AugmentMeReality, pid: 9552)",
+      14.031999999997662
+    ],
+    [
+      "AugmentMeReality (0x158f51f) (AugmentMeReality, pid: 9552)",
+      13.780999999997801
+    ],
+    [
+      "AugmentMeReality (0x158ee43) (AugmentMeReality, pid: 9552)",
+      13.212999999998116
+    ],
+    [
+      "AugmentMeReality (0x158e97b) (AugmentMeReality, pid: 9552)",
+      13.099999999998179
+    ],
+    [
+      "AugmentMeReality (0x158f08a) (AugmentMeReality, pid: 9552)",
+      12.742999999998377
+    ]
+  ],
+  "leafWeightedCPUSeconds": [
+    [
+      "CoreRE / void physx::shdfnd::sort<unsigned int, physx::shdfnd::Less<unsigned int>, physx::shdfnd::ReflectionAllocator<unsigned int>>(unsigned int*, unsigned int, physx::shdfnd::Less<unsigned int> const&, physx::shdfnd::ReflectionAllocator<unsigned int> const&, unsigned int)",
+      90.22900000006678
+    ],
+    [
+      "libsystem_kernel.dylib / 0x2439b1cd5",
+      34.90700000000935
+    ],
+    [
+      "CoreRE / physx::SubSortSAH::sort4(unsigned int*, unsigned int, physx::shdfnd::Array<physx::RTreeNodeNQ, physx::shdfnd::ReflectionAllocator<physx::RTreeNodeNQ>>&, unsigned int&, unsigned int, physx::RTreeNodeNQ*)",
+      26.861000000009845
+    ],
+    [
+      "IOKit / iokit_user_client_trap",
+      18.189999999999248
+    ],
+    [
+      "libsystem_pthread.dylib / start_wqthread",
+      18.09199999999913
+    ],
+    [
+      "CoreRE / void physx::shdfnd::sort<unsigned int, physx::SortBoundsPredicate, physx::shdfnd::ReflectionAllocator<unsigned int>>(unsigned int*, unsigned int, physx::SortBoundsPredicate const&, physx::shdfnd::ReflectionAllocator<unsigned int> const&, unsigned int)",
+      15.74999999999671
+    ],
+    [
+      "CoreRE / <deduplicated_symbol>",
+      10.591999999999569
+    ],
+    [
+      "CoreRE / physx::Gu::EdgeListBuilder::init(physx::Gu::EDGELISTCREATE const&)",
+      8.69700000000062
+    ],
+    [
+      "libsystem_kernel.dylib / 0x2439b1a55",
+      7.2190000000007455
+    ],
+    [
+      "AppleCV3D / 0x1e1c1f920",
+      7.190000000000736
+    ],
+    [
+      "SceneIntelligence / -[SISceneSegmentation postprocessingIOSSemanticOutput:confidenceOutput:uncertaintyOutput:]",
+      5.640000000000218
+    ],
+    [
+      "CoreFoundation / ___CFBasicHashFindBucket_Linear",
+      4.735999999999916
+    ],
+    [
+      "CoreFoundation / __CF_IS_OBJC",
+      4.163999999999725
+    ],
+    [
+      "AppleCV3D / 0x1e1ca7794",
+      4.049999999999687
+    ],
+    [
+      "Recon3D / 0x1df7df73d",
+      3.9379999999996773
+    ],
+    [
+      "AppleCV3D / 0x1e1c1e3dc",
+      3.8899999999996826
+    ],
+    [
+      "CoreRE / re::ecs2::EntityComponentCollection::get(re::ecs2::ComponentTypeBase const&) const",
+      3.8549999999996865
+    ],
+    [
+      "CoreRE / physx::Cm::RadixSort::Sort(unsigned int const*, unsigned int, physx::Cm::RadixHint)",
+      3.8459999999996874
+    ],
+    [
+      "libsystem_platform.dylib / 0x2b5e41989",
+      3.5919999999997154
+    ],
+    [
+      "libsystem_kernel.dylib / 0x2439b6ba5",
+      3.0819999999997716
+    ],
+    [
+      "AppleCV3D / 0x1e11339ec",
+      3.0559999999997745
+    ],
+    [
+      "AppleCV3D / 0x1e1e94944",
+      2.995999999999781
+    ],
+    [
+      "Recon3D / 0x1dfba4275",
+      2.960999999999785
+    ],
+    [
+      "CoreFoundation / __CFStringHash",
+      2.741999999999809
+    ],
+    [
+      "AppleCV3D / 0x1e15a6454",
+      2.7389999999998094
+    ],
+    [
+      "AppleCV3D / 0x1e1e847f8",
+      2.7179999999998117
+    ],
+    [
+      "AppleCV3D / 0x1e11336f0",
+      2.6109999999998235
+    ],
+    [
+      "AppleCV3D / 0x1e1b44664",
+      2.5289999999998325
+    ],
+    [
+      "libsystem_platform.dylib / 0x2b5e41ced",
+      2.4629999999998398
+    ],
+    [
+      "libobjc.A.dylib / 0x190b2f401",
+      2.4369999999998426
+    ]
+  ],
+  "inclusiveBinaryWeightedCPUSeconds": [
+    [
+      "libsystem_pthread.dylib",
+      698.3779999903975
+    ],
+    [
+      "libdispatch.dylib",
+      624.5419999921435
+    ],
+    [
+      "CoreRE",
+      267.4390000005878
+    ],
+    [
+      "CoreFoundation",
+      164.00900000041906
+    ],
+    [
+      "RealityFusion",
+      159.87300000039932
+    ],
+    [
+      "Recon3D",
+      135.7880000002843
+    ],
+    [
+      "AppleCV3D",
+      127.07000000024269
+    ],
+    [
+      "ARKitCore",
+      114.60500000018317
+    ],
+    [
+      "AugmentMeReality",
+      112.11200000017126
+    ],
+    [
+      "QuartzCore",
+      80.51200000002038
+    ],
+    [
+      "dyld",
+      80.4130000000199
+    ],
+    [
+      "UIKitCore",
+      79.62800000001616
+    ],
+    [
+      "SwiftUI",
+      78.68900000001167
+    ],
+    [
+      "GraphicsServices",
+      78.12700000000899
+    ],
+    [
+      "UpdateCycle",
+      74.48999999999162
+    ],
+    [
+      "IOKit",
+      71.83099999997893
+    ],
+    [
+      "libsystem_kernel.dylib",
+      67.12099999995644
+    ],
+    [
+      "Foundation",
+      64.80499999994538
+    ],
+    [
+      "AVFCapture",
+      54.15799999996448
+    ],
+    [
+      "libobjc.A.dylib",
+      50.521999999972955
+    ]
+  ]
+}

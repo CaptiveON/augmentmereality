@@ -1,0 +1,71 @@
+{
+  "observations": [
+    {
+      "recordedAtUTC": "2026-09-10T22:53:16.793361+00:00",
+      "run": "Q-readiness",
+      "scenario": "cold process Room Test text",
+      "operatorReply": "done",
+      "visualEvidence": "QuickTime preview shows blue Room Test text; selected object distance 1.968 m and hero proxy present in recorder",
+      "timingCaveat": "Requested ten-second empty camera wait; exported selection occurred 4.625 seconds after camera intent, so requested wait was not achieved"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T22:53:16.793523+00:00",
+      "run": "Q-readiness",
+      "scenario": "quick camera return",
+      "operatorReply": "text is there",
+      "visualEvidence": "QuickTime preview shows blue text and warmResume HUD proxy 75 ms; exact timings to be extracted from JSON/video"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T22:56:28.337904+00:00",
+      "run": "Q-readiness",
+      "scenario": "long camera pause and background return",
+      "operatorReply": "Initially survived; later clarified text was visible for a second or two after Home Screen return, then vanished before another action",
+      "visualEvidence": "QuickTime preview initially showed blue Room Test text; later only the saved geo drop remained. Recorder has warmResume followed 11.608 seconds later by recovery/resetTracking+removeExistingAnchors, fresh frame, retained hero ID but no ready/presentation-proxy event",
+      "timingCaveat": "Operator duration is approximate; recorder times are separate monotonic epoch observations"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:01:00.784011+00:00",
+      "run": "Q-delayed",
+      "scenario": "toy_drummer selection",
+      "outcome": "incomplete: menu scrolling returns before operator can select asset",
+      "operatorReply": "it scrolls down but again goes up before i can select the toy drummer",
+      "nextVariant": "DragonAnim, a visible menu entry, with identical delay and missing-resource fixture settings"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:05:01.334830+00:00",
+      "run": "Q-delayed-dragon",
+      "scenario": "delayed asset",
+      "operatorReply": "the placeholder appeared first and after around 9 seconds, dragon appeared",
+      "timingCaveat": "Operator estimate is separate from measured 3.010-second fixture wait plus 8.575-second decode; exact visual timing pending video extraction"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:05:01.335004+00:00",
+      "run": "Q-delayed-dragon",
+      "scenario": "cached quick return",
+      "operatorReply": "yes it returned"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:11:21.490402+00:00",
+      "run": "Q-missing-dragon",
+      "outcome": "incomplete: no selectedHero or asset-load event in available snapshot; profiler time limit closed the app",
+      "operatorReply": "i opened the playground and i see nothing, no error message",
+      "retry": "Fresh process Q-missing-dragon-retry, same fixture via devicectl, continuous same video, no external profiler or automatic process timeout"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:14:13.345125+00:00",
+      "run": "Q-missing-dragon-retry",
+      "operatorReply": "it shows some text other than dragon",
+      "outcome": "Real missing-resource failure recorded, but generated text was the first selected Room Test hero; its readiness cannot validate missing-hero behavior",
+      "evidence": "baseline-FF479C14-4A41-42E9-BF73-1CB4BEBB091D.json pins text3D ID 6F67C3CC-2502-4332-8666-DE740E8BA00D at camera+2.090 s; DragonAnim failure at+5.525 s",
+      "nextVariant": "fresh process Q-missing-dragon-only; select DragonAnim first and only"
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:21:22.046738+00:00",
+      "run": "Q-missing-dragon-only",
+      "operatorReply": "its some text",
+      "visualEvidence": "Saved video: final process camera visible at 456s, Playground menu at 462\u2013466s, blue 3D? fallback and red A 3D model could not be loaded banner at 468/470s; banner gone at 471s, fallback remains through 700s. No hero proxy in HUD.",
+      "outcome": "Selected DragonAnim at camera+11.977s; placeholder+11.980s; real loader failure+12.004s; selectedAssetReady and firstHeroSceneUpdateProxy remain absent through export+267.997s.",
+      "restored": "After final export and recording stop, normal app relaunched with no recorder/experiment arguments or environment via devicectl at 23:20 UTC."
+    }
+  ]
+}

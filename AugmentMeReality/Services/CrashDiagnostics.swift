@@ -14,8 +14,9 @@ import os
 /// render-thread encode manifests as a HANG, not a crash — the exact failure
 /// shape that `renderFPS`'s 2-second mean smears away (counsel exit ruling).
 ///
-/// Payloads arrive on MetricKit's own background queue, at most daily (or on
-/// next launch after a crash). Each payload is persisted whole as JSON under
+/// Diagnostics arrive on MetricKit's background queue; metrics are aggregated
+/// and delivered later, usually daily. Neither is a synchronous baseline-run
+/// measurement. Each payload is persisted whole as JSON under
 /// Application Support/diagnostics/ so a field session can be debriefed by
 /// reading files off the device — no network, no third party.
 final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber, Sendable {
@@ -41,6 +42,22 @@ final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber, Sendable {
             let stamp = ISO8601DateFormatter().string(from: payload.timeStampEnd)
             let url = directory.appendingPathComponent("diagnostic-\(stamp).json")
             try? payload.jsonRepresentation().write(to: url, options: .atomic)
+        }
+    }
+
+    /// Retain OS aggregates (including available CPU/GPU, memory, animation,
+    /// and launch metrics) separately from run-local ARBaselineMetrics reports.
+    func didReceive(_ payloads: [MXMetricPayload]) {
+        guard let directory = Self.diagnosticsDirectory() else { return }
+        for payload in payloads {
+            let stamp = ISO8601DateFormatter().string(from: payload.timeStampEnd)
+            let url = directory.appendingPathComponent("metric-\(stamp).json")
+            do {
+                try payload.jsonRepresentation().write(to: url, options: .atomic)
+                log.log("MetricKit aggregate metrics persisted")
+            } catch {
+                log.error("MetricKit metrics could not be persisted: \(error.localizedDescription)")
+            }
         }
     }
 

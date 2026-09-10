@@ -463,18 +463,12 @@ private struct ARScreenContent: View {
                     .foregroundStyle(.cyan)
             }
 
-            // Round 6 (counsel F-D5-HUD): the live metrics (fps/p95/format)
-            // are DECOUPLED from the one-shot TTFO — the round-5 re-arm nils
-            // timeToFirstObjectMs mid-session (resetPlacements), and gating
-            // the whole line on it blinded FT-28/31's "record the HUD line"
-            // instruction after any cold restart. TTFO is one optional
-            // segment; the tint stays keyed on it when present.
+            // Cadence remains visible while readiness is missing. Neither a
+            // proxy value nor an unmeasured result is tinted as a target pass.
             if let line = metricsLine() {
                 Text(line)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(
-                        (manager.timeToFirstObjectMs ?? 0) <= 400 ? .mint : .yellow
-                    )
+                    .foregroundStyle(.secondary)
             }
 
             if let correction = manager.vpsCorrectionCm, correction > 0 {
@@ -668,9 +662,11 @@ private struct ARScreenContent: View {
 
     private func metricsLine() -> String? {
         var parts: [String] = []
-        if let ttfo = manager.timeToFirstObjectMs { parts.append("first object: \(ttfo) ms") }
-        if let fps = manager.renderFPS { parts.append("\(fps) fps") }
-        if let p95 = manager.frameP95Ms { parts.append("p95 \(p95) ms") }
+        if let value = manager.timeToFirstHeroProxyMs {
+            parts.append("hero proxy (\(manager.readinessEpochKind.rawValue)): \(value) ms")
+        }
+        if let fps = manager.renderFPS { parts.append("updates \(fps)/s") }
+        if let p95 = manager.frameP95Ms { parts.append("update p95 \(p95) ms") }
         guard !parts.isEmpty else { return nil }
         parts.append(manager.videoFormatDescription) // ADR-034 heat evidence
         return parts.joined(separator: " · ")

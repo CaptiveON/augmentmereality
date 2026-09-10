@@ -51,7 +51,9 @@ final class PersonSentinel {
         // part of the hold, and under thermal pressure the wait IS the
         // failure mode the measurement exists to catch.
         let holdStart = Date()
+        let holdTrace = ARBaselineMetrics.shared.measure("Person sentinel buffer hold")
         queue.async { [weak self] in
+            defer { ARBaselineMetrics.shared.end(holdTrace) }
             guard let self else { return }
             defer {
                 // RENDER-6: the "bounded hold" claim is measured, throttled
@@ -85,7 +87,20 @@ final class PersonSentinel {
             let handler = VNImageRequestHandler(
                 cvPixelBuffer: pixelBuffer, orientation: .right
             )
-            guard (try? handler.perform([request])) != nil else { return }
+            let metrics = ARBaselineMetrics.shared
+            let inferenceSucceeded: Bool = {
+                let trace = metrics.measure("Person sentinel inference")
+                defer { metrics.end(trace) }
+                metrics.observe("Person sentinel inference")
+                do {
+                    try handler.perform([request])
+                    return true
+                } catch {
+                    metrics.event("Person sentinel inference failed")
+                    return false
+                }
+            }()
+            guard inferenceSucceeded else { return }
             if let results = request.results, !results.isEmpty {
                 self.lock.lock()
                 self.lastSeenAt = Date()

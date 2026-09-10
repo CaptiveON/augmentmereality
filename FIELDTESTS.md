@@ -1,13 +1,27 @@
 # FIELDTESTS.md — the on-device protocol (v0.9)
 
 A wave is done when these pass **in the field**, not when the build succeeds. Every test
-says what to do, what to record (the HUD is the instrument — screenshot it), and the pass
+says what to do, what to record (screenshots support the observations), and the pass
 bar. Run what fits your situation; FT-numbers make reporting one-liners:
 *"FT-3: 0 ms ✓, FT-7: Σ 14 cm ✓, FT-12 failed — text visible through the building."*
 
 **HUD legend:** mode badge · "N in view range" · `LiDAR` `VPS ±x m` `SEM` `TRANSIT` chips ·
 status line · cyan "Rendered X m ahead · Y up" · `first object: X ms · fps · p95` ·
 `vps corrections Σ cm`.
+
+**Measurement correction — issue #3 (September 2026):** use the
+[AR Release baseline protocol](docs/AR-BASELINE-PROTOCOL.md) and
+[result template](docs/AR-BASELINE-RESULT-TEMPLATE.md) for startup/performance claims.
+The historical HUD `fps`/`p95` counts scene-update callbacks, not proven display
+presentation. Historical `first object`/TTFO measured holder existence, including
+placeholders and retained content; neither its number nor a pre-warmed zero proves
+the selected hero appeared. This correction supersedes those measurement claims
+throughout this document, including the old S3 TTFO interpretation below. Keep
+camera capture, scene-update/post-process proxies, intended-asset readiness and
+actual presentation distinct. Preserve an unchanged Release baseline, use a
+0–10-second startup window and a 15-minute sustained window, and keep visual
+recordings separate from unplugged thermal runs. No physical-device pass follows
+from this instrumentation change.
 
 ---
 
@@ -95,8 +109,11 @@ shows exactly where the matte lands so I can tune `personMatteRefineRadius` /
 `occlusionDepthBias`. Compare against the old path by setting `customPersonOcclusion=false`.
 
 **FT-28 · 30 fps + thermal (v0.9, ADR-030).** Camera on 10 min. **Record:** the `fps` line
-(should sit ~30, steady), whether it's warmer/cooler than before, and any `Device is hot`
-warning. **Pass:** steady ~30 fps, no thermal warning on a mild day.
+(scene-update proxy), independently measured presentation cadence, observed warmth,
+`ProcessInfo.thermalState` and any `Device is hot` warning. Use issue #3's protocol
+to extend to 15 minutes. **Pass:** sustained presented fps ≥30, presented-frame
+p95 ≤40 ms, no serious/critical thermal state through minute 10; report the
+15-minute result separately. Without presentation evidence, that gate is unmeasured.
 
 **FT-29 · Mid-field depth occlusion (v0.9, ADR-031).** Outdoors, drop 15–40 m away with
 a tree/car/pole between you and it (this band used to draw over). `DPT` chip should
@@ -183,7 +200,8 @@ station stops must NOT drop it. **Pass:** enters within ~10 s of cruising, no fl
 
 **FT-14 · Window stability.** In transit, camera out the window, pan the phone across
 the scene. **Pass:** far drops (50 m–2 km) hold their bearing — no smear, no "world
-sliding"; panning feels like looking past real landmarks. **Record:** fps (bar ≥30).
+sliding"; panning feels like looking past real landmarks. **Record:** scene-update
+fps as a proxy; the ≥30 presented-fps bar requires independent presentation evidence.
 
 **FT-15 · Distance-correct giants.** A big drop ~500 m–2 km out. **Pass:** it sits on
 the horizon at the right spot, correct angular size, slides past at the believable rate
@@ -199,8 +217,11 @@ seats will NOT occlude in transit — that's by design (LiDAR is off through gla
 ## D. Systems health & failure modes (the "don't strand me" tests)
 
 **FT-18 · 10-minute thermal.** Continuous camera for 10 min. **Record:** fps + p95 at
-minute 10, and whether the thermal warning appeared. **Pass:** no `Device is hot`
-warning on a mild day; fps ≥ 30 throughout.
+minute 10 with the measured stream named, observed warmth, the actual thermal-state
+timeline and whether the warning appeared. **Pass:** no serious/critical thermal
+state through minute 10; presented fps ≥30 and p95 ≤40 ms. Extend observation to
+minute 15 under the issue #3 protocol; HUD proxy values alone leave presentation
+unmeasured, and no warning alone does not establish thermal-state compliance.
 
 **FT-19 · Battery.** Note battery % before/after FT-18. **Record:** the delta. (No
 bar yet — this sets the baseline.)
@@ -258,7 +279,7 @@ Report as "FT-41: ✓/✗(letter)".
 ---
 
 # WAVE D FIELD PROTOCOL — the four sessions (round 6; run ALL on the round-6 build)
-The wave's four bars: (1) 99.5% crash-free — **measured by NO session**; it is a post-TestFlight fleet statistic and must not be claimed from these runs. (2) Sustained ≥30 fps — **p95 ≤ 40 ms is the teeth**; a 2-second mean alone cannot fail. (3) No thermal `.serious` at 10 minutes (and across the hour). (4) Zero draw-over-person frames — measurable ONLY from scrubbed video, never live.
+The wave's four bars: (1) 99.5% crash-free — **measured by NO session**; it is a post-TestFlight fleet statistic and must not be claimed from these runs. (2) Sustained ≥30 presented fps with **p95 ≤40 ms**; a 2-second mean cannot establish interval-tail compliance. The old HUD is a scene-update proxy, so historical screenshots alone do not establish this bar. (3) No thermal `.serious` or `.critical` through 10 minutes (and across the hour), measured from actual thermal state. (4) Zero draw-over-person frames — measurable ONLY from scrubbed video, never live. Issue #3 adds the controlled 15-minute baseline without replacing the hour-long quality/use scenario.
 
 **Standing rules for every session:**
 - **Screen recorder** (Control Center → Screen Recording): ON for every occlusion-bearing pass (anything with a person in frame or content behind real objects) so bar 4 can be scrubbed frame by frame afterwards; OFF during FT-28's 10-minute fps window and FT-31's hour (recording costs fps and heat and would contaminate bars 2–3).
@@ -275,8 +296,8 @@ The wave's four bars: (1) 99.5% crash-free — **measured by NO session**; it is
   1. FT-40 (recorder ON — this is an occlusion-adjacent pass).
   2. FT-41 including variant (e) (recorder ON).
   3. FT-3 tab flip ×5 (recorder ON) — make at least ONE of the five a LONG flip: stay on the map tab 15+ seconds before returning (round 6, counsel F-D6-06: the debrief's double-run check needs a >10 s return to exist in the log). Debrief confirms: no "Perception recon=" line within ~1 s of that long return.
-  4. FT-28: recorder OFF, camera on 10 minutes of engaged use. Record the HUD metrics line VERBATIM ("first object … fps … p95 … format") at t=0, 2, 5, 10 min — screenshots are fine. PASS: fps ≥ 30 throughout AND **p95 ≤ 40 ms** AND no thermal banner.
-  **TTFO tag inversion on THIS build (round 6, counsel F-RSCH6-01 — read before S3):** on 701a547 the "(recovery)" tag is inverted on the cold path — a genuine fresh cold open ALSO logs "TTFO (recovery): N ms". The NUMBER is measured correctly either way. Debrief rule: a "TTFO (recovery)" line within a few seconds of a fresh camera open IS the Killer-#1 cold-start figure — do not discard it; the supervisor separates cold-start from true-recovery lines by session context in the logarchive. The one-line flag fix rides the next SHA (Wave E), never this one.
+  4. FT-28: screen recorder OFF, camera on 10 minutes of engaged use. Record the HUD metrics line VERBATIM at t=0, 2, 5, 10 min, labeling fps/p95 as scene-update proxies. Follow issue #3 for independent presentation measurements, actual thermal-state capture and the extension to 15 min. PASS requires presented fps ≥30, presented-frame **p95 ≤40 ms** and no serious/critical thermal state; missing evidence stays unmeasured.
+  **Historical TTFO note, superseded by issue #3:** build 701a547 had an inverted cold/recovery tag. The earlier instruction that "The NUMBER is measured correctly either way" is withdrawn: the underlying holder-existence measurement does not prove selected-asset readiness or presentation, even after correcting the tag. Preserve those logs as historical placement observations only. Use separate camera epochs, fresh-frame/placeholder/selected-asset milestones and explicitly labeled scene-update proxies; first-presented-hero remains unmeasured without independent visual/presentation evidence.
   5. Touched-path re-runs, recorder ON where a person or occlusion is in frame: FT-9, FT-25, FT-27, FT-29, FT-34, FT-35, FT-36, FT-30.
 **S4 · The hour (≈80 min).** FT-31: mild day, 70 minutes of mixed use (walking, editing, idling, pocketing the phone, two deliberate call-banner interruptions, three tab flips past the grace window). Recorder OFF for the hour. Record the HUD line + battery % + warmth every 10 minutes. Then, recorder ON: ten deliberate resume observations (background the app or flip tabs, return, watch the first two seconds) — these are scrubbed frame-by-frame for bar 4. PASS: no thermal banner across the hour; no draw-over frame in any scrubbed resume; the log's attach/detach timeline shows the dwell floor holding on tier-path toggles.
 **ADR-035 heat re-measure (rides inside S4, no extra time):** the attach/detach timeline plus the 10-minute thermal/battery readings from the hour are the inputs; the supervisor computes the attached-time vs heat delta from the logarchive to decide whether install-once is now affordable (the recorded ADR-035 number is stale).
