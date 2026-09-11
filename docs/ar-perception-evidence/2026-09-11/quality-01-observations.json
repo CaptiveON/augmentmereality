@@ -1,0 +1,33 @@
+{
+  "observations": [
+    {
+      "recordedAtUTC": "2026-09-10T23:52:34.820775+00:00",
+      "scenario": "Room Test text placement and slow pan",
+      "operatorReply": "Visible and stable",
+      "measuredPlacementDistanceMeters": 1.9513661,
+      "selectedHeroID": "118FF09B-D1F5-4272-AEF0-6B4F21632269",
+      "firstHeroSceneUpdateProxyMs": 3363,
+      "timingCaveat": "Requested 10 s empty-camera wait was not achieved: selection recorded camera +3.347 s. Quality only, not a compliant startup timing repeat."
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:56:13.781009+00:00",
+      "scenario": "Short and longer camera close/reopen",
+      "operatorReply": "Text survives both returns",
+      "measuredHiddenDurationsSeconds": [
+        1.428334,
+        17.476545
+      ],
+      "traceObservation": "No reset during these returns; long hide paused at 5.006 seconds, returned with reset=0."
+    },
+    {
+      "recordedAtUTC": "2026-09-10T23:56:13.781209+00:00",
+      "scenario": "Home Screen background return, observe for 20 seconds",
+      "operatorReply": "It appears, then disappears",
+      "result": "FAIL; investigation in progress",
+      "measuredHiddenDurationSeconds": 20.666116249980405,
+      "coldResetAfterResumeSeconds": 11.424690208397806,
+      "evidence": "Epoch 8 fresh capture at +0.374 s; epoch 9 reset=3 at warm return +11.426 s; content count drops from 2 to 1. Video 280 s shows text; 289 and 300 s show it gone.",
+      "baselineComparison": "Same failure class as issue 3 Q; not established as a new regression."
+    }
+  ]
+}

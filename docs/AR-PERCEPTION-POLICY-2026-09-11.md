@@ -3,8 +3,10 @@
 Issue [#4](https://github.com/CaptiveON/augmentmereality/issues/4) follows the
 completed [baseline](AR-BASELINE-2026-09-08.md) and its
 [physical measurement protocol](AR-BASELINE-PROTOCOL.md). This report separates
-implementation checks from device observations. **Device validation is pending;
-no thermal, cost, presentation or visual improvement is established.**
+implementation checks from device observations. **Initial placement and two camera
+returns passed operator checks; the background return reproduced the baseline's
+Room Test loss. Sustained validation is pending; no thermal, cost or presentation
+improvement is established.**
 Keep #4 open until the required policy tests and physical validation are complete.
 
 ## Preserved baseline and source identity
@@ -57,9 +59,8 @@ The app bundle contains the existing service configuration and stays local.
 
 Installation on the baseline iPhone 15 Pro Max succeeded at **00:47 BST,
 September 11**, using the archived app. `install.json` and `install.log` are
-retained beside it. No issue #4 camera scenario or thermal trace has been run:
-the phone reported a required passcode unlock, and operator availability/scene
-conditions have not been confirmed. Installation is not a physical-validation pass.
+retained beside it. The operator subsequently unlocked the phone. The quality run
+below used this exact binary. Installation itself is not a validation pass.
 
 ## Implementation under validation
 
@@ -151,8 +152,8 @@ booted, connected over **wired USB**, with Developer Mode and device services
 enabled. This confirms a viable device destination; it does not establish that
 the phone is cool, unplugged, at Nominal, showing the prescribed scene or running
 the implementation. At 00:44 BST the device reported `passcodeRequired: true`; physical interaction
-requires the operator to unlock it. No installation or launch was performed
-during this inspection.
+required the operator to unlock it. The later installation and quality run are
+recorded separately above and below.
 
 Use a config-free simulator test host, retaining logs and result bundles:
 
@@ -280,10 +281,56 @@ sustained thermal run.
 | Nearby offscreen object plus distant visible content | Exact IDs, camera view and distances; unrelated depth/sentinel work does not start | Pending physical validation |
 | Supported near/person occlusion, glass and transit | Visual occlusion remains usable where supported; display thermal degradation honestly; no persistent oscillation | Pending physical validation |
 | Two-finger editing | Second held gesture retains the captured editing target; no wrong-drop commit or producer oscillation | Pending physical validation |
-| Camera → Map → Camera inside 5 s grace | One retained AR session and stable mesh; hidden camera admits no new perception work; fresh results resume | Pending physical validation |
-| Camera → Map for 15 s → Camera | Paused then warm-resumed session; supported placements survive; old results cannot reactivate consumers | Pending physical validation |
-| Background for 10 s then return | Capture/perception stop; generation advances and fresh samples restore supported perception | Pending physical validation |
-| Actual interruption/failure and recovery | Trigger recorded, no stale result revival, fresh-frame recovery; compare with Q's known Room Test loss | Pending physical validation |
+| Camera close/reopen inside 5 s grace | One retained AR session and stable mesh; hidden camera admits no new perception work; fresh results resume | Text survives 1.428 s return; admission closes while hidden, no session re-run. Full mesh/occlusion quality not measured |
+| Camera closed for 15 s then reopened | Paused then warm-resumed session; supported placements survive; old results cannot reactivate consumers | Text survives actual 17.477 s return; pause at 5.006 s, reset=0 on resume, fresh capture +0.242 s |
+| Background for 10 s then return | Capture/perception stop; generation advances and fresh samples restore supported perception | FAIL: actual background about 20.666 s; text appears then disappears after cold recovery +11.425 s |
+| Actual interruption/failure and recovery | Trigger recorded, no stale result revival, fresh-frame recovery; compare with Q's known Room Test loss | Relocalization-timeout recovery observed; same Room Test loss class as Q. Other interruption/failure triggers pending |
+
+### Quality run P-quality-01
+
+The September 11 run used Time Profiler, Core Animation FPS and signposts, plus
+a separate USB QuickTime recording. The trace ran 00:50:33–00:56:26 BST (352.830 s).
+The movie is 340.260 s. This is a quality run with USB connected and screen recording
+active, not a sustained thermal acceptance run. Initial process thermal state was
+Nominal and later Fair. Physical warmth and ambient conditions were unmeasured.
+
+Run `E31C464B-ACA4-4F48-80D1-5850F0406131` identifies selected Room Test text
+`118FF09B-D1F5-4272-AEF0-6B4F21632269`, initially placed at 1.951 m. The operator
+reported it visible and stable on the initial slow pan and after both camera
+returns. Selection happened at camera +3.347 s, so the requested ten-second
+empty-camera wait was not achieved. The 3363 ms scene-update hero proxy is not a
+compliant startup repeat or a presentation measurement.
+
+On the Home Screen return, epoch 8 observed a fresh camera frame and hero
+scene-update proxy at +0.374 s. Epoch 9 began recovery 11.425 s after the return
+and recorded a tracking/anchor reset (`reset=3`). Content count subsequently
+dropped from two to one. The operator reported “It appears, then disappears.”
+The video shows cyan text at 280 s and its absence at 289 s and 300 s. Source
+inspection identifies the existing ten-second relocalization timeout's cold
+restart, which calls `resetPlacements()` and clears `roomDrops`. This matches
+issue #3 Q's known failure class; a new regression is not established. It remains
+a failed physical check, and is not fixed by this workload-policy change.
+
+The raw trace/movie, snapshots, extracted frames and acquisition metadata are
+preserved under
+`/Users/captiveon/Documents/AR-Baselines/issue-4-2026-09-11/runs/quality-01/`.
+The [recorder export](ar-perception-evidence/2026-09-11/quality-01-recorder.json),
+[operator observations](ar-perception-evidence/2026-09-11/quality-01-observations.json)
+and [summary with artifact hashes](ar-perception-evidence/2026-09-11/quality-01-summary.json)
+retain the results. No late-result completion was deliberately induced on-device;
+generation rejection remains covered by the local tests, not asserted from an
+absence of visible failure. Core Animation's FPS estimates do not provide the
+required per-frame presentation p95.
+
+The three `cameraInactive` epochs contain no measured GAR updates or sentinel
+inferences and zero semantic/sentinel admission time. Reconstruction is retained
+for the short grace and the first 5.006 s of the longer hide, then paused. The
+visible epochs contain 2,277 GAR updates and 447 sentinel inference observations;
+these counts describe recorded operation completions, not per-subsystem CPU time.
+Semantic configuration was active for about 108.099 s, while accepted semantic
+matte consumption remained zero. The run therefore does not establish supported
+semantic occlusion quality. It did not reach Serious or Critical, so their
+on-device shutdown acceptance remains pending.
 
 Repeat controlled Release sustained observations for **15 minutes**, beginning
 cool, Nominal and unplugged with screen recording off. Record brightness, battery,
@@ -305,7 +352,8 @@ workload into a device cooling or presentation claim.
 ## Result and closure status
 
 The 215-test local iOS suite passed and the exact signed Release build is installed.
-There is no issue #4 device trace, quality result or measured subsystem-cost change
-yet. The phone requires an operator unlock and the controlled physical scenes/runs
-remain pending. Issue #4 remains open; no thermal or presentation improvement is
+The first quality trace preserves successful short/long camera returns and a
+failed background return matching the known baseline Room Test loss. Controlled
+sustained runs and remaining physical scenarios are pending. Issue #4 remains
+open; no thermal or presentation improvement is
 claimed. No GitHub issue status, PR, remote branch or billing setting was changed.
