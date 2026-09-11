@@ -1,0 +1,23 @@
+{
+  "purpose": "Controlled Release sustained Room Test observation, compare limits with I-on baseline",
+  "operatorReadyAtUTC": "2026-09-11T00:00:08.385945+00:00",
+  "operatorReply": "case is off, room temp is around 20, low power mode off, i can hold the same view for 15 minutes. the phone is normal now, ready for test",
+  "sourceCommit": "82ae3f5273e2b9330e49ef620be1d17eabc55004",
+  "initially_cool": true,
+  "observed_warmth": "normal before run, operator report",
+  "case": "off",
+  "ambient_celsius_approximate": 20,
+  "low_power_mode": false,
+  "screen_recording": false,
+  "charging": "USB unplugged; wireless connection verified before run",
+  "holding": "handheld same room view; gentle pan schedule to be recorded",
+  "cache": "process cold; asset/filesystem cache retained or unknown",
+  "auto_brightness": "unmeasured",
+  "screen_brightness": "recorded from runtime; operator setting unchanged",
+  "network": "localNetwork wireless debugging; network permissions retained",
+  "instruments": "Time Profiler template; same as I-on, no extra rendering instrument",
+  "launchArguments": [
+    "-ARBaselineMetrics"
+  ],
+  "experimentOverrides": "none; default selected hero may be existing geo content, distinguish visible Room Test"
+}

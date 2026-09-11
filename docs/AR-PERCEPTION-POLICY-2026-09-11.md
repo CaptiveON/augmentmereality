@@ -5,8 +5,9 @@ completed [baseline](AR-BASELINE-2026-09-08.md) and its
 [physical measurement protocol](AR-BASELINE-PROTOCOL.md). This report separates
 implementation checks from device observations. **Initial placement and two camera
 returns passed operator checks; the background return reproduced the baseline's
-Room Test loss. Sustained validation is pending; no thermal, cost or presentation
-improvement is established.**
+Room Test loss. The sustained run was stopped at the operator's request before
+ten minutes, after reported flicker/very hot handling and measured Serious.
+No thermal, cost or presentation improvement is established.**
 Keep #4 open until the required policy tests and physical validation are complete.
 
 ## Preserved baseline and source identity
@@ -353,7 +354,61 @@ workload into a device cooling or presentation claim.
 
 The 215-test local iOS suite passed and the exact signed Release build is installed.
 The first quality trace preserves successful short/long camera returns and a
-failed background return matching the known baseline Room Test loss. Controlled
+failed background return matching the known baseline Room Test loss. The sustained
+run below is incomplete and failed the visual/operator warmth checks. Full-duration
 sustained runs and remaining physical scenarios are pending. Issue #4 remains
 open; no thermal or presentation improvement is
 claimed. No GitHub issue status, PR, remote branch or billing setting was changed.
+
+### Paused checkpoint — September 11, 01:10 BST
+
+The operator requested: “stop it safely, we will continue later.” Recording was
+stopped with SIGINT and the subsequent device process inventory confirmed the app
+was no longer running. QuickTime had already stopped and saved the quality movie.
+Do not resume a camera session or another measurement until the operator returns.
+
+Sustained run `7FDD8590-8992-42E3-94A8-D1EBDD3A36B9` used the same signed Release
+binary and default workloads, `-ARBaselineMetrics`, wireless Time Profiler and no
+screen recording. The phone began Nominal and normal by touch, with the case off,
+room about 20°C, Low Power Mode off, battery 100%, USB unplugged and runtime
+brightness 95%. Auto-brightness and exact cache state were unmeasured. Periodic
+wireless container copies added measurement overhead, as in I-on. The operator
+was asked to hold for 40 s, pan left for 10 s and return over 10 s each minute;
+exact movement compliance was not independently recorded.
+
+The final copied recorder covers **581.612 s (9 min 41.6 s) of camera time**,
+exported at 00:10:22 UTC. This is a periodic export before the stop, not a complete
+ten- or fifteen-minute observation. The initial selected hero is the existing
+geo text `3EAE26BB-6631-490D-A231-3C18B6C19169` at 409.885 m; it is distinct from
+the operator-observed Room Test. No Room Test presentation milestone is inferred.
+
+The operator reported that Room Test remained visible but unstable: characters
+disappeared and returned around physical objects, and the phone felt “very hot.”
+The reply arrived later than the two-minute prompt; exact onset is unknown.
+They confirmed it remained comfortable enough to continue, then later requested
+the stop. The flicker's mechanism and whether it is a new regression remain
+unestablished without a matched visual repeat.
+
+Retained system samples first show Fair at camera +131.613 s and Serious at
++324.206 s. Serious remains the last observed state. No Critical state was
+observed. Semantic production/request/admission became false at +317.606 s and
+the postprocess callback detached at +322.969 s; both were off by the first
+sampled Serious observation. Exact alignment to the external thermal transition
+still needs trace extraction. The policy tests do not replace that analysis.
+
+The 79 retained system samples span 600.016 s including pre-camera time, with no
+dropped system samples. Their process CPU delta corresponds to 80.038% of one
+core; sampled resident size spans 115.516–483.859 MiB. These are preliminary,
+mixed-startup measurements, not a matched sustained-cost improvement. Remaining
+trace analysis must separate the shorter duration, scene/visibility and conditions
+from the older I-on baseline.
+
+Raw trace, container snapshots, conditions and operator observations are preserved
+at `/Users/captiveon/Documents/AR-Baselines/issue-4-2026-09-11/runs/sustained-01/`.
+The [last recorder export](ar-perception-evidence/2026-09-11/sustained-01-recorder.json),
+[observations](ar-perception-evidence/2026-09-11/sustained-01-observations.json),
+[conditions](ar-perception-evidence/2026-09-11/sustained-01-conditions.json) and
+[preliminary summary](ar-perception-evidence/2026-09-11/sustained-01-summary.json)
+are retained with the code. Resume by extracting the saved trace, reviewing the
+flicker and known background-reset failure, and arranging the remaining controlled
+physical checks. Keep #4 open; its closure evidence is incomplete.

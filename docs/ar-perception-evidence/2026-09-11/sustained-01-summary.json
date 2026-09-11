@@ -1,0 +1,704 @@
+{
+  "source": "docs/ar-perception-evidence/2026-09-11/sustained-01-recorder.json",
+  "runID": "7FDD8590-8992-42E3-94A8-D1EBDD3A36B9",
+  "metadata": {
+    "app_build": "1",
+    "app_version": "0.9.0",
+    "asset": "ROOM_TEST_TEXT",
+    "brightness": "unmeasured",
+    "build_configuration": "Release",
+    "build_source_commit": "82ae3f5273e2b9330e49ef620be1d17eabc55004",
+    "build_source_dirty": "false",
+    "build_source_hash": "07ecef1e2d58cbd0aa38737baf7665b76a5c5454132b7339dd51968fbbd1ffa1",
+    "bundle_identifier": "com.adnan.augmentmereality",
+    "captureDelivery.interval": "callback arrival uptime intervals (delivery cadence)",
+    "captureTimestamp.interval": "ARFrame timestamp intervals as delivered by ARSession (capture timestamp cadence, not display presentation)",
+    "capture_semantics": "ARSession delivery callback interval, not sensor exposure cadence",
+    "charging": "unmeasured",
+    "commit": "unmeasured",
+    "compiled_configuration": "Release-like (verify scheme/configuration)",
+    "cpu_execution_time": "processCPUSeconds is cumulative process user+system CPU from getrusage, not per-subsystem or wall time",
+    "device_machine": "iPhone16,2",
+    "distance_meters": "unmeasured",
+    "duration_semantics": "monotonic elapsed wall time; not CPU/GPU execution time",
+    "experiment": "shipping defaults",
+    "first_presented_hero": "unmeasured; correlate selected-asset render proxy with separate screen recording",
+    "gpu_execution_time": "Postprocess command buffer GPU samples GPU start/end on completed command buffers; entire buffer, not just pass or presentation; absent when detached/unavailable",
+    "initial_process_thermal_state": "nominal",
+    "initial_thermal": "unmeasured",
+    "instrumentation": "enabled only with -ARBaselineMetrics; bounded signposts and buffers",
+    "metric_kit_location": "Application Support/diagnostics (delayed, not per-run attribution)",
+    "observed_warmth": "unmeasured",
+    "os": "Version 26.6 (Build 23G71)",
+    "quantiles": "nearest-rank recent/startup; whole-epoch histogram upper bounds at 1ms resolution, >1000ms overflow explicit",
+    "render_semantics": "RealityKit scene-update interval proxy, not display presentation",
+    "run_kind": "P-sustained-01",
+    "sceneUpdateProxy.interval": "RealityKit scene-update callback intervals; presentation unmeasured",
+    "target_fps": ">=30 (presentation unmeasured)",
+    "target_p95_interval_ms": "<=40",
+    "target_thermal": "no serious state at 10 minutes; observe to 15 minutes",
+    "trace_location": "unmeasured"
+  },
+  "exportedAt": "2026-09-11T00:10:22Z",
+  "exportedUptime": 1971051.1372762502,
+  "epochs": [
+    {
+      "id": 1,
+      "kind": "pre_camera",
+      "intentUptime": 1970441.1054490418,
+      "observedDurationSeconds": 28.41957825003192,
+      "conditions": {},
+      "workloadActivity": {
+        "Asset decode": {
+          "enabled": false,
+          "observedActiveSeconds": 4.810849958797917,
+          "transitions": 16
+        }
+      },
+      "series": [
+        {
+          "name": "ARView prepare.duration",
+          "totalCount": 1,
+          "firstSampleUptime": 1970441.451057625,
+          "lastSampleUptime": 1970441.451057625,
+          "meanMilliseconds": 240.7332081347704,
+          "minimumMilliseconds": 240.7332081347704,
+          "maximumMilliseconds": 240.7332081347704,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 1,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 241,
+            "p99UpperBoundMilliseconds": 241
+          },
+          "recentSamples": {
+            "count": 1,
+            "maximumMilliseconds": 240.7332081347704,
+            "meanMilliseconds": 240.7332081347704,
+            "minimumMilliseconds": 240.7332081347704,
+            "p95Milliseconds": 240.7332081347704,
+            "p99Milliseconds": 240.7332081347704
+          },
+          "recentWindowStartUptime": 1970441.451057625,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Asset decode latency.duration",
+          "totalCount": 8,
+          "firstSampleUptime": 1970451.4201033334,
+          "lastSampleUptime": 1970456.0402174585,
+          "meanMilliseconds": 601.3542448054068,
+          "minimumMilliseconds": 118.89412510208786,
+          "maximumMilliseconds": 2106.725624995306,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 8,
+            "overflowCount": 2
+          },
+          "recentSamples": {
+            "count": 8,
+            "maximumMilliseconds": 2106.725624995306,
+            "meanMilliseconds": 601.3542448054068,
+            "minimumMilliseconds": 118.89412510208786,
+            "p95Milliseconds": 2106.725624995306,
+            "p99Milliseconds": 2106.725624995306
+          },
+          "recentWindowStartUptime": 1970451.4201033334,
+          "invalidSamples": 0
+        }
+      ],
+      "droppedEvents": 0,
+      "droppedSeries": 0
+    },
+    {
+      "id": 2,
+      "kind": "coldStart",
+      "intentUptime": 1970469.5250272918,
+      "observedDurationSeconds": 581.6122489583213,
+      "conditions": {
+        "asset": "text3D",
+        "batteryFraction": "1.0",
+        "batteryState": "1",
+        "brightness": "0.949999988079071",
+        "distanceMetersAtPlacement": "409.88483",
+        "heroID": "3EAE26BB-6631-490D-A231-3C18B6C19169",
+        "initialThermalState": "0"
+      },
+      "workloadActivity": {
+        "Asset decode": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 0
+        },
+        "Depth matte consuming": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "GAR blocked by semantic disable": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "GAR semantics": {
+          "enabled": false,
+          "observedActiveSeconds": 27.679702583234757,
+          "transitions": 7
+        },
+        "GAR session": {
+          "enabled": true,
+          "observedActiveSeconds": 581.5409677084535,
+          "transitions": 1
+        },
+        "Perception depth admitted": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "Perception localization admitted": {
+          "enabled": true,
+          "observedActiveSeconds": 581.5230888749938,
+          "transitions": 2
+        },
+        "Perception person admitted": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "Perception semantics admitted": {
+          "enabled": false,
+          "observedActiveSeconds": 27.67960908310488,
+          "transitions": 7
+        },
+        "Perception semantics requested": {
+          "enabled": false,
+          "observedActiveSeconds": 27.67960933339782,
+          "transitions": 7
+        },
+        "Perception sentinel admitted": {
+          "enabled": true,
+          "observedActiveSeconds": 577.2974787084386,
+          "transitions": 2
+        },
+        "Person matte consuming": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "Semantic matte consuming": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "Semantic postprocess": {
+          "enabled": false,
+          "observedActiveSeconds": 45.22175100003369,
+          "transitions": 6
+        },
+        "cameraSessionRunning": {
+          "enabled": true,
+          "observedActiveSeconds": 581.5689509999938,
+          "transitions": 1
+        },
+        "cameraVisible": {
+          "enabled": true,
+          "observedActiveSeconds": 581.6116080833599,
+          "transitions": 1
+        },
+        "personSegmentationRequested": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        },
+        "reconstructionRequested": {
+          "enabled": true,
+          "observedActiveSeconds": 581.5231637083925,
+          "transitions": 2
+        },
+        "sceneDepthRequested": {
+          "enabled": false,
+          "observedActiveSeconds": 0,
+          "transitions": 1
+        }
+      },
+      "series": [
+        {
+          "name": "Capture delivery observation.duration",
+          "totalCount": 17438,
+          "firstSampleUptime": 1970469.8055082085,
+          "lastSampleUptime": 1971051.1191165,
+          "meanMilliseconds": 0.009811272977550432,
+          "minimumMilliseconds": 0.002624932676553726,
+          "maximumMilliseconds": 0.10383338667452335,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 17438,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 1,
+            "p99UpperBoundMilliseconds": 1
+          },
+          "recentSamples": {
+            "count": 4096,
+            "maximumMilliseconds": 0.10383338667452335,
+            "meanMilliseconds": 0.01065969746605333,
+            "minimumMilliseconds": 0.004458241164684296,
+            "p95Milliseconds": 0.020208535715937614,
+            "p99Milliseconds": 0.03400002606213093
+          },
+          "recentWindowStartUptime": 1970914.6036324168,
+          "invalidSamples": 0
+        },
+        {
+          "name": "GAR update.duration",
+          "totalCount": 2231,
+          "firstSampleUptime": 1970469.80869175,
+          "lastSampleUptime": 1971051.0708419168,
+          "meanMilliseconds": 1.032723907459776,
+          "minimumMilliseconds": 0.0021667219698429108,
+          "maximumMilliseconds": 10.740125086158514,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2231,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 3,
+            "p99UpperBoundMilliseconds": 3
+          },
+          "recentSamples": {
+            "count": 2231,
+            "maximumMilliseconds": 10.740125086158514,
+            "meanMilliseconds": 1.032723907459776,
+            "minimumMilliseconds": 0.0021667219698429108,
+            "p95Milliseconds": 2.289166674017906,
+            "p99Milliseconds": 2.7187915984541178
+          },
+          "recentWindowStartUptime": 1970469.80869175,
+          "invalidSamples": 0
+        },
+        {
+          "name": "GAR update.interval",
+          "totalCount": 2230,
+          "firstSampleUptime": 1970470.2249821252,
+          "lastSampleUptime": 1971051.0684531669,
+          "meanMilliseconds": 260.6554029335063,
+          "minimumMilliseconds": 8.958708262071013,
+          "maximumMilliseconds": 1019.5479583926499,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2230,
+            "overflowCount": 237
+          },
+          "recentSamples": {
+            "count": 2230,
+            "maximumMilliseconds": 1019.5479583926499,
+            "meanMilliseconds": 260.6554029335063,
+            "minimumMilliseconds": 8.958708262071013,
+            "p95Milliseconds": 1000.3280832897872,
+            "p99Milliseconds": 1016.5495416149497
+          },
+          "recentWindowStartUptime": 1970470.2249821252,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Person sentinel buffer hold.duration",
+          "totalCount": 1136,
+          "firstSampleUptime": 1970474.0603327919,
+          "lastSampleUptime": 1971050.7425932086,
+          "meanMilliseconds": 7.895814228645513,
+          "minimumMilliseconds": 4.989624954760075,
+          "maximumMilliseconds": 210.21908335387707,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 1136,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 11,
+            "p99UpperBoundMilliseconds": 13
+          },
+          "recentSamples": {
+            "count": 1136,
+            "maximumMilliseconds": 210.21908335387707,
+            "meanMilliseconds": 7.895814228645513,
+            "minimumMilliseconds": 4.989624954760075,
+            "p95Milliseconds": 10.74383337981999,
+            "p99Milliseconds": 12.314749881625175
+          },
+          "recentWindowStartUptime": 1970474.0603327919,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Person sentinel inference.duration",
+          "totalCount": 1136,
+          "firstSampleUptime": 1970474.060257292,
+          "lastSampleUptime": 1971050.7425396251,
+          "meanMilliseconds": 7.757701877009412,
+          "minimumMilliseconds": 4.924333421513438,
+          "maximumMilliseconds": 197.88983347825706,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 1136,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 11,
+            "p99UpperBoundMilliseconds": 13
+          },
+          "recentSamples": {
+            "count": 1136,
+            "maximumMilliseconds": 197.88983347825706,
+            "meanMilliseconds": 7.757701877009412,
+            "minimumMilliseconds": 4.924333421513438,
+            "p95Milliseconds": 10.581666603684425,
+            "p99Milliseconds": 12.149166548624635
+          },
+          "recentWindowStartUptime": 1970474.060257292,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Person sentinel inference.interval",
+          "totalCount": 1135,
+          "firstSampleUptime": 1970474.3745550835,
+          "lastSampleUptime": 1971050.7350779169,
+          "meanMilliseconds": 508.2578885830561,
+          "minimumMilliseconds": 498.8261251710355,
+          "maximumMilliseconds": 535.1046251598746,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 1135,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 534,
+            "p99UpperBoundMilliseconds": 534
+          },
+          "recentSamples": {
+            "count": 1135,
+            "maximumMilliseconds": 535.1046251598746,
+            "meanMilliseconds": 508.2578885830561,
+            "minimumMilliseconds": 498.8261251710355,
+            "p95Milliseconds": 533.3243333734572,
+            "p99Milliseconds": 533.8242915458977
+          },
+          "recentWindowStartUptime": 1970474.3745550835,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Postprocess CPU encode.duration",
+          "totalCount": 2549,
+          "firstSampleUptime": 1970578.3251799585,
+          "lastSampleUptime": 1970792.4800186667,
+          "meanMilliseconds": 0.03600612996316344,
+          "minimumMilliseconds": 0.01650000922381878,
+          "maximumMilliseconds": 0.30920817516744137,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2549,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 1,
+            "p99UpperBoundMilliseconds": 1
+          },
+          "recentSamples": {
+            "count": 2549,
+            "maximumMilliseconds": 0.30920817516744137,
+            "meanMilliseconds": 0.03600612996316344,
+            "minimumMilliseconds": 0.01650000922381878,
+            "p95Milliseconds": 0.06562517955899239,
+            "p99Milliseconds": 0.08925003930926323
+          },
+          "recentWindowStartUptime": 1970578.3251799585,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Postprocess blit fallback.interval",
+          "totalCount": 2548,
+          "firstSampleUptime": 1970578.33878675,
+          "lastSampleUptime": 1970792.4800005418,
+          "meanMilliseconds": 84.04824200354581,
+          "minimumMilliseconds": 4.070458235219121,
+          "maximumMilliseconds": 161318.8274584245,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2548,
+            "overflowCount": 2,
+            "p95UpperBoundMilliseconds": 33,
+            "p99UpperBoundMilliseconds": 34
+          },
+          "recentSamples": {
+            "count": 2548,
+            "maximumMilliseconds": 161318.8274584245,
+            "meanMilliseconds": 84.04824200354581,
+            "minimumMilliseconds": 4.070458235219121,
+            "p95Milliseconds": 32.92729170061648,
+            "p99Milliseconds": 33.897124929353595
+          },
+          "recentWindowStartUptime": 1970578.33878675,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Postprocess callback proxy.interval",
+          "totalCount": 2548,
+          "firstSampleUptime": 1970578.3387442918,
+          "lastSampleUptime": 1970792.4799690002,
+          "meanMilliseconds": 84.04825698265226,
+          "minimumMilliseconds": 4.081833176314831,
+          "maximumMilliseconds": 161318.73820838518,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2548,
+            "overflowCount": 2,
+            "p95UpperBoundMilliseconds": 33,
+            "p99UpperBoundMilliseconds": 34
+          },
+          "recentSamples": {
+            "count": 2548,
+            "maximumMilliseconds": 161318.73820838518,
+            "meanMilliseconds": 84.04825698265226,
+            "minimumMilliseconds": 4.081833176314831,
+            "p95Milliseconds": 32.95541671104729,
+            "p99Milliseconds": 33.88700005598366
+          },
+          "recentWindowStartUptime": 1970578.3387442918,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Postprocess command buffer GPU",
+          "totalCount": 2549,
+          "firstSampleUptime": 1970578.3362824584,
+          "lastSampleUptime": 1970792.4907021667,
+          "meanMilliseconds": 1.1609515789772025,
+          "minimumMilliseconds": 0.8573748636990786,
+          "maximumMilliseconds": 2.5657499209046364,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2549,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 2,
+            "p99UpperBoundMilliseconds": 2
+          },
+          "recentSamples": {
+            "count": 2549,
+            "maximumMilliseconds": 2.5657499209046364,
+            "meanMilliseconds": 1.1609515789772025,
+            "minimumMilliseconds": 0.8573748636990786,
+            "p95Milliseconds": 1.4072500634938478,
+            "p99Milliseconds": 1.6986250411719084
+          },
+          "recentWindowStartUptime": 1970578.3362824584,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Scene update elapsed.duration",
+          "totalCount": 26852,
+          "firstSampleUptime": 1970469.63418675,
+          "lastSampleUptime": 1971051.1349879168,
+          "meanMilliseconds": 0.18091763924120854,
+          "minimumMilliseconds": 0.007791444659233093,
+          "maximumMilliseconds": 10.974999982863665,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 26852,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 2,
+            "p99UpperBoundMilliseconds": 3
+          },
+          "recentSamples": {
+            "count": 4096,
+            "maximumMilliseconds": 4.401124780997634,
+            "meanMilliseconds": 0.21760092164413436,
+            "minimumMilliseconds": 0.01837499439716339,
+            "p95Milliseconds": 2.223291667178273,
+            "p99Milliseconds": 3.3043748699128628
+          },
+          "recentWindowStartUptime": 1970914.6040980418,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Semantic pipeline prepare.duration",
+          "totalCount": 1,
+          "firstSampleUptime": 1970578.322106125,
+          "lastSampleUptime": 1970578.322106125,
+          "meanMilliseconds": 2.5267915334552526,
+          "minimumMilliseconds": 2.5267915334552526,
+          "maximumMilliseconds": 2.5267915334552526,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 1,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 3,
+            "p99UpperBoundMilliseconds": 3
+          },
+          "recentSamples": {
+            "count": 1,
+            "maximumMilliseconds": 2.5267915334552526,
+            "meanMilliseconds": 2.5267915334552526,
+            "minimumMilliseconds": 2.5267915334552526,
+            "p95Milliseconds": 2.5267915334552526,
+            "p99Milliseconds": 2.5267915334552526
+          },
+          "recentWindowStartUptime": 1970578.322106125,
+          "invalidSamples": 0
+        },
+        {
+          "name": "Session configuration.duration",
+          "totalCount": 2,
+          "firstSampleUptime": 1970469.5683512085,
+          "lastSampleUptime": 1970469.6141337084,
+          "meanMilliseconds": 0.1427291426807642,
+          "minimumMilliseconds": 0.10799989104270935,
+          "maximumMilliseconds": 0.17745839431881905,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 2,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 1,
+            "p99UpperBoundMilliseconds": 1
+          },
+          "recentSamples": {
+            "count": 2,
+            "maximumMilliseconds": 0.17745839431881905,
+            "meanMilliseconds": 0.1427291426807642,
+            "minimumMilliseconds": 0.10799989104270935,
+            "p95Milliseconds": 0.17745839431881905,
+            "p99Milliseconds": 0.17745839431881905
+          },
+          "recentWindowStartUptime": 1970469.5683512085,
+          "invalidSamples": 0
+        },
+        {
+          "name": "captureDelivery.interval",
+          "totalCount": 17437,
+          "firstSampleUptime": 1970469.8551102085,
+          "lastSampleUptime": 1971051.1191072501,
+          "meanMilliseconds": 33.3379376899711,
+          "minimumMilliseconds": 0.1038750633597374,
+          "maximumMilliseconds": 81.32204157300293,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 17437,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 34,
+            "p99UpperBoundMilliseconds": 37
+          },
+          "recentSamples": {
+            "count": 4096,
+            "maximumMilliseconds": 54.401666624471545,
+            "meanMilliseconds": 33.33270272827349,
+            "minimumMilliseconds": 12.241833377629519,
+            "p95Milliseconds": 33.48762495443225,
+            "p99Milliseconds": 33.87933340854943
+          },
+          "recentWindowStartUptime": 1970914.6036287502,
+          "invalidSamples": 0
+        },
+        {
+          "name": "captureSampleAge",
+          "totalCount": 17438,
+          "firstSampleUptime": 1970469.8055055835,
+          "lastSampleUptime": 1971051.1191147917,
+          "meanMilliseconds": 56.35637363654144,
+          "minimumMilliseconds": 28.144167037680745,
+          "maximumMilliseconds": 109.95079157873988,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 17438,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 73,
+            "p99UpperBoundMilliseconds": 76
+          },
+          "recentSamples": {
+            "count": 4096,
+            "maximumMilliseconds": 78.55158392339945,
+            "meanMilliseconds": 56.98288222657766,
+            "minimumMilliseconds": 53.01091750152409,
+            "p95Milliseconds": 62.21783347427845,
+            "p99Milliseconds": 63.017458422109485
+          },
+          "recentWindowStartUptime": 1970914.603631792,
+          "invalidSamples": 0
+        },
+        {
+          "name": "captureTimestamp.interval",
+          "totalCount": 17437,
+          "firstSampleUptime": 1970469.810226875,
+          "lastSampleUptime": 1971051.055856083,
+          "meanMilliseconds": 33.33595031398639,
+          "minimumMilliseconds": 33.33258396014571,
+          "maximumMilliseconds": 33.339290879666805,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 17437,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 34,
+            "p99UpperBoundMilliseconds": 34
+          },
+          "recentSamples": {
+            "count": 4096,
+            "maximumMilliseconds": 33.3362091332674,
+            "meanMilliseconds": 33.335941518089385,
+            "minimumMilliseconds": 33.335667103528976,
+            "p95Milliseconds": 33.336125081405044,
+            "p99Milliseconds": 33.3361669909209
+          },
+          "recentWindowStartUptime": 1970914.545175708,
+          "invalidSamples": 0
+        },
+        {
+          "name": "sceneUpdateProxy.interval",
+          "totalCount": 26851,
+          "firstSampleUptime": 1970469.6879257918,
+          "lastSampleUptime": 1971051.1349405001,
+          "meanMilliseconds": 21.656578577150185,
+          "minimumMilliseconds": 6.3078750390559435,
+          "maximumMilliseconds": 64.6826250012964,
+          "wholeEpochHistogram": {
+            "bucketWidthMilliseconds": 1,
+            "count": 26851,
+            "overflowCount": 0,
+            "p95UpperBoundMilliseconds": 34,
+            "p99UpperBoundMilliseconds": 35
+          },
+          "recentSamples": {
+            "count": 4096,
+            "maximumMilliseconds": 36.00870841182768,
+            "meanMilliseconds": 33.34085054524394,
+            "minimumMilliseconds": 30.652999877929688,
+            "p95Milliseconds": 34.16754165664315,
+            "p99Milliseconds": 34.46895838715136
+          },
+          "recentWindowStartUptime": 1970914.6040685002,
+          "invalidSamples": 0
+        }
+      ],
+      "droppedEvents": 509,
+      "droppedSeries": 0
+    }
+  ],
+  "systemSampleCoverage": {
+    "count": 79,
+    "dropped": 0,
+    "firstUptime": 1970451.1207727084,
+    "lastUptime": 1971051.137251375,
+    "measuredElapsedSeconds": 600.01647866657,
+    "processCPUPercentOneCore": 80.0378258055926,
+    "residentMemoryMiBMin": 115.515625,
+    "residentMemoryMiBMax": 483.859375,
+    "thermalTransitions": [
+      {
+        "uptime": 1970451.1207727084,
+        "secondsSinceCameraIntent": -18.404254583409056,
+        "state": "nominal"
+      },
+      {
+        "uptime": 1970601.137885,
+        "secondsSinceCameraIntent": 131.6128577082418,
+        "state": "fair"
+      },
+      {
+        "uptime": 1970793.7305855418,
+        "secondsSinceCameraIntent": 324.2055582499597,
+        "state": "serious"
+      }
+    ]
+  },
+  "limits": [
+    "Thermal transitions are first retained system observations, not exact notification times.",
+    "Resident memory extrema are sampled, not physical footprint or an allocation peak.",
+    "Whole-epoch histogram quantiles are conservative 1 ms bucket upper bounds; recent-window quantiles do not cover the whole run.",
+    "Operation durations are elapsed time; request flags are not subsystem CPU/GPU time.",
+    "Capture and scene callback intervals are not presentation."
+  ]
+}

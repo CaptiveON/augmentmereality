@@ -1,0 +1,26 @@
+{
+  "observations": [
+    {
+      "recordedAtUTC": "2026-09-11T00:05:08.117742+00:00",
+      "promptCheckpoint": "roughly two minutes",
+      "operatorReply": "room test is visible but not stable, some characters disappears and then come back, its a bit flickery around the physical items in the room, the phone is very hot",
+      "result": "Operator-reported visual instability and very hot phone",
+      "timingCaveat": "Reply arrived later than the two-minute prompt; do not assign an exact onset time. Most recent copied recorder at camera +233.100 s reported Fair.",
+      "mechanism": "Unestablished; no concurrent screen recording during sustained observation."
+    },
+    {
+      "recordedAtUTC": "2026-09-11T00:05:21.950865+00:00",
+      "scenario": "Comfort during sustained observation",
+      "operatorReply": "Comfortable enough to continue"
+    },
+    {
+      "recordedAtUTC": "2026-09-11T00:10:49.658883+00:00",
+      "scenario": "Operator ended run before ten-minute checkpoint",
+      "operatorReply": "stop it safely, we will continue later",
+      "action": "SIGINT sent to xctrace PID 59809; app process absent in subsequent device process inventory",
+      "latestRecorderCameraSeconds": 581.6122489583213,
+      "latestRecorderThermalState": "serious",
+      "endpointCaveat": "Latest periodic export is before stop; no camera-hide export was induced. Full ten- and fifteen-minute observations not completed."
+    }
+  ]
+}
