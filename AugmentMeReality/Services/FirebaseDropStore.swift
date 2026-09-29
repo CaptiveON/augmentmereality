@@ -13,6 +13,8 @@ import Foundation
 ///   visibility  — "private" | "link" | "public"  (Wave 6.2/7 use link/public)
 /// Wave 6.1 scope: sync MY drops across installs; recipients and public
 /// discovery ride on the same schema next waves.
+/// The store has no mutable instance state. Firebase SDK objects are obtained
+/// inside each operation; only value snapshots leave the async methods.
 final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
     private struct CloudDrop: Codable {
         var drop: GeoDrop

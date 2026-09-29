@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inventory app diagnostics and gate the migrated AR ownership boundaries.
+"""Inventory app diagnostics and gate the migrated AR and storage ownership boundaries.
 
 Use a full app compile: an incremental success cannot establish that unchanged
 files are warning-free. Dependency and tool diagnostics are not app diagnostics.
@@ -17,8 +17,12 @@ BOUNDARIES = (
     "AR/GeoARSessionManager.swift", "AR/GeospatialEngine.swift",
     "AR/MidFieldDepthEstimator.swift", "AR/SemanticOcclusionPass.swift",
     "AR/SceneUpdateAdmission.swift",
+    "AR/VPSCorrectionAdmission.swift",
+    "AR/AuthoredDropOverlay.swift",
     "Services/LocationService.swift", "Services/PersonSentinel.swift",
     "Services/AssetPreparationQueue.swift",
+    "Services/DropStore.swift", "Services/FirebaseDropStore.swift",
+    "Services/CloudKitDropStore.swift", "Models/GeoDrop.swift",
 )
 
 
@@ -65,16 +69,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--check-ar", action="store_true")
+    parser.add_argument("--check-ownership", "--check-ar", dest="check_ownership",
+                        action="store_true",
+                        help="Require a successful full compile with no AR or storage boundary diagnostics")
     args = parser.parse_args()
     result = inventory(args.log.read_text(errors="replace"))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(f"App diagnostics: {result['uniqueAppDiagnostics']}; "
-          f"AR boundary diagnostics: {len(result['boundaryDiagnostics'])}; "
+          f"Ownership boundary diagnostics: {len(result['boundaryDiagnostics'])}; "
           f"uncompiled boundaries: {len(result['uncompiledBoundaries'])}")
-    if args.check_ar and not gate_passes(result):
-        print("AR ownership gate failed; inspect the diagnostic inventory.")
+    if args.check_ownership and not gate_passes(result):
+        print("Ownership gate failed; inspect the diagnostic inventory.")
         return 1
     return 0
 

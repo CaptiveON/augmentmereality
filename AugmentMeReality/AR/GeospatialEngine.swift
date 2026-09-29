@@ -91,13 +91,29 @@ final class GeospatialEngine {
     }
     private(set) var headingErrorSample: HeadingErrorSample?
 
-    /// (drop id, world transform, first resolution?) — fired on the main actor.
-    var onDropTransform: ((UUID, simd_float4x4, Bool) -> Void)?
+    struct DropTransformSample {
+        let dropID: UUID
+        let transform: simd_float4x4
+        let isFirst: Bool
+        let version: VPSPoseVersion
+    }
+
+    /// Ordered pose with the world-frame and anchor generation it came from.
+    var onDropTransform: ((DropTransformSample) -> Void)?
 
     private var garSession: GARSession?
     private weak var arView: ARView?
 
-    private var anchorIDToDropID: [UUID: UUID] = [:]
+    private struct AnchorBinding {
+        let dropID: UUID
+        let sessionGeneration: UInt64
+        let anchorGeneration: UInt64
+    }
+    private var anchorBindings: [UUID: AnchorBinding] = [:]
+    private var activeAnchorGeneration: [UUID: UInt64] = [:]
+    private var nextAnchorGeneration: UInt64 = 0
+    private var poseGeneration: UInt64 = 0
+    private var poseSequence: UInt64 = 0
     private var requestedDrops: Set<UUID> = []
     private var resolvedDrops: Set<UUID> = []
     /// Live GARAnchor per drop, so an edited drop's anchor can be removed/re-made.
@@ -150,6 +166,9 @@ final class GeospatialEngine {
     // MARK: - Lifecycle
 
     func start(arView: ARView) {
+        poseGeneration &+= 1
+        anchorBindings.removeAll()
+        activeAnchorGeneration.removeAll()
         guard AppConfig.vpsEnabled else {
             ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
             ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
@@ -265,6 +284,7 @@ final class GeospatialEngine {
     }
 
     func stop() {
+        poseGeneration &+= 1
         setWorkAdmission(false, generation: workAdmission.sessionGeneration &+ 1)
         if let memoryWarningObserver {
             NotificationCenter.default.removeObserver(memoryWarningObserver)
@@ -274,7 +294,8 @@ final class GeospatialEngine {
         ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
         garSession = nil
         captureSubmission.reset()
-        anchorIDToDropID.removeAll()
+        anchorBindings.removeAll()
+        activeAnchorGeneration.removeAll()
         requestedDrops.removeAll()
         resolvedDrops.removeAll()
         garAnchorsByDropID.removeAll()
@@ -323,9 +344,10 @@ final class GeospatialEngine {
         }
 
         for anchor in garFrame.updatedAnchors {
-            guard let dropID = anchorIDToDropID[anchor.identifier],
+            guard let binding = anchorBindings[anchor.identifier],
                   anchor.hasValidTransform else { continue }
-            deliver(dropID: dropID, transform: anchor.transform)
+            deliver(binding: binding, transform: anchor.transform,
+                    capturedAt: frame.timestamp)
         }
 
         if let geometries = garFrame.streetscapeGeometries {
@@ -404,10 +426,30 @@ final class GeospatialEngine {
         )
     }
 
-    private func deliver(dropID: UUID, transform: simd_float4x4) {
-        let isFirst = !resolvedDrops.contains(dropID)
-        resolvedDrops.insert(dropID)
-        onDropTransform?(dropID, transform, isFirst)
+    func accepts(_ sample: DropTransformSample) -> Bool {
+        guard let anchorGeneration = activeAnchorGeneration[sample.dropID] else { return false }
+        return sample.version.matches(sessionGeneration: poseGeneration,
+                                      anchorGeneration: anchorGeneration)
+    }
+
+    private func deliver(binding: AnchorBinding, transform: simd_float4x4,
+                         capturedAt: TimeInterval) {
+        guard binding.sessionGeneration == poseGeneration,
+              activeAnchorGeneration[binding.dropID] == binding.anchorGeneration,
+              transformIsFinite(transform), capturedAt.isFinite
+        else { return }
+        let isFirst = !resolvedDrops.contains(binding.dropID)
+        resolvedDrops.insert(binding.dropID)
+        poseSequence &+= 1
+        let sample = DropTransformSample(
+            dropID: binding.dropID, transform: transform, isFirst: isFirst,
+            version: VPSPoseVersion(
+                sessionGeneration: binding.sessionGeneration,
+                anchorGeneration: binding.anchorGeneration,
+                capturedAt: capturedAt, sequence: poseSequence
+            )
+        )
+        onDropTransform?(sample)
     }
 
     // MARK: - Anchors
@@ -418,6 +460,12 @@ final class GeospatialEngine {
         guard let workToken = workAdmission.token, let garSession, isAccuratelyLocalized,
               !requestedDrops.contains(drop.id) else { return }
         requestedDrops.insert(drop.id)
+        nextAnchorGeneration &+= 1
+        let binding = AnchorBinding(
+            dropID: drop.id, sessionGeneration: poseGeneration,
+            anchorGeneration: nextAnchorGeneration
+        )
+        activeAnchorGeneration[drop.id] = binding.anchorGeneration
         anchorRequestCounter += 1
         let token = anchorRequestCounter
         inFlightAnchorTokens[drop.id] = token
@@ -446,7 +494,9 @@ final class GeospatialEngine {
                         guard let self else { return }
                         // Stale request (invalidated or superseded): discard.
                         guard self.workAdmission.accepts(workToken),
-                              self.inFlightAnchorTokens[drop.id] == token else {
+                              self.inFlightAnchorTokens[drop.id] == token,
+                              self.poseGeneration == binding.sessionGeneration,
+                              self.activeAnchorGeneration[drop.id] == binding.anchorGeneration else {
                             if let anchor { garSession.remove(anchor) }
                             return
                         }
@@ -455,10 +505,11 @@ final class GeospatialEngine {
                             self.requestedDrops.remove(drop.id) // retry later
                             return
                         }
-                        self.anchorIDToDropID[anchor.identifier] = drop.id
+                        self.anchorBindings[anchor.identifier] = binding
                         self.garAnchorsByDropID[drop.id] = anchor
                         if anchor.hasValidTransform {
-                            self.deliver(dropID: drop.id, transform: anchor.transform)
+                            self.deliver(binding: binding, transform: anchor.transform,
+                                         capturedAt: ProcessInfo.processInfo.systemUptime)
                         }
                     }
                 }
@@ -472,7 +523,9 @@ final class GeospatialEngine {
                         guard let self else { return }
                         // Stale request (invalidated or superseded): discard.
                         guard self.workAdmission.accepts(workToken),
-                              self.inFlightAnchorTokens[drop.id] == token else {
+                              self.inFlightAnchorTokens[drop.id] == token,
+                              self.poseGeneration == binding.sessionGeneration,
+                              self.activeAnchorGeneration[drop.id] == binding.anchorGeneration else {
                             if let anchor { garSession.remove(anchor) }
                             return
                         }
@@ -481,16 +534,20 @@ final class GeospatialEngine {
                             self.requestedDrops.remove(drop.id) // retry on a later tick
                             return
                         }
-                        self.anchorIDToDropID[anchor.identifier] = drop.id
+                        self.anchorBindings[anchor.identifier] = binding
                         self.garAnchorsByDropID[drop.id] = anchor
                         if anchor.hasValidTransform {
-                            self.deliver(dropID: drop.id, transform: anchor.transform)
+                            self.deliver(binding: binding, transform: anchor.transform,
+                                         capturedAt: ProcessInfo.processInfo.systemUptime)
                         }
                     }
                 }
             }
         } catch {
             requestedDrops.remove(drop.id)
+            if activeAnchorGeneration[drop.id] == binding.anchorGeneration {
+                activeAnchorGeneration[drop.id] = nil
+            }
         }
     }
 
@@ -503,11 +560,14 @@ final class GeospatialEngine {
     /// resolve in the fresh frame. `requestedDrops` must clear too: it is the
     /// re-request gate, and a stale entry deadlocks re-pinning.
     func invalidateAllAnchors() {
+        poseGeneration &+= 1
         for anchor in garAnchorsByDropID.values {
-            anchorIDToDropID[anchor.identifier] = nil
+            anchorBindings[anchor.identifier] = nil
             garSession?.remove(anchor)
         }
         garAnchorsByDropID.removeAll()
+        anchorBindings.removeAll()
+        activeAnchorGeneration.removeAll()
         requestedDrops.removeAll()
         resolvedDrops.removeAll()
         inFlightAnchorTokens.removeAll() // in-flight completions become stale
@@ -518,11 +578,12 @@ final class GeospatialEngine {
     /// `requestAnchor` re-pins with fresh values — used when the creator live-edits
     /// `heightAboveGround`, which terrain anchors bake in at creation.
     func invalidateAnchor(for dropID: UUID) {
+        activeAnchorGeneration[dropID] = nil
         requestedDrops.remove(dropID)
         resolvedDrops.remove(dropID)
         inFlightAnchorTokens[dropID] = nil // an in-flight completion is stale
         if let anchor = garAnchorsByDropID.removeValue(forKey: dropID) {
-            anchorIDToDropID[anchor.identifier] = nil
+            anchorBindings[anchor.identifier] = nil
             garSession?.remove(anchor)
         }
     }

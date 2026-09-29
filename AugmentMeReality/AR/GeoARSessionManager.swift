@@ -227,6 +227,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var worldRoot: AnchorEntity?
     private var placedHolders: [UUID: Entity] = [:]
     private var placedDrops: [UUID: GeoDrop] = [:]
+    private var authoredDropOverlay = AuthoredDropOverlay()
     private var sceneSelection = SceneContentBudget.Selection()
     private var geoAdmissionNeedsSync = false
     private var memoryPressureUntil = Date.distantPast
@@ -242,7 +243,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// immediately if the error crosses the forced threshold). BRIEF killer #2:
     /// the user witnesses presence, never placement.
     private var deferredTargets: [UUID: SIMD3<Float>] = [:]
-    private var deferredVPSTransforms: [UUID: simd_float4x4] = [:]
+    private var vpsCorrections = VPSCorrectionAdmission()
 
     /// ADR-046: drops that already played their close-range reveal burst.
     private var revealedDrops: Set<UUID> = []
@@ -390,8 +391,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
 
-        geospatial.onDropTransform = { [weak self] dropID, transform, isFirst in
-            self?.applyVPSTransform(dropID: dropID, transform: transform, isFirst: isFirst)
+        geospatial.onDropTransform = { [weak self] sample in
+            self?.applyVPSTransform(sample)
         }
         geospatial.start(arView: arView)
 
@@ -534,6 +535,19 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         heldGestures = min(heldGestures + 1, 4) // bounded: >4 thumbs is noise
         lastLiveEditTickAt = Date()
         if editingDropID == nil { editingDropID = nearestDrop?.id }
+        if let editingDropID { protectLiveEdit(editingDropID) }
+    }
+
+    private func protectLiveEdit(_ id: UUID) {
+        guard liveEditingDrops.insert(id).inserted else { return }
+        // Stop only the holder's placement motion. Content lives under it and
+        // keeps its authored animations while the finger owns the pose.
+        stopPlacementMotion(for: id)
+    }
+
+    private func stopPlacementMotion(for id: UUID) {
+        placedHolders[id]?.stopAllAnimations(recursive: false)
+        vpsGlideUntil[id] = nil
     }
 
     /// Round 2 (counsel STATE-1/FLOW-5): terminate an unfinished slider
@@ -1122,7 +1136,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         groundDiscs.removeAll()
         groundLockBaseY.removeAll()
         deferredTargets.removeAll()
-        deferredVPSTransforms.removeAll()
+        vpsCorrections.resetGeneration()
         liveEditingDrops.removeAll()
         editingDropID = nil
         heldGestures = 0
@@ -1227,62 +1241,78 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         camera * relativeHolder
     }
 
-    /// VPS resolved (or refined) a drop's exact pose: glide to it once, then track
-    /// silently. From here on the compass tier keeps its hands off this drop.
-    private func applyVPSTransform(dropID: UUID, transform: simd_float4x4, isFirst: Bool) {
+    /// VPS resolved (or refined) a drop's pose. A new accepted pose supersedes
+    /// every older queued correction, including one from the compass tier.
+    private func applyVPSTransform(_ sample: GeospatialEngine.DropTransformSample) {
+        guard geospatial.accepts(sample) else { return }
+        let dropID = sample.dropID
+        let isFirst = sample.isFirst || !vpsOwnedDrops.contains(dropID)
         // Transit: VPS transforms live in the untrusted VIO frame — ignore them;
         // the transit frame loop owns positions (ADR-015).
         guard renderPath == .pedestrian else { return }
-        // Never fight the user's finger mid-slide (live HUD adjust).
-        guard !liveEditingDrops.contains(dropID) else { return }
         // Round 2 (counsel STATE-5): ownership requires PRESENCE — a drop with
         // no holder must never be marked VPS-owned (the stale mark exempted a
         // re-entering drop from the compass pipeline forever).
         guard let holder = placedHolders[dropID] else { return }
-        vpsOwnedDrops.insert(dropID)
         // Ground lock (ADR-027): the locally measured surface overrides the
         // anchor's terrain altitude — Google's terrain can differ by ±0.5 m,
         // which is exactly the re-float the field test caught.
-        var transform = transform
+        var transform = sample.transform
         if let lockY = groundLockBaseY[dropID] {
             transform.columns.3.y = lockY
         }
-        if isFirst {
-            holder.move(
-                to: Transform(matrix: transform),
-                relativeTo: nil,
-                duration: 1.2,
-                timingFunction: .easeInOut
-            )
-            vpsGlideUntil[dropID] = Date().addingTimeInterval(1.3)
-        } else if Date() > (vpsGlideUntil[dropID] ?? .distantPast) {
-            // §10 drift proxy: cumulative post-glide VPS corrections, in cm.
-            let newPosition = SIMD3<Float>(
-                transform.columns.3.x, transform.columns.3.y, transform.columns.3.z
-            )
-            let correction = simd_length(newPosition - holder.position)
-            if correction > 0.002 {
-                vpsCorrectionTotals[dropID, default: 0] += correction
-                vpsCorrectionCm = Int(((vpsCorrectionTotals.values.max() ?? 0) * 100).rounded())
+        let current = Transform(matrix: holder.transformMatrix(relativeTo: nil))
+        let resolved = Transform(matrix: transform)
+        // GAR supplies a rigid world pose. Keep the holder unit-scaled so
+        // authored dimensions remain solely on its content child.
+        let target = Transform(scale: .one, rotation: resolved.rotation,
+                               translation: resolved.translation)
+        transform = target.matrix
+        let currentPose = VPSCorrectionAdmission.Pose(
+            position: current.translation, rotation: current.rotation)
+        let targetPose = VPSCorrectionAdmission.Pose(
+            position: target.translation, rotation: target.rotation)
+        let decision = vpsCorrections.accept(
+            id: dropID, transform: transform, pose: targetPose,
+            version: sample.version, current: currentPose,
+            cameraPosition: arView?.cameraTransform.translation ?? .zero,
+            isVisible: arView.map { isInView(current.translation, arView: $0) } ?? false,
+            isFirst: isFirst, glideActive: Date() < (vpsGlideUntil[dropID] ?? .distantPast),
+            isEditing: liveEditingDrops.contains(dropID)
+        )
+        guard decision != .reject else { return }
+        vpsOwnedDrops.insert(dropID)
+        deferredTargets[dropID] = nil
+        switch decision {
+        case .reject, .ignore, .deferUntilOffscreen, .holdForEdit:
+            break
+        case .interruptGlide:
+            // The older animation is already on screen. Stop it at its current
+            // pose; the queued newer transform is the only future destination.
+            stopPlacementMotion(for: dropID)
+        case .snap:
+            recordAppliedVPSCorrection(id: dropID, from: currentPose, to: targetPose)
+            holder.setTransformMatrix(transform, relativeTo: nil)
+        case .glide:
+            if !isFirst {
+                recordAppliedVPSCorrection(id: dropID, from: currentPose, to: targetPose)
             }
-            // Sub-visible refinements snap. Anything a viewer could see is
-            // deferred until the drop is off-screen (ADR-028) unless the error is
-            // gross (>5 m) — a genuinely misplaced object gets fixed with a glide.
-            if correction <= 0.3 {
-                holder.setTransformMatrix(transform, relativeTo: nil)
-            } else if correction < 5, let arView, isInView(holder.position, arView: arView) {
-                deferredVPSTransforms[dropID] = transform
-            } else {
-                deferredVPSTransforms[dropID] = nil
-                holder.move(
-                    to: Transform(matrix: transform),
-                    relativeTo: nil,
-                    duration: 0.5,
-                    timingFunction: .easeInOut
-                )
-                vpsGlideUntil[dropID] = Date().addingTimeInterval(0.55)
-            }
+            let duration: TimeInterval = isFirst ? 1.2 : 0.5
+            holder.move(to: target, relativeTo: nil, duration: duration,
+                        timingFunction: .easeInOut)
+            vpsGlideUntil[dropID] = Date().addingTimeInterval(duration + 0.1)
         }
+    }
+
+    /// The drift proxy counts corrections actually applied, not superseded poses.
+    private func recordAppliedVPSCorrection(
+        id: UUID, from current: VPSCorrectionAdmission.Pose,
+        to target: VPSCorrectionAdmission.Pose
+    ) {
+        let distance = simd_length(target.position - current.position)
+        guard distance > 0.002 else { return }
+        vpsCorrectionTotals[id, default: 0] += distance
+        vpsCorrectionCm = Int(((vpsCorrectionTotals.values.max() ?? 0) * 100).rounded())
     }
 
     /// On screen (with margin) and in front of the camera — "the user would see
@@ -1337,6 +1367,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// view (or grows past the forced threshold).
     private func drainDeferredCorrections(arView: ARView) {
         for (id, target) in deferredTargets {
+            if vpsOwnedDrops.contains(id) {
+                deferredTargets[id] = nil
+                continue
+            }
             guard !liveEditingDrops.contains(id) else { continue }
             guard let holder = placedHolders[id] else {
                 deferredTargets[id] = nil
@@ -1359,30 +1393,41 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 metricsLog.log("ADR-028: deferred GPS/heading correction applied (\(delta) m)")
             }
         }
-        for (id, transform) in deferredVPSTransforms {
+        for id in vpsCorrections.pendingIDs {
             guard !liveEditingDrops.contains(id) else { continue }
             guard let holder = placedHolders[id], vpsOwnedDrops.contains(id) else {
-                deferredVPSTransforms[id] = nil
+                vpsCorrections.remove(id)
                 continue
             }
-            let newPosition = SIMD3<Float>(
-                transform.columns.3.x, transform.columns.3.y, transform.columns.3.z
+            guard let transform = vpsCorrections.pendingTransform(for: id) else {
+                vpsCorrections.remove(id)
+                continue
+            }
+            let current = Transform(matrix: holder.transformMatrix(relativeTo: nil))
+            let target = Transform(matrix: transform)
+            let currentPose = VPSCorrectionAdmission.Pose(
+                position: current.translation, rotation: current.rotation)
+            let targetPose = VPSCorrectionAdmission.Pose(
+                position: target.translation, rotation: target.rotation)
+            let decision = vpsCorrections.reconsider(
+                id: id, current: currentPose,
+                cameraPosition: arView.cameraTransform.translation,
+                isVisible: isInView(current.translation, arView: arView),
+                glideActive: Date() < (vpsGlideUntil[id] ?? .distantPast)
             )
-            let delta = simd_length(newPosition - holder.position)
-            if delta < 0.05 {
-                deferredVPSTransforms[id] = nil
-                continue
-            }
-            if delta >= 5 || !isInView(holder.position, arView: arView) {
-                holder.move(
-                    to: Transform(matrix: transform),
-                    relativeTo: nil,
-                    duration: 0.5,
-                    timingFunction: .easeInOut
-                )
+            switch decision {
+            case .snap:
+                recordAppliedVPSCorrection(id: id, from: currentPose, to: targetPose)
+                holder.setTransformMatrix(transform, relativeTo: nil)
+            case .glide:
+                recordAppliedVPSCorrection(id: id, from: currentPose, to: targetPose)
+                holder.move(to: target, relativeTo: nil, duration: 0.5,
+                            timingFunction: .easeInOut)
                 vpsGlideUntil[id] = Date().addingTimeInterval(0.55)
-                deferredVPSTransforms[id] = nil
-                metricsLog.log("ADR-028: deferred VPS correction applied (\(delta) m)")
+                metricsLog.log("ADR-028: deferred VPS correction applied")
+            case .none, .reject, .ignore, .deferUntilOffscreen,
+                 .holdForEdit, .interruptGlide:
+                break
             }
         }
     }
@@ -1857,8 +1902,12 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             // Round 2 (counsel ARPCFG-3): the occlusion OPTION is tick-derived
             // in updatePowerTier — transitions set only their own flags.
             geospatial.setOccludersHidden(true)
+            for (id, holder) in placedHolders where roomDrops[id] == nil {
+                holder.stopAllAnimations(recursive: false)
+            }
             vpsOwnedDrops.removeAll()
             vpsGlideUntil.removeAll()
+            vpsCorrections.resetGeneration()
             metricsLog.log("Render path → transit")
         case .pedestrian:
             for (id, holder) in placedHolders where roomDrops[id] == nil { holder.isEnabled = true }
@@ -1877,7 +1926,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     }
 
     private var admittedGeoDrops: [GeoDrop] {
-        eligibleDrops.filter { sceneSelection.visible.contains($0.id) }
+        let eligible = eligibleDrops
+        authoredDropOverlay.retainOnly(Set(eligible.map(\.id)))
+        return eligible.filter { sceneSelection.visible.contains($0.id) }
+            .map { authoredDropOverlay.resolve($0) }
     }
 
     private func reconcileSceneAdmission() {
@@ -1997,7 +2049,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         readyContentIDs.remove(id)
         revealedDrops.remove(id)
         deferredTargets[id] = nil
-        deferredVPSTransforms[id] = nil
+        vpsCorrections.remove(id)
     }
 
     /// Wave D (counsel SWE-5/SWE-12): EVERY site that destroys a drop's
@@ -2023,7 +2075,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         groundDiscs[id] = nil
         groundLockBaseY[id] = nil
         deferredTargets[id] = nil
-        deferredVPSTransforms[id] = nil
+        vpsCorrections.remove(id)
         liveEditingDrops.remove(id)
         if editingDropID == id {
             editingDropID = nil
@@ -2496,7 +2548,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             // GESTURE state and lives here, not in the mutation — an authored
             // commit ("Place on ground" mid-drag) must not strip the VPS
             // guard and the governor pin from under a still-held finger.
-            liveEditingDrops.insert(id)
+            protectLiveEdit(id)
         }
         if commit {
             // Round 5 (counsel F-D4-01): commit bookkeeping is PURE and lives
@@ -2535,6 +2587,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         // clears the capture and zeroes the counter at the removal site.)
         guard let resolved = placedDrops[id] ?? roomDrops[id]
             ?? demoDrops.first(where: { $0.id == id }) else { return }
+        if commit && (height != nil || rotation != nil) {
+            stopPlacementMotion(for: id)
+        }
         var drop = resolved
         let oldHeight = drop.heightAboveGround
         if let height { drop.heightAboveGround = height }
@@ -2567,6 +2622,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         } else if let library {
             let edited = drop
             let persist = commit
+            if commit { authoredDropOverlay.stage(edited) }
             // Wave C round 2 (C20): the user is looking at the camera when a
             // slider commit fails — the failure must show HERE, not only on a
             // tab they aren't on. (library.lastPersistError is also set.)
@@ -2584,10 +2640,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 // A deliberate height choice overrides any previous ground lock.
                 groundLockBaseY[id] = nil
             }
-            if height != nil || rotation != nil, vpsOwnedDrops.contains(id) {
+            if height != nil || rotation != nil, roomDrops[id] == nil {
                 // Terrain anchors bake altitude AND rotation at creation — re-pin;
-                // the fresh anchor glides the drop to its exact terrain-true pose.
+                // invalidate even a still-unresolved request so an older
+                // completion cannot overwrite this deliberate edit.
                 vpsOwnedDrops.remove(id)
+                vpsCorrections.remove(id)
+                vpsGlideUntil[id] = nil
+                deferredTargets[id] = nil
                 geospatial.invalidateAnchor(for: id)
             }
         }
@@ -2759,6 +2819,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         // 3. Apply everywhere: model, scene (exact tap point), cloud, VPS.
         placedDrops[id] = updated
         nearestDrop = updated
+        stopPlacementMotion(for: id)
         holder.move(
             to: Transform(
                 scale: .one, rotation: holder.orientation,
@@ -2769,9 +2830,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         groundLockBaseY[id] = worldPoint.y + 0.005
         groundDiscs[id]?.position.y = -Float(updated.heightAboveGround) + 0.04
         deferredTargets[id] = nil
-        deferredVPSTransforms[id] = nil
-        if vpsOwnedDrops.contains(id) {
-            vpsOwnedDrops.remove(id)
+        vpsCorrections.remove(id)
+        vpsOwnedDrops.remove(id)
+        vpsGlideUntil[id] = nil
+        if roomDrops[id] == nil {
             geospatial.invalidateAnchor(for: id) // re-pins at the NEW coordinate
         }
         if let index = demoDrops.firstIndex(where: { $0.id == id }) {
@@ -2780,6 +2842,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             roomDrops[id] = updated
         } else if let library {
             let toSave = updated
+            authoredDropOverlay.stage(toSave)
             Task { [weak self] in
                 do {
                     try await library.update(toSave, persist: true)
@@ -3189,7 +3252,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
         if renderPath == .transit {
             transitFrameUpdate(arView: arView)
-        } else if !deferredTargets.isEmpty || !deferredVPSTransforms.isEmpty {
+        } else if !deferredTargets.isEmpty || vpsCorrections.hasPending {
             drainDeferredCorrections(arView: arView)
         }
 

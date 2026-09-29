@@ -104,13 +104,13 @@ jobs:
           AMR_ALL_LOCAL_TESTS: '1'
           AMR_TEST_OUTPUT_DIR: ${{ runner.temp }}/amr-native-sdk
         run: bash web/rules-tests/run-native-sdk-tests.sh '${{ steps.sim.outputs.udid }}'
-      - name: Check migrated AR ownership diagnostics
+      - name: Check migrated AR and storage ownership diagnostics
         run: >-
           python3 scripts/swift-diagnostics.py
           "$RUNNER_TEMP/amr-native-sdk/build.log"
           --output "$RUNNER_TEMP/amr-native-sdk/swift-diagnostics.json"
-          --check-ar
-      - name: Exercise AR ownership under Thread Sanitizer
+          --check-ownership
+      - name: Exercise AR and storage ownership under Thread Sanitizer
         if: matrix.lane == 'current-26_5'
         run: |
           xcodebuild -project AugmentMeReality.xcodeproj -scheme AugmentMeReality \
@@ -130,6 +130,10 @@ jobs:
             -only-testing:AugmentMeRealityTests/PerceptionFeedGenerationTests \
             -only-testing:AugmentMeRealityTests/MidFieldDepthTests \
             -only-testing:AugmentMeRealityTests/StreetscapeMeshPipelineTests \
+            -only-testing:AugmentMeRealityTests/LocalDropStoreTests \
+            -only-testing:AugmentMeRealityTests/DropLibraryTests \
+            -only-testing:AugmentMeRealityTests/VPSCorrectionAdmissionTests \
+            -only-testing:AugmentMeRealityTests/AuthoredDropOverlayTests \
             test > "$RUNNER_TEMP/amr-native-sdk/tsan-tests.log" 2>&1
       - name: Launch no-secrets app and unsupported-camera UI
         run: >-

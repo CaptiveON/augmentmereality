@@ -1,0 +1,130 @@
+{
+  "checkedAt": "2026-09-29T23:52:22.660829+00:00",
+  "baseCommit": "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+  "sourceState": "uncommitted working tree",
+  "sourceAggregateSHA256": "6506ae7890826fb1b0b413e7b924f99e758b5c5e48316ae54248b9ac4f5bf049",
+  "sourceFileCount": 93,
+  "sourceFingerprintVerified": true,
+  "xcode": "Xcode 26.6\nBuild version 17F113",
+  "sdk": "26.5",
+  "tests": {
+    "current": {
+      "totalTestCount": 283,
+      "passedTests": 283,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    },
+    "minimum": {
+      "totalTestCount": 283,
+      "passedTests": 282,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "result": "Passed"
+    },
+    "tsan": {
+      "totalTestCount": 105,
+      "passedTests": 105,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    }
+  },
+  "minimumSkipReason": "Opt-in native Firestore emulator contract passed on current lane",
+  "debugBuild": "passed",
+  "unsignedReleaseBuild": "passed",
+  "appDiagnostics": {
+    "Debug": 0,
+    "Release": 0,
+    "requiredCompiledBoundaries": 16
+  },
+  "swift6": {
+    "wholeAppSILCompile": "passed",
+    "errors": 0,
+    "warnings": 0,
+    "productionLanguageMode": 5,
+    "usesRealSDKAndDependencies": true,
+    "replayCommandSHA256": "4b9ca702667ce2507f441a6680ee2981ed91fdfba02540a47503d93f7ac7dca6"
+  },
+  "threadSanitizer": {
+    "runtimeLinked": true,
+    "reportedRaces": 0,
+    "scope": "105 selected simulator AR, storage and correction tests; not physical RealityKit safety proof"
+  },
+  "localCIChecks": {
+    "rulesDriftTests": 8,
+    "currentRulesTests": 59,
+    "historicalRulesTests": 6,
+    "releaseSmokeChecks": 42,
+    "diagnosticGateTests": 6,
+    "bothLaunchSmokesPassed": true,
+    "allFourScreenshotsInspected": true,
+    "baselineAndSimulatorSelectorTests": "passed",
+    "releaseVerificationScriptTests": "passed",
+    "ciYAML": "parsed",
+    "gitDiffCheck": "passed"
+  },
+  "githubCI": {
+    "pullRequest": 36,
+    "run": 36645268084,
+    "jobStartup": "blocked by GitHub account billing or spending-limit restriction",
+    "sourceConflict": false,
+    "checksBypassed": false,
+    "merge": "pending"
+  },
+  "phoneUsedForValidation": false,
+  "phoneRevisionAtVerification": "eb63a99",
+  "realServiceConfiguration": "excluded from simulator and unsigned Release builds",
+  "liveFirebaseIntegrationTests": "excluded; demo native SDK emulator contract included",
+  "logs": {
+    "build.log": {
+      "path": "/tmp/amr-phase2-sep30/build.log",
+      "sha256": "bdd1979d71c1f6da4c0ac809c687a59f77614d5f0c3d8fb5e6e468ca5f40053c"
+    },
+    "native-tests.log": {
+      "path": "/tmp/amr-phase2-sep30/native-tests.log",
+      "sha256": "0990590fc19234ff7d29927408216a4feb87d55ddb681081a82bcc30a59b46a0"
+    },
+    "minimum-tests.log": {
+      "path": "/tmp/amr-phase2-sep30/minimum-tests.log",
+      "sha256": "a995272463383cb6f56e4d6980b6a08d628353b8f44ff9f4d96067085fb19949"
+    },
+    "release.log": {
+      "path": "/tmp/amr-phase2-sep30/release.log",
+      "sha256": "17629b1d4dfdba99cb7b64beb9e88523ae71df59f543ce87b2750db54541b040"
+    },
+    "tsan-tests.log": {
+      "path": "/tmp/amr-phase2-sep30/tsan-tests.log",
+      "sha256": "f281f88a03c4a127f635a1425b1915e2d6de6f9015802160696944aacd83856f"
+    },
+    "swift6-final.log": {
+      "path": "/tmp/amr-phase2-sep30/swift6-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rules-tests.log": {
+      "path": "/tmp/amr-phase2-sep30/rules-tests.log",
+      "sha256": "e2185d4ba9b165d26de136153aa71983a3c780593f7793ded0902274ccb71119"
+    },
+    "release-smoke.log": {
+      "path": "/tmp/amr-phase2-sep30/release-smoke.log",
+      "sha256": "38e623957012922c6847dc96c144c2e9762f44d14d2788d6574dcc59dca1989e"
+    },
+    "fast-checks.log": {
+      "path": "/tmp/amr-phase2-sep30/fast-checks.log",
+      "sha256": "d2139b6a531bcdbd4a8c521be4a508ba2b0f4362df96330a3ce587b2237782fc"
+    },
+    "diagnostic-tests.log": {
+      "path": "/tmp/amr-phase2-sep30/diagnostic-tests.log",
+      "sha256": "c6b9b1f09add0403cc07e90bfdf272129b1ddfa2f8f7675ea8218862f2516371"
+    }
+  },
+  "remaining": [
+    "Restore GitHub Actions billing, rerun CI and merge PR #36",
+    "Persisted placement uncertainty/source and geographic write-back policy",
+    "Vertical reference and support, readiness, consolidated placement state",
+    "Production Swift 6 language-mode rollout and test-target migration",
+    "Physical RealityKit animation-stop/lifecycle validation",
+    "Physical Release startup, sustained thermal/frame-pacing/memory and shared-placement acceptance",
+    "Remaining account/privacy/moderation/asset-rights release gates"
+  ]
+}

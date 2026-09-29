@@ -1325,3 +1325,26 @@ in the repaired AR boundaries. The [September 30 status and evidence](docs/IMPLE
 record 267 current-iOS test passes, 266 minimum-iOS passes with one expected skip,
 30 targeted simulator TSan passes, and the unsigned Release build. Physical
 thermal, decoded-memory and live-render acceptance remain unmeasured.
+
+## ADR-057 — Checked storage transfers and ordered VPS corrections (2026-09-30)
+
+Storage interfaces and their value snapshots require checked `Sendable`
+conformance. Local JSON state remains actor-owned, and save/delete perform their
+read-modify-write without an intervening suspension. Stateless cloud adapters
+keep SDK objects within each operation. The 19 remaining app ownership
+diagnostics are resolved; Debug, Release, and the real whole-app Swift 6 SIL
+compile have no app diagnostics. The project language mode remains Swift 5,
+and CI now gates the storage and AR boundaries together.
+
+VPS pose ordering includes capture time, sequence, session generation and anchor
+generation. New accepted samples retire older queued destinations and interrupt
+holder glides toward superseded poses. Translation, viewing angle and rotation
+inform visible correction policy. Beginning an edit protects placement immediately;
+committed pose changes clear GPS/VPS corrections and retire unresolved anchors.
+A bounded placement overlay supplies authored values until the library publishes
+them, while retaining current server metadata.
+
+The [phase-two status and evidence](docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE2.md)
+records validation and the external GitHub Actions billing restriction on PR #36.
+Persisted geographic accuracy/provenance, physical animation-stop behavior and
+sustained thermal/frame-pacing acceptance remain separate requirements.

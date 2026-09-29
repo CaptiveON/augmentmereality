@@ -196,6 +196,31 @@ final class LocalDropStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), bad)
     }
 
+    func testDeleteCannotDiscardUnreadableRowsWhenRecoveryCopyIsUnavailable() async throws {
+        let url = temporaryFile()
+        var good = GeoDrop()
+        good.message = "survivor"
+        let encodedGood = try JSONEncoder().encode(good)
+        let goodJSON = try XCTUnwrap(String(data: encodedGood, encoding: .utf8))
+        let damaged = Data(
+            "[\(goodJSON),{\"id\":\"\(UUID().uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8
+        )
+        try damaged.write(to: url)
+        let store = LocalDropStore(fileURL: url)
+        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        XCTAssertEqual(loaded.map(\.id), [good.id])
+        let sidecar = try XCTUnwrap(siblings(of: url, prefix: "unreadable-").first)
+        let sidecarURL = url.deletingLastPathComponent().appendingPathComponent(sidecar)
+        try FileManager.default.removeItem(at: sidecarURL)
+        try FileManager.default.createDirectory(at: sidecarURL, withIntermediateDirectories: false)
+
+        do {
+            try await store.delete(good)
+            XCTFail("deleting the readable row must not discard an unreadable row without a recovery copy")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), damaged)
+    }
+
     func testConcurrentSavesAllSurvive() async throws {
         // Wave C (counsel SWE-8): the store is an actor — N overlapping saves
         // from independent tasks must all land.
@@ -206,16 +231,45 @@ final class LocalDropStoreTests: XCTestCase {
             drop.message = "drop \(index)"
             return drop
         }
-        await withThrowingTaskGroup(of: Void.self) { group in
+        try await withThrowingTaskGroup(of: Void.self) { group in
             for drop in drops {
                 group.addTask { try await store.save(drop) }
             }
+            try await group.waitForAll()
         }
         let loaded = try await store.loadDrops(near: nil, radius: 0)
         XCTAssertEqual(
             Set(loaded.map(\.id)), Set(drops.map(\.id)),
             "every concurrent save must survive — no lost writes"
         )
+    }
+
+    func testConcurrentSavesAndDeletesDoNotResurrectRemovedRows() async throws {
+        let store = LocalDropStore(fileURL: temporaryFile())
+        let removed = (0..<8).map { index -> GeoDrop in
+            var drop = GeoDrop()
+            drop.message = "removed \(index)"
+            return drop
+        }
+        let added = (0..<8).map { index -> GeoDrop in
+            var drop = GeoDrop()
+            drop.message = "added \(index)"
+            return drop
+        }
+        for drop in removed { try await store.save(drop) }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for drop in removed {
+                group.addTask { try await store.delete(drop) }
+            }
+            for drop in added {
+                group.addTask { try await store.save(drop) }
+            }
+            try await group.waitForAll()
+        }
+
+        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        XCTAssertEqual(Set(loaded.map(\.id)), Set(added.map(\.id)))
     }
 }
 

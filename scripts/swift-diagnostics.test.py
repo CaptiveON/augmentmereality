@@ -23,12 +23,23 @@ class DiagnosticGateTests(unittest.TestCase):
         self.assertEqual(result["uniqueAppDiagnostics"], 1)
         self.assertEqual(result["diagnostics"][0]["path"], "AR/GeospatialEngine.swift")
 
-    def test_remaining_storage_blocker_is_visible_without_claiming_migration(self):
+    def test_storage_diagnostic_now_fails_the_ownership_gate(self):
         warning = "AugmentMeReality/Services/DropStore.swift:4:8: warning: non-Sendable store\n"
         result = diagnostics.inventory(self.full_compile() + warning)
-        self.assertTrue(diagnostics.gate_passes(result))
+        self.assertFalse(diagnostics.gate_passes(result))
         self.assertEqual(result["uniqueAppDiagnostics"], 1)
         self.assertEqual(result["byFile"], {"Services/DropStore.swift": 1})
+
+    def test_every_storage_boundary_must_compile_and_be_diagnostic_free(self):
+        for path in ("Services/DropStore.swift", "Services/FirebaseDropStore.swift",
+                     "Services/CloudKitDropStore.swift", "Models/GeoDrop.swift"):
+            with self.subTest(path=path):
+                log = self.full_compile().replace(
+                    "SwiftCompile normal arm64 /repo/AugmentMeReality/" + path, "")
+                self.assertFalse(diagnostics.gate_passes(diagnostics.inventory(log)))
+                result = diagnostics.inventory(self.full_compile() +
+                    f"AugmentMeReality/{path}:1:1: warning: ownership regression\n")
+                self.assertFalse(diagnostics.gate_passes(result))
 
     def test_dependency_warning_is_excluded_and_failed_build_is_rejected(self):
         log = self.full_compile().replace("** TEST BUILD SUCCEEDED **", "** BUILD FAILED **")
