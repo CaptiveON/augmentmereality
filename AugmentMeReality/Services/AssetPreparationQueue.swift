@@ -18,8 +18,8 @@ final class AssetPreparationQueue<Value> {
     }
 
     private let limits: Limits
-    private let load: (String) async -> Value?
-    private let cost: (String) -> Int
+    private let load: @MainActor (String) async -> Value?
+    private let cost: @MainActor (String) -> Int
     var onCompletion: ((String, Bool) -> Void)?
     private var cache: [String: Entry] = [:]
     private var useCounter: UInt64 = 0
@@ -34,8 +34,8 @@ final class AssetPreparationQueue<Value> {
     // without admitting their template to the resident cache.
     private var delivery: (name: String, value: Value)?
 
-    init(limits: Limits = Limits(), cost: @escaping (String) -> Int,
-         load: @escaping (String) async -> Value?) {
+    init(limits: Limits = Limits(), cost: @escaping @MainActor (String) -> Int,
+         load: @escaping @MainActor (String) async -> Value?) {
         precondition(limits.queued > 0 && limits.cached >= 0 && limits.cacheCost >= 0)
         self.limits = limits
         self.cost = cost

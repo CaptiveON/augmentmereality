@@ -576,11 +576,9 @@ final class CommitBookkeepingTests: XCTestCase {
     }
 }
 
-/// Round 4 (field protocol Session 1c), rebuilt round 5 (counsel RSCH4-01):
-/// under simulator TSan this is the race detector for the pass's lock
-/// discipline. The round-4 form never executed the renderCallbacks slot
-/// assignment (no ARView → early return), had no rendezvous (a run with zero
-/// concurrency was a legal outcome), and asserted a tautology.
+/// Slot mutation follows RealityKit's main-actor contract while work-admission
+/// changes and locked state reads overlap it on another queue. This exercises
+/// the production slot writes; it cannot certify RealityKit's render thread.
 @MainActor
 final class SemanticPassCrossThreadTests: XCTestCase {
     func testCallbackToggleIsSafeUnderConcurrentReads() {
@@ -608,34 +606,34 @@ final class SemanticPassCrossThreadTests: XCTestCase {
         let started = DispatchSemaphore(value: 0)
         let group = DispatchGroup()
         group.enter()
-        DispatchQueue(label: "toggler").async {
+        DispatchQueue(label: "admission-and-reader").async {
             started.signal()
             for index in 0..<4000 {
                 pass.setWorkAdmission(index % 2 == 0, generation: UInt64(index / 2),
                                       person: false, depth: false)
-                pass.setCallbacksActive(index % 2 == 0)
+                _ = pass.callbacksActive
             }
             group.leave()
         }
-        // RSCH4-01 leg (1): rendezvous, then a DEADLINE-bounded reader — the
-        // toggler is provably running before the first read, and the reads
-        // span real wall-clock instead of racing a fixed count to the end.
-        started.wait()
+        XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
         let deadline = Date().addingTimeInterval(0.5)
         var reads = 0
-        var observedActive = 0
         while Date() < deadline {
+            let active = reads % 2 == 0
+            pass.setCallbacksActive(active)
+            XCTAssertEqual(pass.callbacksActive, active)
             reads += 1
-            if pass.callbacksActive { observedActive += 1 }
         }
         // F-D5-02: the view must outlive the toggler, or the weak ref nils
         // mid-run and the remaining toggles exercise nothing.
-        withExtendedLifetime(view) { group.wait() }
+        XCTAssertEqual(withExtendedLifetime(view) { group.wait(timeout: .now() + 5) }, .success)
         pass.setCallbacksActive(false)
         // The sanitizer is the real assertion; these prove the probe RAN
         // (reader iterated against a live toggler), not that it is safe.
         XCTAssertGreaterThan(reads, 0)
-        XCTAssertGreaterThanOrEqual(observedActive, 0)
+        XCTAssertNil(view.renderCallbacks.postProcess)
+        XCTAssertNil(view.renderCallbacks.prepareWithDevice)
+        pass.uninstall()
     }
 }
 

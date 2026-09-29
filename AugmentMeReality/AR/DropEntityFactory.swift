@@ -6,6 +6,7 @@ import os
 /// Builds RealityKit entities for each drop type, fully procedurally — no 3D asset
 /// files needed. The returned entity's origin sits at ground level under the content;
 /// the placement engine positions and orients it in the world.
+@MainActor
 enum DropEntityFactory {
     /// ADR-020: natural mode is pure lit PBR — ARKit's estimated environment light
     /// shades it like a real object (the depth cues that sell presence). Full-bright
@@ -163,11 +164,21 @@ enum DropEntityFactory {
         }
     }
 
-    @MainActor private static func assetFileSize(_ name: String) -> Int {
+    private static var sourceSizeCache: [String: Int] = [:]
+
+    static func assetSourceBytes(_ name: String) -> Int? {
+        if let cached = sourceSizeCache[name] { return cached == .max ? nil : cached }
         guard let url = Bundle.main.url(forResource: name, withExtension: "usdz") else {
-            return .max
+            sourceSizeCache[name] = .max
+            return nil
         }
-        return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? .max
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? .max
+        sourceSizeCache[name] = size
+        return size == .max ? nil : size
+    }
+
+    private static func assetFileSize(_ name: String) -> Int {
+        assetSourceBytes(name) ?? .max
     }
 
     /// Recursively starts every animation the model ships with, looping forever.
@@ -260,6 +271,13 @@ enum DropEntityFactory {
 
     /// Extruded 3D text, origin centered horizontally with the baseline at y = 0.
     private static func text(_ string: String, color: UIColor, fullBright: Bool) -> Entity {
+        // Incoming cloud/legacy text can be much longer than the composer UI
+        // allows. Cap the generated mesh work, while retaining the original
+        // message in the drop record and in its other surfaces.
+        var bounded = ""
+        for scalar in string.unicodeScalars.prefix(160) {
+            bounded.unicodeScalars.append(scalar)
+        }
         func makeMesh(_ value: String) -> MeshResource {
             MeshResource.generateText(
                 value,
@@ -270,7 +288,7 @@ enum DropEntityFactory {
                 lineBreakMode: .byWordWrapping
             )
         }
-        var mesh = makeMesh(string)
+        var mesh = makeMesh(bounded)
         if mesh.bounds.extents.x < 0.001 {
             // Emoji are color bitmap glyphs with no vector outlines — an emoji-only
             // message extrudes to an empty (invisible) mesh. Show something instead.

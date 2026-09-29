@@ -291,7 +291,7 @@ private struct ARScreenContent: View {
             Spacer()
 
             let demoing = router.onboardingPhase == .fireworksDemo
-            if manager.nearestDrop != nil, manager.renderedDropCount > 0, !demoing {
+            if manager.nearestDrop != nil, manager.nearestDropIsRendered, !demoing {
                 adjustPanel
                     .padding(.bottom, 8)
                     // Round 6 (counsel F-D5-01): a gesture whose control left
@@ -388,6 +388,11 @@ private struct ARScreenContent: View {
                 Text("\(manager.renderedDropCount) in view range")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.8))
+                if manager.deferredContentCount > 0 {
+                    Text("\(manager.deferredContentCount) more nearby")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
                 if manager.occlusionActive {
                     chip("LiDAR", color: .blue)
                 }

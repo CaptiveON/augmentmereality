@@ -270,6 +270,10 @@ struct TransitLocationEstimator {
 }
 
 /// Publishes the device's GPS fix and true-north heading for the map and the AR engine.
+/// The manager is created on the main run loop; all published state and manager
+/// commands belong to the main actor. Delegate entry points copy values before
+/// hopping to it, so no Core Location object crosses an executor boundary.
+@MainActor
 final class LocationService: NSObject, ObservableObject {
     @Published private(set) var location: CLLocation?
     @Published private(set) var headingSample: HeadingSample?
@@ -329,7 +333,7 @@ final class LocationService: NSObject, ObservableObject {
 }
 
 extension LocationService: CLLocationManagerDelegate {
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         let snapshots = locations.map(LocationFixSnapshot.init)
         DispatchQueue.main.async {
             for snapshot in snapshots {
@@ -344,7 +348,7 @@ extension LocationService: CLLocationManagerDelegate {
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         // CLHeading is not Sendable; extract the timestamped primitive sample
         // before scheduling publication on the main queue.
         let isTrue = newHeading.trueHeading >= 0
@@ -368,16 +372,18 @@ extension LocationService: CLLocationManagerDelegate {
         }
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
-        DispatchQueue.main.async { self.authorization = status }
-        if status == .authorizedWhenInUse || status == .authorizedAlways {
-            manager.startUpdatingLocation()
-            manager.startUpdatingHeading()
+        DispatchQueue.main.async {
+            self.authorization = status
+            if status == .authorizedWhenInUse || status == .authorizedAlways {
+                self.manager.startUpdatingLocation()
+                self.manager.startUpdatingHeading()
+            }
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         // Transient failures (e.g. kCLErrorLocationUnknown) resolve on their own.
     }
 }

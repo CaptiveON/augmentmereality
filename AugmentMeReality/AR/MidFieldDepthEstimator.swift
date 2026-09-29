@@ -4,6 +4,7 @@ import CoreVideo
 import Foundation
 import Vision
 import os
+import os.lock
 
 /// Thread-safe hand-off of the latest aligned mid-field depth to the render pass.
 final class MidFieldDepthFeed: @unchecked Sendable {
@@ -116,42 +117,42 @@ final class MidFieldDepthFeed: @unchecked Sendable {
 /// against the LiDAR depth map (the 0.4–4 m band where both are valid) with a
 /// least-squares fit in inverse-depth space. No usable fit ⇒ no occlusion from
 /// this source (fails toward draw-over, never toward eating content).
-final class MidFieldDepthEstimator {
+final class MidFieldDepthEstimator: Sendable {
     let feed = MidFieldDepthFeed()
 
     private let queue = DispatchQueue(label: "midfield-depth", qos: .userInitiated)
-    private let stateLock = NSLock()
-    private var model: VNCoreMLModel?
-    /// Reused across runs (only touched on the serial worker queue).
-    private var request: VNCoreMLRequest?
-    private var loading = false
-    private var busy = false
-    private var lastRunAt = Date.distantPast
+    private struct State {
+        var loading = false
+        var modelReady = false
+        var busy = false
+        var lastRunAt = Date.distantPast
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    /// Vision objects and pools never leave `queue`; this narrow owner is the
+    /// only unchecked transfer of those SDK references into its async jobs.
+    private let worker = WorkerResources()
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "middepth")
 
     func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
-        stateLock.lock()
         if feed.setWorkAdmission(allowed, generation: generation) {
-            lastRunAt = .distantPast
+            state.withLock { $0.lastRunAt = .distantPast }
         }
-        stateLock.unlock()
     }
 
     /// Decode the model off the main thread at app start; ~50 MB of weights.
     func loadIfNeeded() {
-        stateLock.lock()
         let token = feed.admissionToken()
-        let shouldLoad = token != nil && model == nil && !loading
-        if shouldLoad { loading = true }
-        stateLock.unlock()
+        let shouldLoad = state.withLock { state in
+            let needed = token != nil && !state.modelReady && !state.loading
+            if needed { state.loading = true }
+            return needed
+        }
         guard shouldLoad, let token else { return }
 
         queue.async { [weak self] in
             guard let self else { return }
             guard self.feed.accepts(token) else {
-                self.stateLock.lock()
-                self.loading = false
-                self.stateLock.unlock()
+                self.state.withLock { $0.loading = false }
                 return
             }
             let metrics = ARBaselineMetrics.shared
@@ -168,15 +169,14 @@ final class MidFieldDepthEstimator {
             else {
                 metrics.event("Depth model prepare failed")
                 self.log.error("Mid-field depth model failed to load; feature disabled")
-                self.stateLock.lock()
-                self.loading = false
-                self.stateLock.unlock()
+                self.state.withLock { $0.loading = false }
                 return
             }
-            self.stateLock.lock()
-            self.model = vnModel
-            self.loading = false
-            self.stateLock.unlock()
+            self.worker.model = vnModel
+            self.state.withLock { state in
+                state.modelReady = true
+                state.loading = false
+            }
             metrics.event("Depth model ready")
             metrics.setWorkload("Depth model ready", enabled: true)
             self.log.log("Mid-field depth model loaded (Depth Anything V2 small f16)")
@@ -186,18 +186,18 @@ final class MidFieldDepthEstimator {
     /// Feed a frame; runs at most every `1/hz` seconds and never overlaps itself.
     /// Requires LiDAR scene depth in the frame for the metric alignment.
     func update(frame: ARFrame, hz: Double) {
-        stateLock.lock()
-        guard let token = feed.admissionToken(), let model, hz > 0,
-              !busy, Date().timeIntervalSince(lastRunAt) > 1.0 / hz else {
-            stateLock.unlock()
-            return
+        guard let token = feed.admissionToken() else { return }
+        let admitted = state.withLock { state in
+            guard state.modelReady, hz > 0, !state.busy,
+                  Date().timeIntervalSince(state.lastRunAt) > 1.0 / hz else { return false }
+            state.busy = true
+            state.lastRunAt = Date()
+            return true
         }
-        busy = true
-        lastRunAt = Date()
-        stateLock.unlock()
+        guard admitted else { return }
 
         guard let lidarSource = frame.sceneDepth?.depthMap else {
-            stateLock.lock(); busy = false; stateLock.unlock()
+            state.withLock { $0.busy = false }
             return
         }
         let timestamp = frame.timestamp
@@ -212,16 +212,14 @@ final class MidFieldDepthEstimator {
         queue.async { [weak self] in
             guard let self else { return }
             defer {
-                self.stateLock.lock()
-                self.busy = false
-                self.stateLock.unlock()
+                self.state.withLock { $0.busy = false }
             }
             guard self.feed.accepts(token) else {
                 sources.empty()
                 return
             }
-            let image = sources.image.flatMap { self.pooledCopy($0) }
-            let lidar = sources.lidar.flatMap { self.pooledCopy($0) }
+            let image = sources.image.flatMap { self.worker.pooledCopy($0) }
+            let lidar = sources.lidar.flatMap { self.worker.pooledCopy($0) }
             sources.empty() // ARKit's buffers release HERE, pre-inference
             guard let image, let lidar else {
                 ARBaselineMetrics.shared.event("Depth input copy failed")
@@ -229,12 +227,13 @@ final class MidFieldDepthEstimator {
             }
             guard self.feed.accepts(token) else { return }
             let request: VNCoreMLRequest
-            if let existing = self.request {
+            if let existing = self.worker.request {
                 request = existing
             } else {
+                guard let model = self.worker.model else { return }
                 request = VNCoreMLRequest(model: model)
                 request.imageCropAndScaleOption = .scaleFill
-                self.request = request
+                self.worker.request = request
             }
             let metrics = ARBaselineMetrics.shared
             metrics.sample("Depth input age", milliseconds: (ProcessInfo.processInfo.systemUptime - timestamp) * 1000)
@@ -309,11 +308,17 @@ final class MidFieldDepthEstimator {
         }
     }
 
+    /// This owner is created before any job is enqueued and is touched only on
+    /// `queue`; model load and inference therefore never overlap. The feed's
+    /// generation token rejects jobs that finish after a reset.
+    private final class WorkerResources: @unchecked Sendable {
+        var model: VNCoreMLModel?
+        var request: VNCoreMLRequest?
+        var bufferPools: [String: CVPixelBufferPool] = [:]
+
     /// Round 2 (counsel RENDER-5): copies land in POOLED buffers — no per-call
-    /// IOSurface allocation at 5 Hz. Queue-confined (the serial `queue` is the
-    /// only accessor). Falls back to a plain create if the pool fails.
-    private var bufferPools: [String: CVPixelBufferPool] = [:]
-    private func pooledCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+    /// IOSurface allocation at 5 Hz. Falls back to a plain create if the pool fails.
+    func pooledCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
         let format = CVPixelBufferGetPixelFormatType(source)
@@ -332,11 +337,12 @@ final class MidFieldDepthEstimator {
         if let pool = bufferPools[key] {
             var out: CVPixelBuffer?
             if CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out) == kCVReturnSuccess,
-               let copy = out, Self.copyContents(of: source, into: copy) {
+               let copy = out, MidFieldDepthEstimator.copyContents(of: source, into: copy) {
                 return copy
             }
         }
-        return Self.copyPixelBuffer(source)
+        return MidFieldDepthEstimator.copyPixelBuffer(source)
+    }
     }
 
     /// Deep-copies a pixel buffer into an APP-OWNED allocation (all planes).

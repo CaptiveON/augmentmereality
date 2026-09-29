@@ -23,6 +23,7 @@ jobs:
       - run: node --test scripts/verify-firestore-release.test.mjs
       - run: python3 scripts/ar-baseline.test.py
       - run: python3 scripts/ios-simulator-matrix.test.py
+      - run: python3 scripts/swift-diagnostics.test.py
 
   # The Firestore rules suite (candidate + historical-v2 fixture) against the
   # emulator — the gate that must be green before any rules deploy.
@@ -103,6 +104,33 @@ jobs:
           AMR_ALL_LOCAL_TESTS: '1'
           AMR_TEST_OUTPUT_DIR: ${{ runner.temp }}/amr-native-sdk
         run: bash web/rules-tests/run-native-sdk-tests.sh '${{ steps.sim.outputs.udid }}'
+      - name: Check migrated AR ownership diagnostics
+        run: >-
+          python3 scripts/swift-diagnostics.py
+          "$RUNNER_TEMP/amr-native-sdk/build.log"
+          --output "$RUNNER_TEMP/amr-native-sdk/swift-diagnostics.json"
+          --check-ar
+      - name: Exercise AR ownership under Thread Sanitizer
+        if: matrix.lane == 'current-26_5'
+        run: |
+          xcodebuild -project AugmentMeReality.xcodeproj -scheme AugmentMeReality \
+            -configuration Debug -destination 'id=${{ steps.sim.outputs.udid }}' \
+            -derivedDataPath "$RUNNER_TEMP/amr-native-sdk/TSanData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/amr-native-sdk/DerivedData/SourcePackages" \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackageUpdates -enableThreadSanitizer YES -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/amr-native-sdk/tsan-tests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            'EXCLUDED_SOURCE_FILE_NAMES=GoogleService-Info.plist Secrets.plist' \
+            -only-testing:AugmentMeRealityTests/RenderLifecycleTests \
+            -only-testing:AugmentMeRealityTests/SceneUpdateAdmissionTests \
+            -only-testing:AugmentMeRealityTests/SemanticPassCrossThreadTests \
+            -only-testing:AugmentMeRealityTests/PersonSentinelCrossQueueTests \
+            -only-testing:AugmentMeRealityTests/PerceptionWorkAdmissionTests \
+            -only-testing:AugmentMeRealityTests/PerceptionFeedGenerationTests \
+            -only-testing:AugmentMeRealityTests/MidFieldDepthTests \
+            -only-testing:AugmentMeRealityTests/StreetscapeMeshPipelineTests \
+            test > "$RUNNER_TEMP/amr-native-sdk/tsan-tests.log" 2>&1
       - name: Launch no-secrets app and unsupported-camera UI
         run: >-
           python3 scripts/ios-launch-smoke.py

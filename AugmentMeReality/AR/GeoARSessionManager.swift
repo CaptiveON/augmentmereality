@@ -66,8 +66,12 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     @Published private(set) var mode: Mode = .starting
     @Published private(set) var statusText = "Starting camera…"
     @Published private(set) var renderedDropCount = 0
+    @Published private(set) var deferredContentCount = 0
     @Published private(set) var nearestDrop: GeoDrop?
     @Published private(set) var nearestDropDistance: CLLocationDistance?
+    var nearestDropIsRendered: Bool {
+        nearestDrop.map { sceneSelection.full.contains($0.id) && placedHolders[$0.id] != nil } ?? false
+    }
     /// Where the engine is actually rendering the nearest drop, relative to the
     /// camera — field-debugging lifeline when "nothing is visible".
     @Published private(set) var renderDiagnostics: String?
@@ -194,12 +198,17 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
     private var tickTask: Task<Void, Never>?
     private var frameSubscription: Cancellable?
+    private let sceneUpdates = SceneUpdateAdmission()
     private var demoDrops: [GeoDrop] = []
     /// ADR-025 Room Test mode: drops anchored purely in AR space (raycast surface),
     /// session-scoped, never persisted, and exempt from every geo positioner —
     /// indoors, GPS/compass/VPS are meters off by physics, so object features are
     /// tested against ARKit's room-scale tracking instead.
     private var roomDrops: [UUID: GeoDrop] = [:]
+    /// World poses survive visual eviction; Room Test data and authored edits do
+    /// not depend on whether a heavy model currently owns a scene slot.
+    private var roomWorldTransforms: [UUID: simd_float4x4] = [:]
+    private var latestRoomDropID: UUID?
     /// A tracking reset creates a new world coordinate system. Keep session-only
     /// Room Test drops camera-relative until a fresh, normally tracked frame can
     /// place them in that new system. Exact old-world registration is unavailable
@@ -218,6 +227,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var worldRoot: AnchorEntity?
     private var placedHolders: [UUID: Entity] = [:]
     private var placedDrops: [UUID: GeoDrop] = [:]
+    private var sceneSelection = SceneContentBudget.Selection()
+    private var geoAdmissionNeedsSync = false
+    private var memoryPressureUntil = Date.distantPast
+    private var sceneMemoryObserver: NSObjectProtocol?
     /// Way-point orbs above each drop: kept at a minimum apparent size from afar so
     /// the *location* is always findable while the content itself stays true-scale.
     private var markers: [UUID: ModelEntity] = [:]
@@ -334,6 +347,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     // Tier B bookkeeping
     private var geoAnchors: [AnchorEntity] = []
     private var geoAnchoredDropIDs: Set<UUID> = []
+    private var geoAnchorEntities: [UUID: AnchorEntity] = [:]
+    private var geoARAnchors: [UUID: ARGeoAnchor] = [:]
 
     // MARK: - Lifecycle
 
@@ -341,6 +356,17 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         self.arView = arView
         self.locationService = locationService
         self.library = library
+        if sceneMemoryObserver == nil {
+            sceneMemoryObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.memoryPressureUntil = Date().addingTimeInterval(60)
+                    self?.reconcileSceneAdmission()
+                }
+            }
+        }
         markCameraIntent()
 
         guard Self.isDeviceSupported else {
@@ -354,8 +380,12 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         arView.session.delegate = self
         decideModeAndRun()
         startTicking()
-        frameSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
-            MainActor.assumeIsolated {
+        let sceneUpdateGeneration = sceneUpdates.start()
+        frameSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self, sceneUpdates] _ in
+            guard let ticket = sceneUpdates.begin(generation: sceneUpdateGeneration) else { return }
+            Task { @MainActor [weak self] in
+                defer { sceneUpdates.finish(ticket) }
+                guard sceneUpdates.accepts(ticket) else { return }
                 self?.frameUpdate()
             }
         }
@@ -402,11 +432,16 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     }
 
     func detach() {
+        if let sceneMemoryObserver {
+            NotificationCenter.default.removeObserver(sceneMemoryObserver)
+            self.sceneMemoryObserver = nil
+        }
         sessionRunning = false
         cameraVisible = false
         invalidatePerceptionWork(reason: "detach")
         tickTask?.cancel()
         tickTask = nil
+        sceneUpdates.stop()
         frameSubscription?.cancel()
         frameSubscription = nil
         sessionFailed = false
@@ -418,6 +453,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         geospatial.stop()
         resetPlacements()
         pendingRoomRecovery.removeAll()
+        roomWorldTransforms.removeAll()
+        latestRoomDropID = nil
         lastNormalCameraTransform = nil
         arView?.session.pause()
         recordSessionPaused()
@@ -798,7 +835,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         )
         drop.assetName = assetName
         roomDrops[drop.id] = drop
-        placedDrops[drop.id] = drop
+        latestRoomDropID = drop.id
 
         // A baseline Room Test must not inherit an unrelated saved geo drop
         // selected before the operator places the intended fixture. Keep the
@@ -811,7 +848,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 "id=\(drop.id) asset=\(assetName ?? content.rawValue) source=roomSelection")
         }
 
-        let holder = makeHolder(for: drop)
+        let holder = Entity()
         let center = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
         if let hit = arView.raycast(from: center, allowing: .estimatedPlane, alignment: .any).first {
             let t = hit.worldTransform.columns.3
@@ -829,10 +866,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                          camera.translation.z - holder.position.z),
             axis: [0, 1, 0]
         )
-        ensureWorldRoot(in: arView).addChild(holder)
-        placedHolders[drop.id] = holder
-        DropEntityFactory.startAnimations(on: holder)
-        renderedDropCount = placedHolders.count
+        roomWorldTransforms[drop.id] = holder.transformMatrix(relativeTo: nil)
+        reconcileSceneAdmission()
         synchronizeAssetDemand()
         observeSelectedContentReadiness()
     }
@@ -845,6 +880,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             removePerDropState(id)
         }
         roomDrops.removeAll()
+        roomWorldTransforms.removeAll()
+        latestRoomDropID = nil
         pendingRoomRecovery.removeAll()
         renderedDropCount = placedHolders.count
     }
@@ -1064,15 +1101,22 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             for anchor in geoAnchors {
                 arView.scene.removeAnchor(anchor)
             }
+            for anchor in geoARAnchors.values {
+                arView.session.remove(anchor: anchor)
+            }
             if let worldRoot {
                 arView.scene.removeAnchor(worldRoot)
             }
         }
         geoAnchors.removeAll()
         geoAnchoredDropIDs.removeAll()
+        geoAnchorEntities.removeAll()
+        geoARAnchors.removeAll()
         worldRoot = nil
         placedHolders.removeAll()
         placedDrops.removeAll()
+        sceneSelection = .init()
+        geoAdmissionNeedsSync = false
         markers.removeAll()
         contentEntities.removeAll()
         groundDiscs.removeAll()
@@ -1086,6 +1130,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         // set grew unbounded across resets before.
         revealedDrops.removeAll()
         roomDrops.removeAll()
+        roomWorldTransforms.removeAll()
+        latestRoomDropID = nil
         placementBasis = nil
         headingCorrectionSin = 0
         headingCorrectionCos = 1
@@ -1104,6 +1150,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         vpsCorrectionTotals.removeAll()
         vpsCorrectionCm = nil
         renderedDropCount = 0
+        deferredContentCount = 0
         readyContentIDs.removeAll()
         timeToFirstHeroProxyMs = nil
 
@@ -1118,11 +1165,12 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             ?? arView.session.currentFrame?.camera.transform
             ?? arView.cameraTransform.matrix
         let placed = roomDrops.values.compactMap { drop -> RoomRecoveryPlacement? in
-            guard let holder = placedHolders[drop.id] else { return nil }
+            guard let transform = placedHolders[drop.id]?.transformMatrix(relativeTo: nil)
+                ?? roomWorldTransforms[drop.id] else { return nil }
             return RoomRecoveryPlacement(
                 drop: drop,
                 cameraRelativeTransform: Self.roomCameraRelativeTransform(
-                    camera: camera, holder: holder.transformMatrix(relativeTo: nil)),
+                    camera: camera, holder: transform),
                 hadGroundLock: groundLockBaseY[drop.id] != nil
             )
         }
@@ -1138,28 +1186,24 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
               Self.canRestoreRoomDrops(
                 frameCapturedAt: frame.timestamp, sessionRunAt: sessionRunSince,
                 trackingNormal: frame.camera.trackingState == .normal
-              ), let arView else { return }
-        let root = ensureWorldRoot(in: arView)
+              ) else { return }
         let restoring = pendingRoomRecovery
         pendingRoomRecovery.removeAll()
         for snapshot in restoring {
             let drop = snapshot.drop
             roomDrops[drop.id] = drop
-            placedDrops[drop.id] = drop
-            let holder = makeHolder(for: drop)
-            holder.transform = Transform(matrix: Self.reanchoredRoomTransform(
+            let transform = Self.reanchoredRoomTransform(
                 camera: frame.camera.transform,
-                relativeHolder: snapshot.cameraRelativeTransform))
-            root.addChild(holder)
-            placedHolders[drop.id] = holder
+                relativeHolder: snapshot.cameraRelativeTransform)
+            roomWorldTransforms[drop.id] = transform
             if snapshot.hadGroundLock {
                 // The lock stores the holder's world Y (as used by GPS/VPS),
                 // not a terrain reference with authored height subtracted.
-                groundLockBaseY[drop.id] = holder.position.y
+                groundLockBaseY[drop.id] = transform.columns.3.y
             }
-            DropEntityFactory.startAnimations(on: holder)
         }
-        renderedDropCount = placedHolders.count
+        latestRoomDropID = restoring.last?.drop.id
+        reconcileSceneAdmission()
         ARBaselineMetrics.shared.event("roomDropsReanchored", details:
             "count=\(restoring.count) generation=\(workGeneration) method=cameraRelativeApproximation")
         observeSelectedContentReadiness()
@@ -1394,6 +1438,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             lastNormalCameraTransform = frame.camera.transform
         }
         updateNearest()
+        reconcileSceneAdmission()
         applyRenderPathIfNeeded()
         updateWindowMode()
         updatePowerTier()
@@ -1521,7 +1566,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// particular, opening the app does not decode the entire bundled catalog.
     private var renderedAssetNames: Set<String> {
         Set(placedDrops.values.compactMap { drop -> String? in
-            drop.content == .animated ? drop.assetName : nil
+            drop.content == .animated && sceneSelection.full.contains(drop.id)
+                ? drop.assetName : nil
         })
     }
 
@@ -1537,11 +1583,13 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             DropEntityFactory.setAssetDemand(names, active: false)
             return
         }
-        if let drop = nearestDrop, drop.content == .animated, let name = drop.assetName {
+        if let drop = nearestDrop, sceneSelection.full.contains(drop.id),
+           drop.content == .animated, let name = drop.assetName {
             names.insert(name)
             priority = name
         }
         if let heroID = readiness?.heroID,
+           sceneSelection.full.contains(heroID),
            let selected = placedDrops[heroID] ?? eligibleDrops.first(where: { $0.id == heroID }),
            selected.content == .animated, let name = selected.assetName {
             names.insert(name)
@@ -1797,7 +1845,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Transitions are cheap and reversible: content entities are reused; only the
     /// positioning authority and the occluder set change.
     private func applyRenderPathIfNeeded() {
-        guard let arView, motionState != .unknown else { return }
+        guard arView != nil, motionState != .unknown else { return }
         let desired: RenderPath = motionState == .vehicular ? .transit : .pedestrian
         guard desired != renderPath else { return }
         renderPath = desired
@@ -1828,6 +1876,130 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         return nearby + demoDrops
     }
 
+    private var admittedGeoDrops: [GeoDrop] {
+        eligibleDrops.filter { sceneSelection.visible.contains($0.id) }
+    }
+
+    private func reconcileSceneAdmission() {
+        let location = locationService?.location
+        let cameraPosition = arView?.cameraTransform.translation
+        let selectedID = readiness?.heroID
+        let geoCandidates = eligibleDrops.map { drop in
+            SceneContentBudget.Candidate(
+                id: drop.id,
+                distance: location.map { drop.location.distance(from: $0) } ?? 0,
+                cost: Self.sceneContentCost(drop),
+                sourceBytes: Self.sceneSourceBytes(drop),
+                selected: drop.id == selectedID || drop.id == nearestDrop?.id,
+                editing: liveEditingDrops.contains(drop.id) || drop.id == editingDropID
+            )
+        }
+        let roomCandidates = roomDrops.values.compactMap { drop -> SceneContentBudget.Candidate? in
+            guard let transform = placedHolders[drop.id]?.transformMatrix(relativeTo: nil)
+                ?? roomWorldTransforms[drop.id] else { return nil }
+            let translation = transform.columns.3
+            let position = SIMD3<Float>(translation.x, translation.y, translation.z)
+            return SceneContentBudget.Candidate(
+                id: drop.id,
+                distance: cameraPosition.map { Double(simd_length(position - $0)) } ?? 0,
+                cost: Self.sceneContentCost(drop),
+                sourceBytes: Self.sceneSourceBytes(drop),
+                selected: drop.id == selectedID || drop.id == nearestDrop?.id
+                    || drop.id == latestRoomDropID,
+                editing: liveEditingDrops.contains(drop.id) || drop.id == editingDropID
+            )
+        }
+        let thermal = ProcessInfo.processInfo.thermalState
+        let pressure: SceneContentBudget.Pressure
+        if !cameraVisible || !sessionRunning || isInterrupted || sessionFailed {
+            pressure = thermal == .serious || thermal == .critical
+                || currentPerceptionPlan.recoveringFromCritical || Date() < memoryPressureUntil
+                ? .hiddenPressure : .hidden
+        } else if thermal == .critical || currentPerceptionPlan.recoveringFromCritical {
+            pressure = .critical
+        } else if thermal == .serious || Date() < memoryPressureUntil {
+            pressure = .serious
+        } else {
+            pressure = .normal
+        }
+        let next = SceneContentBudget.select(geoCandidates + roomCandidates,
+                                             previous: sceneSelection, pressure: pressure)
+        if next.visible != sceneSelection.visible || next.full != sceneSelection.full {
+            geoAdmissionNeedsSync = true
+            ARBaselineMetrics.shared.event("Scene content admission", details:
+                "full=\(next.full.count) cues=\(next.cues.count) unloaded=\(next.unloadedCount) pressure=\(pressure)")
+        }
+        sceneSelection = next
+        deferredContentCount = next.unloadedCount
+        for id in Set(placedHolders.keys).subtracting(roomDrops.keys) {
+            if !next.visible.contains(id) {
+                removePerDropState(id)
+            } else if let drop = placedDrops[id],
+                      next.full.contains(id) != (contentEntities[id] != nil) {
+                replaceHolderContent(for: drop, fullContent: next.full.contains(id))
+            }
+        }
+        reconcileRoomPlacements()
+        renderedDropCount = placedHolders.count
+        synchronizeAssetDemand()
+    }
+
+    /// Bounded relative work units: text and particles cost more than simple
+    /// meshes; USDZ clones receive the maximum cost regardless of file size.
+    /// The model's decoded geometry and texture residency require device
+    /// measurement and are not inferred from its compressed source bytes.
+    private static func sceneContentCost(_ drop: GeoDrop) -> Int {
+        switch drop.content {
+        case .animated: return 4
+        case .fireworks: return 3
+        case .text3D: return drop.message.unicodeScalars.prefix(81).count > 80 ? 3 : 2
+        case .balloons, .gift, .heart: return 2
+        case .beacon: return 1
+        }
+    }
+
+    private static func sceneSourceBytes(_ drop: GeoDrop) -> Int {
+        guard drop.content == .animated else { return 0 }
+        guard let name = drop.assetName else { return 0 } // explicit 3D? marker
+        if DropEntityFactory.isAssetFailed(name) { return 0 }
+        return DropEntityFactory.assetSourceBytes(name) ?? .max
+    }
+
+    private func reconcileRoomPlacements() {
+        guard let arView else { return }
+        for id in roomDrops.keys where !sceneSelection.visible.contains(id) {
+            unloadRoomVisual(id)
+        }
+        for (id, drop) in roomDrops where sceneSelection.visible.contains(id) {
+            guard let transform = roomWorldTransforms[id] else { continue }
+            if placedHolders[id] == nil {
+                let holder = makeHolder(for: drop, fullContent: sceneSelection.full.contains(id))
+                ensureWorldRoot(in: arView).addChild(holder)
+                holder.setTransformMatrix(transform, relativeTo: nil)
+                placedHolders[id] = holder
+                placedDrops[id] = drop
+                DropEntityFactory.startAnimations(on: holder)
+            } else if sceneSelection.full.contains(id) != (contentEntities[id] != nil) {
+                replaceHolderContent(for: drop, fullContent: sceneSelection.full.contains(id))
+            }
+        }
+    }
+
+    private func unloadRoomVisual(_ id: UUID) {
+        guard let holder = placedHolders[id] else { return }
+        roomWorldTransforms[id] = holder.transformMatrix(relativeTo: nil)
+        holder.removeFromParent()
+        placedHolders[id] = nil
+        placedDrops[id] = nil
+        markers[id] = nil
+        contentEntities[id] = nil
+        groundDiscs[id] = nil
+        readyContentIDs.remove(id)
+        revealedDrops.remove(id)
+        deferredTargets[id] = nil
+        deferredVPSTransforms[id] = nil
+    }
+
     /// Wave D (counsel SWE-5/SWE-12): EVERY site that destroys a drop's
     /// presence goes through here. Per-drop state lives in many parallel maps
     /// and the three old ad-hoc cleanup loops each forgot a different subset —
@@ -1835,6 +2007,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// `.full` for the rest of the session (thermal `.serious` inside 10 min).
     private func removePerDropState(_ id: UUID) {
         placedHolders[id]?.removeFromParent()
+        if let anchor = geoAnchorEntities.removeValue(forKey: id) {
+            arView?.scene.removeAnchor(anchor)
+            geoAnchors.removeAll { $0 === anchor }
+        }
+        if let anchor = geoARAnchors.removeValue(forKey: id) {
+            arView?.session.remove(anchor: anchor)
+        }
+        geoAnchoredDropIDs.remove(id)
         placedHolders[id] = nil
         placedDrops[id] = nil
         markers[id] = nil
@@ -1878,7 +2058,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             let camPos = arView.cameraTransform.translation
             let nearest = roomDrops.keys
                 .compactMap { id in
-                    placedHolders[id].map { (id, simd_length($0.position - camPos)) }
+                    let position = placedHolders[id]?.position
+                        ?? roomWorldTransforms[id].map { SIMD3($0.columns.3.x, $0.columns.3.y, $0.columns.3.z) }
+                    return position.map { (id, simd_length($0 - camPos)) }
                 }
                 .min { $0.1 < $1.1 }
             if let (id, distance) = nearest {
@@ -1938,7 +2120,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         updateHeadingCorrection(frame: frame, alpha: renderPath == .transit ? 0.2 : 0.08)
 
         if renderPath == .transit {
-            tickTransit(drops: eligibleDrops)
+            tickTransit(drops: admittedGeoDrops)
             return
         }
 
@@ -1950,8 +2132,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             return
         }
 
-        let drops = eligibleDrops
+        let drops = admittedGeoDrops
         let dropIDs = Set(drops.map(\.id))
+        let placedGeoIDs = Set(placedHolders.keys).subtracting(roomDrops.keys)
 
         // ADR-037: ask Google whether VPS coverage even exists here (re-checked
         // per ~300 m of movement) — no coverage ⇒ no convergence sprinting.
@@ -1961,13 +2144,13 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         vpsStatusText = geospatial.statusText
         vpsLocked = geospatial.isAccuratelyLocalized
         if geospatial.isAccuratelyLocalized {
-            for drop in drops {
+            for drop in drops where sceneSelection.full.contains(drop.id) {
                 geospatial.requestAnchor(for: drop, viewer: fix)
             }
         }
 
         let trackingNormal = frame.camera.trackingState == .normal
-        if placementBasis == nil || dropIDs != Set(placedHolders.keys) {
+        if placementBasis == nil || dropIDs != placedGeoIDs || geoAdmissionNeedsSync {
             // Place instantly with whatever fix quality we have. Wave B review
             // (C5/C11/C17): while tracking is limited the basis stays unlatched
             // — re-syncing every 400 ms tick would hard-snap placed content for
@@ -1975,7 +2158,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             // is real work: the first spawn, a drop-set change, or a normal
             // pose ready to latch the basis.
             if trackingNormal || placedHolders.isEmpty
-                || dropIDs != Set(placedHolders.keys) {
+                || dropIDs != placedGeoIDs || geoAdmissionNeedsSync {
                 syncGPSPlacements(
                     drops: drops, fix: fix, frame: frame,
                     animated: !placedHolders.isEmpty
@@ -2055,6 +2238,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         for drop in drops {
             guard let enu = GeoMath.checkedENUOffset(from: fix.coordinate, to: drop.coordinate) else { continue }
             seen.insert(drop.id)
+            if placedHolders[drop.id] != nil,
+               sceneSelection.full.contains(drop.id) != (contentEntities[drop.id] != nil) {
+                replaceHolderContent(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+            }
             if !liveEditingDrops.contains(drop.id) {
                 placedDrops[drop.id] = drop
                 synchronizePhysicalSize(for: drop.id, authoredScale: drop.scale)
@@ -2108,7 +2295,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                     holder.position = target
                 }
             } else {
-                let holder = makeHolder(for: drop)
+                let holder = makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
                 holder.position = target
                 // Oriented once — then fixed forever, like a signboard. Never
                 // billboarded, never rescaled: real perspective and parallax are
@@ -2151,6 +2338,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             lastRefinementSync = Date()
         }
         renderedDropCount = placedHolders.count
+        geoAdmissionNeedsSync = false
 
         observeSelectedContentReadiness()
     }
@@ -2158,7 +2346,20 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Content shared by both render paths: content + grounding disc + way-point
     /// orb. (The v0.3 ground pillar is gone — ADR-027, field verdict "looks weird
     /// with the object"; the orb + disc + guidance arrow carry findability.)
-    private func makeHolder(for drop: GeoDrop) -> Entity {
+    private func makeHolder(for drop: GeoDrop, fullContent: Bool = true) -> Entity {
+        if !fullContent {
+            // One mesh and one material per unloaded location. A nearby cue
+            // remains visible even when its full content is outside the budget.
+            let holder = Entity()
+            let marker = ModelEntity(
+                mesh: .generateSphere(radius: 0.25),
+                materials: [UnlitMaterial(color: drop.uiColor)]
+            )
+            marker.position = [0, 1.25, 0]
+            holder.addChild(marker)
+            markers[drop.id] = marker
+            return holder
+        }
         // Round 4 (counsel arui-1): a model that failed to decode BEFORE this
         // manager existed (launch preload) still gets announced — render-time
         // state, not a decode-time event nobody heard. Round 6 (arui-6): once
@@ -2218,6 +2419,25 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             to: content
         )
         return holder
+    }
+
+    /// Change detail without moving its world pose or replacing an owning
+    /// anchor. Removing the old subtree also releases its model clone, effects,
+    /// animation controllers, materials and meshes from this scene.
+    private func replaceHolderContent(for drop: GeoDrop, fullContent: Bool) {
+        guard let old = placedHolders[drop.id], let parent = old.parent else { return }
+        let transform = old.transform
+        old.removeFromParent()
+        contentEntities[drop.id] = nil
+        groundDiscs[drop.id] = nil
+        markers[drop.id] = nil
+        readyContentIDs.remove(drop.id)
+        let replacement = makeHolder(for: drop, fullContent: fullContent)
+        replacement.transform = transform
+        parent.addChild(replacement)
+        placedHolders[drop.id] = replacement
+        placedDrops[drop.id] = drop
+        DropEntityFactory.startAnimations(on: replacement)
     }
 
     /// Apply an authored scale to already rendered content. Called for live edits,
@@ -2454,9 +2674,12 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// ADR-032: a background-decoded model just landed — replace the placeholder
     /// orb of every drop waiting on it, keeping pose/world-lock untouched.
     private func assetTemplateDidLoad(_ name: String) {
-        for (id, drop) in placedDrops
-        where drop.content == .animated && drop.assetName == name {
-            guard !readyContentIDs.contains(id), let holder = placedHolders[id] else { continue }
+        let replaceable = Self.pendingAssetReplacementIDs(
+            name: name, drops: placedDrops,
+            fullContentIDs: sceneSelection.full, readyContentIDs: readyContentIDs
+        )
+        for id in replaceable {
+            guard let drop = placedDrops[id], let holder = placedHolders[id] else { continue }
             contentEntities[id]?.removeFromParent()
             let fresh = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
             holder.addChild(fresh)
@@ -2465,6 +2688,19 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             synchronizePhysicalSize(for: id, authoredScale: drop.scale, force: true)
             DropEntityFactory.startAnimations(on: fresh)
         }
+    }
+
+    /// The same asset may be shared by a full model and a cue. A late decode
+    /// must update only IDs that still own a full-content slot.
+    static func pendingAssetReplacementIDs(
+        name: String, drops: [UUID: GeoDrop],
+        fullContentIDs: Set<UUID>, readyContentIDs: Set<UUID>
+    ) -> Set<UUID> {
+        Set(drops.compactMap { id, drop in
+            drop.content == .animated && drop.assetName == name
+                && fullContentIDs.contains(id) && !readyContentIDs.contains(id)
+                ? id : nil
+        })
     }
 
     /// ADR-041 "pin to this exact spot": the user tapped a real-world point in
@@ -2559,6 +2795,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// world-lock and VPS ownership are unaffected.
     private func rebuildContentEntities() {
         for (id, holder) in placedHolders {
+            guard sceneSelection.full.contains(id) else { continue }
             guard let drop = placedDrops[id] else { continue }
             contentEntities[id]?.removeFromParent()
             let fresh = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
@@ -2814,12 +3051,16 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         var seen: Set<UUID> = []
         for drop in drops {
             seen.insert(drop.id)
+            if placedHolders[drop.id] != nil,
+               sceneSelection.full.contains(drop.id) != (contentEntities[drop.id] != nil) {
+                replaceHolderContent(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+            }
             if !liveEditingDrops.contains(drop.id) {
                 placedDrops[drop.id] = drop
                 synchronizePhysicalSize(for: drop.id, authoredScale: drop.scale)
             }
             if placedHolders[drop.id] == nil {
-                let holder = makeHolder(for: drop)
+                let holder = makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
                 root.addChild(holder)
                 placedHolders[drop.id] = holder
                 DropEntityFactory.startAnimations(on: holder)
@@ -2960,6 +3201,13 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         for (id, marker) in markers {
             guard let holder = placedHolders[id] else { continue }
             let distance = simd_length(holder.position - camPos)
+            if !sceneSelection.full.contains(id) {
+                marker.isEnabled = true
+                let requiredDiameter = 2 * distance * tanHalfAngle
+                marker.scale = SIMD3(repeating: min(max(1, requiredDiameter / 0.5),
+                                                    AppConfig.maxDistanceBoost))
+                continue
+            }
             if distance < 25 {
                 marker.isEnabled = false // close enough — the content speaks for itself
                 // ADR-046: first arrival earns a celebration burst.
@@ -2971,9 +3219,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                             burst.position = [0, content.visualBounds(relativeTo: holder).center.y, 0]
                         }
                         holder.addChild(burst)
-                        Task { @MainActor in
+                        Task { @MainActor [weak burst] in
                             try? await Task.sleep(nanoseconds: 2_500_000_000)
-                            burst.removeFromParent()
+                            burst?.removeFromParent()
                         }
                     }
                 }
@@ -3023,7 +3271,19 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
 
-        for drop in eligibleDrops where !geoAnchoredDropIDs.contains(drop.id) {
+        let drops = admittedGeoDrops
+        let seen = Set(drops.map(\.id))
+        for id in geoAnchoredDropIDs.subtracting(seen) {
+            removePerDropState(id)
+        }
+        for drop in drops {
+            if geoAnchoredDropIDs.contains(drop.id) {
+                placedDrops[drop.id] = drop
+                if sceneSelection.full.contains(drop.id) != (contentEntities[drop.id] != nil) {
+                    replaceHolderContent(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+                }
+                continue
+            }
             // Altitude omitted on purpose: ARKit resolves the ground elevation itself.
             let geoAnchor = ARGeoAnchor(coordinate: drop.coordinate)
             arView.session.add(anchor: geoAnchor)
@@ -3031,7 +3291,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             // Target-by-identifier avoids the ARAnchor convenience initializer's
             // missing back-deployment symbol with Xcode 26.6 on iOS 17.
             let anchorEntity = AnchorEntity(.anchor(identifier: geoAnchor.identifier))
-            let entity = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
+            let entity = makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
             entity.position.y = Float(drop.heightAboveGround)
             // Geo anchor local frame: +X east, −Z north. Face the viewer's position.
             if let viewer = locationService?.location {
@@ -3044,9 +3304,13 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             arView.scene.addAnchor(anchorEntity)
             DropEntityFactory.startAnimations(on: entity)
             geoAnchors.append(anchorEntity)
+            geoAnchorEntities[drop.id] = anchorEntity
+            geoARAnchors[drop.id] = geoAnchor
             geoAnchoredDropIDs.insert(drop.id)
+            placedHolders[drop.id] = entity
+            placedDrops[drop.id] = drop
         }
-        renderedDropCount = geoAnchoredDropIDs.count
+        renderedDropCount = placedHolders.count
     }
 }
 

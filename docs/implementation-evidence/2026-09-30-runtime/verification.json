@@ -1,0 +1,104 @@
+{
+  "checkedAt": "2026-09-29T23:12:31.661901+00:00",
+  "baseCommit": "243eed43fa2b9facd9b9dd3f289d36da2f0d4751",
+  "sourceAggregateSHA256": "c1992d3dbc9d483744f1c2c7a00637eba45bb8336c08129b2149c9ef928e1d66",
+  "sourceState": "uncommitted working tree",
+  "xcode": "Xcode 26.6\nBuild version 17F113",
+  "sdk": "26.5",
+  "sourceFingerprintVerified": true,
+  "phoneUsed": false,
+  "phoneInstalledRevision": "243eed4 (previous batch)",
+  "configurationExclusions": [
+    "GoogleService-Info.plist",
+    "Secrets.plist"
+  ],
+  "liveFirebaseIntegrationTests": "excluded; disposable local native Firestore emulator contract passed on current lane",
+  "debugSimulatorBuild": "passed",
+  "unsignedReleaseDeviceBuild": "passed",
+  "tests": {
+    "current": {
+      "totalTestCount": 267,
+      "passedTests": 267,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    },
+    "minimum": {
+      "totalTestCount": 267,
+      "passedTests": 266,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "result": "Passed"
+    },
+    "tsan": {
+      "totalTestCount": 30,
+      "passedTests": 30,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    }
+  },
+  "minimumSkipReason": "opt-in native emulator contract exercised in current lane",
+  "threadSanitizer": {
+    "runtimeLinked": true,
+    "reportedRaces": 0,
+    "scope": "30 selected simulator ownership and lifecycle tests; not physical RealityKit safety proof"
+  },
+  "swift6": {
+    "wholeAppSILCompile": "blocked",
+    "remainingErrorCount": 19,
+    "remainingFile": "AugmentMeReality/Services/DropStore.swift",
+    "modifiedARBoundaryDiagnostics": 0,
+    "productionLanguageMode": 5,
+    "typecheckAloneIsInsufficient": true
+  },
+  "releaseDiagnosticGate": {
+    "passed": true,
+    "baselineAppWarnings": 114,
+    "finalAppWarnings": 19,
+    "ARBoundaryDiagnostics": 0,
+    "allRequiredBoundariesCompiled": true
+  },
+  "otherChecks": {
+    "diagnosticGateTests": 5,
+    "gitDiffCheck": "passed",
+    "ciYAML": "parsed",
+    "emojiAndReactionDriftLocks": "passed"
+  },
+  "logs": {
+    "build.log": {
+      "path": "/tmp/amr-runtime-sep30/build.log",
+      "sha256": "913142e17fb2ac71cadf78996a59944e6d6b38b066a7cd821bd6c93e438ca666"
+    },
+    "native-tests.log": {
+      "path": "/tmp/amr-runtime-sep30/native-tests.log",
+      "sha256": "15bf03691c427e3d2bc78daf254c3acf85fb51650c325747a1b1bb9383150fbb"
+    },
+    "minimum-tests.log": {
+      "path": "/tmp/amr-runtime-sep30/minimum-tests.log",
+      "sha256": "788cfb8ab7830835e3c9a09f354c03e322396c827c7d9736d8dde4c3f1084be5"
+    },
+    "release.log": {
+      "path": "/tmp/amr-runtime-sep30/release.log",
+      "sha256": "6cbc3da180ae0d30155e6f57f1d6b91ea7f671a69c802e4fbe75905671a05ad6"
+    },
+    "tsan-tests.log": {
+      "path": "/tmp/amr-runtime-sep30/tsan-tests.log",
+      "sha256": "cdd7fb5f6f7a89a715357fe42b9f83f37b9d52aae19b9c6a05979616fa933bd4"
+    },
+    "swift6-final.log": {
+      "path": "/tmp/amr-runtime-sep30/swift6-final.log",
+      "sha256": "2d00a43cdd800b20f27ee5e4d1bf5e6dc5e1ac44903f5e5a7521a2d96d376746"
+    }
+  },
+  "remaining": [
+    "storage ownership migration",
+    "remote CI execution",
+    "clean/Release launch acceptance",
+    "live RealityKit compute overlapping teardown on physical hardware",
+    "render-history ordering across command buffers",
+    "decoded resource and total-process memory profiling",
+    "startup and sustained physical thermal/frame-pacing acceptance",
+    "subsequent placement, depth, realism and release issues"
+  ]
+}
