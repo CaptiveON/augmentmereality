@@ -143,15 +143,17 @@ drop renders visibly through the pane (no invisible-wall cutoff, no holes from y
 reflection); step away from the window toward an open view and the chip clears within
 a few seconds. **Record:** chip timing, any flicker during the transition.
 
-**FT-33 · Apparent size vs distance (ADR-049).** Place a drop of known height (scale-3
-text ≈ 1.8 m), then view it from ~15 m, ~50 m, and ~150 m. The HUD metrics line now
-appends the rendered angular size and the perceptual factor (e.g. `· 1.9° ×2.3`).
-**Record:** at each distance, the readout pair + one screenshot. **Pass:** (1) the
-degree number matches 2·atan(h/2d)·(factor folded in) within ~10 %; (2) the object
-still clearly GROWS while walking toward it and never pops; (3) the gut-check — "a
-giant far away," not "a toy nearby" and not "a sticker pinned to the scene." If the
-gut-check fails, tune `perceptualBeta` (0.25–0.45) / `perceptualCap` in AppConfig
-before touching any other code.
+**FT-33 · Fixed physical size while walking (supersedes ADR-049's compensation test).**
+Place content with known authored dimensions, then walk a 5–60–5 m route through
+its old 8 m compensation threshold, orbit it, and compare it with a measured real
+reference. The HUD reports angular size without a compensation factor.
+**Record:** distance, authored dimensions, angular readout and screenshots.
+**Pass:** world dimensions and grounding footprint remain unchanged; the angular
+size follows `2·atan(h/(2d))` within measurement tolerance; approach/retreat is
+continuous. Repeat for an asset that finishes loading after a size edit and for
+Natural/Bright changes. The separate waypoint marker may grow for readability;
+its size must never alter the content or grounding disc. No test result is
+recorded yet for the September 29 implementation.
 
 **FT-34 · Person occlusion actually engages (Wave B, ARP-1/ARP-2).** Pro (LiDAR)
 device, portrait, a drop 3–8 m away: have someone walk between you and the content.

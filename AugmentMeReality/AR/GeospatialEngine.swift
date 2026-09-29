@@ -42,6 +42,12 @@ final class GeospatialEngine {
     private(set) var semanticSupported = false
     private var configuration: GARSessionConfiguration?
     private var workAdmission = PerceptionWorkAdmission()
+    private var captureSubmission = CaptureSubmissionGate()
+    private enum RuntimeOperation: String {
+        case update, transform, semantics
+    }
+    private var runtimeFailureCounts: [RuntimeOperation: UInt64] = [:]
+    private var lastRuntimeFailureLog: [RuntimeOperation: TimeInterval] = [:]
     var isAvailable: Bool { garSession != nil }
     /// If ARCore refuses a semantic disable, stop feeding it until a later
     /// policy update successfully retries that configuration. Otherwise its
@@ -164,6 +170,7 @@ final class GeospatialEngine {
             if let error { throw error }
             self.configuration = configuration
             garSession = session
+            captureSubmission.reset()
             state = .searching
             ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
             ARBaselineMetrics.shared.setWorkload("GAR session", enabled: true)
@@ -188,8 +195,8 @@ final class GeospatialEngine {
     func checkCoverage(at coordinate: CLLocationCoordinate2D) {
         guard let token = workAdmission.token, let garSession else { return }
         if let last = lastCoverageCheck {
-            let moved = GeoMath.enuOffset(from: last, to: coordinate)
-            guard simd_length(moved) > 300 else { return }
+            if let moved = GeoMath.checkedENUOffset(from: last, to: coordinate),
+               simd_length(moved) <= 300 { return }
         }
         lastCoverageCheck = coordinate
         garSession.checkVPSAvailability(coordinate: coordinate) { [weak self] availability in
@@ -207,10 +214,13 @@ final class GeospatialEngine {
         guard let garSession, case .localized(let h, _) = state else { return nil }
         var transform = matrix_identity_float4x4
         transform.columns.3 = SIMD4(worldPosition.x, worldPosition.y, worldPosition.z, 1)
-        guard let geo = try? garSession.geospatialTransform(transform: transform) else {
+        do {
+            let geo = try garSession.geospatialTransform(transform: transform)
+            return (geo.coordinate, max(h, geo.horizontalAccuracy))
+        } catch {
+            recordRuntimeFailure(.transform, error: error)
             return nil
         }
-        return (geo.coordinate, max(h, geo.horizontalAccuracy))
     }
 
     /// ADR-035: toggle Google's semantic segmentation NN at runtime. GARSession
@@ -225,8 +235,8 @@ final class GeospatialEngine {
         configuration.semanticMode = on ? .enabled : .disabled
         var error: NSError?
         garSession.setConfiguration(configuration, error: &error)
-        guard error == nil else {
-            ARBaselineMetrics.shared.event("GAR semantics configuration failed")
+        if let error {
+            recordRuntimeFailure(.semantics, error: error)
             return
         }
         semanticActive = on
@@ -243,6 +253,7 @@ final class GeospatialEngine {
         ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
         ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
         garSession = nil
+        captureSubmission.reset()
         anchorIDToDropID.removeAll()
         requestedDrops.removeAll()
         resolvedDrops.removeAll()
@@ -275,6 +286,7 @@ final class GeospatialEngine {
     /// and the occluder entities this engine maintains in the scene.
     func update(with frame: ARFrame) {
         guard canUpdate, let token = workAdmission.token, let garSession else { return }
+        guard captureSubmission.admit(frame.timestamp) else { return }
         let metrics = ARBaselineMetrics.shared
         let updatedFrame: GARFrame?
         do {
@@ -283,7 +295,7 @@ final class GeospatialEngine {
             metrics.observe("GAR update")
             updatedFrame = try garSession.update(frame)
         } catch {
-            metrics.event("GAR update failed")
+            recordRuntimeFailure(.update, error: error)
             return
         }
         guard let garFrame = updatedFrame else {
@@ -313,6 +325,20 @@ final class GeospatialEngine {
                 generation: token.sessionGeneration
             )
         }
+    }
+
+    /// Keep fixed-size counters and a rate-limited error identity. SDK domain and
+    /// code are enough to diagnose failures without logging keys or scene data.
+    private func recordRuntimeFailure(_ operation: RuntimeOperation, error: Error) {
+        let count = (runtimeFailureCounts[operation] ?? 0) &+ 1
+        runtimeFailureCounts[operation] = count
+        let now = ProcessInfo.processInfo.systemUptime
+        guard lastRuntimeFailureLog[operation].map({ now - $0 >= 10 }) ?? true else { return }
+        lastRuntimeFailureLog[operation] = now
+        let failure = error as NSError
+        log.error("GAR \(operation.rawValue, privacy: .public) failed: \(failure.domain, privacy: .public) code=\(failure.code) count=\(count)")
+        ARBaselineMetrics.shared.event("GAR runtime failure", details:
+            "operation=\(operation.rawValue) domain=\(failure.domain) code=\(failure.code) count=\(count)")
     }
 
     private func updateState(earth: GAREarth) {
@@ -497,6 +523,7 @@ final class GeospatialEngine {
     /// main-thread class ADR-032 banned for USDZ, resurrected for buildings).
     private let meshQueue = DispatchQueue(label: "streetscape-mesh", qos: .userInitiated)
     private var meshBuildsInFlight: [UUID: PerceptionWorkAdmission.Token] = [:]
+    private var meshWorkBudget = OutstandingWorkBudget(limit: 8)
     /// Round 2 (counsel STATE-8): geometry ids present in the LATEST update,
     /// readable from the mesh queue — the relevance check runs BEFORE the
     /// expensive extraction, so a departed building costs nothing.
@@ -516,11 +543,6 @@ final class GeospatialEngine {
         }
     }
     private let seenGeometry = SeenGeometryBox()
-    /// Round 2 (counsel STATE-8): builds admitted per sync pass — a corner
-    /// turn streaming a dense block queues the NEAREST few; the rest re-offer
-    /// on later frames instead of pinning N vertex buffers in a backlog.
-    private static let meshBuildBudgetPerPass = 8
-
     private func syncOccluders(_ geometries: [GARStreetscapeGeometry]) {
         guard let token = workAdmission.token, let arView else { return }
         let camPos = arView.cameraTransform.translation
@@ -540,7 +562,8 @@ final class GeospatialEngine {
         seenGeometry.replace(seen, token: token)
         // Nearest first — the buildings most likely to occlude content now.
         for build in pending.sorted(by: { $0.distance < $1.distance })
-            .prefix(Self.meshBuildBudgetPerPass) {
+            .prefix(meshWorkBudget.available) {
+            guard let ticket = meshWorkBudget.begin() else { break }
             let id = build.id
             let geometry = build.geometry
             meshBuildsInFlight[id] = token
@@ -551,6 +574,7 @@ final class GeospatialEngine {
                 // streamed out while queued costs zero mesh work.
                 guard seenGeometry.contains(id, token: token) else {
                     Task { @MainActor [weak self] in
+                        self?.meshWorkBudget.finish(ticket)
                         if self?.meshBuildsInFlight[id] == token {
                             self?.meshBuildsInFlight[id] = nil
                         }
@@ -566,6 +590,7 @@ final class GeospatialEngine {
                 }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    self.meshWorkBudget.finish(ticket)
                     guard self.workAdmission.accepts(token),
                           self.meshBuildsInFlight[id] == token else { return }
                     self.meshBuildsInFlight[id] = nil

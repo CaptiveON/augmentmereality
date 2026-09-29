@@ -106,9 +106,9 @@ enum DropStoreError: LocalizedError {
 enum LocalLoadOutcome: Equatable, Sendable {
     /// File present, every row decoded. `rowCount` may legitimately be 0.
     case clean(rowCount: Int)
-    /// File present; some rows skipped (preserved in a sidecar). Round 14
-    /// (counsel loss-ledger): the ids of the unreadable rows, where their id
-    /// field still decoded — the durable loss record is built from these.
+    /// File present; some rows skipped (preserved in a sidecar). IDs are
+    /// reported only where their field still decoded; `skipped` includes
+    /// entries with no recoverable identifier.
     case skippedRows(loaded: Int, skipped: Int, lostIDs: [UUID])
     /// Whole file unreadable; quarantined.
     case quarantinedWholeFile
@@ -125,8 +125,24 @@ enum LocalLoadOutcome: Equatable, Sendable {
 protocol LocalStoreDiagnostics: AnyObject {
     func lastLoadOutcome() async -> LocalLoadOutcome?
     func lastLoadReadWarning() async -> String?
+    func lastStorageIncident() async -> StorageIncidentObservation?
     /// User acknowledged the incident banner — resolve the journal.
     func acknowledgeIncident() async
+}
+
+extension LocalStoreDiagnostics {
+    func lastStorageIncident() async -> StorageIncidentObservation? { nil }
+}
+
+/// An observation describes what the local reader actually established. A
+/// whole-file failure has unknown extent; a skipped row can have no decodable
+/// id. Neither state proves that the original bytes were irreversibly lost.
+struct StorageIncidentObservation: Sendable {
+    enum Kind: String, Codable, Sendable { case skippedRows, wholeFile, readFailure }
+    let identity: String
+    let kind: Kind
+    let unreadableIDs: Set<UUID>
+    let unidentifiedRowCount: Int?
 }
 
 /// JSON-file persistence in Application Support.
@@ -138,11 +154,17 @@ protocol LocalStoreDiagnostics: AnyObject {
 /// created drop vanishing from disk).
 actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     private let fileURL: URL
+    nonisolated let lossLedgerURL: URL
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "store")
     /// Transient verdict of the LAST load (skipped-rows message; nil when clean).
     private var pendingReadWarning: String?
+    private var acknowledgementError: String?
     /// Round 6: the machine-checkable outcome of the last load.
     private var lastOutcome: LocalLoadOutcome?
+    private var lastObservation: StorageIncidentObservation?
+    /// A save/delete must never replace unreadable bytes unless an exact
+    /// recovery copy is already on disk, or the whole file moved to quarantine.
+    private var canRewriteAfterLoad = true
 
     /// Round 4 (counsel sync-2/flows-2): destructive outcomes are INCIDENTS,
     /// journaled durably at the moment of destruction — never a level
@@ -158,12 +180,14 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     init(fileURL: URL? = nil) {
         if let fileURL {
             self.fileURL = fileURL
+            self.lossLedgerURL = fileURL.appendingPathExtension("lossledger")
             return
         }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let directory = support.appendingPathComponent("AugmentMeReality", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.fileURL = directory.appendingPathComponent("drops.json")
+        self.lossLedgerURL = self.fileURL.appendingPathExtension("lossledger")
     }
 
     /// Wave C (counsel SWE-9): one bad row must never wipe the library.
@@ -196,6 +220,8 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
             // not evidence of health; the quarantine is what made it vanish).
             pendingReadWarning = nil
             lastOutcome = .absentFile
+            lastObservation = nil
+            canRewriteAfterLoad = true
             return []
         }
         let data: Data
@@ -205,7 +231,15 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
             // Round 4 (sync-3): a read failure is itself a visible incident,
             // recorded BEFORE the rethrow so no caller can lose it.
             lastOutcome = .readFailed
-            writeIncident("Your saved drops couldn't be read — check free space and relaunch")
+            canRewriteAfterLoad = false
+            let failure = error as NSError
+            lastObservation = StorageIncidentObservation(
+                identity: "read:\(contentDigest(Data("\(fileURL.path):\(failure.domain):\(failure.code)".utf8)))",
+                kind: .readFailure, unreadableIDs: [], unidentifiedRowCount: nil
+            )
+            let message = "Your saved drops couldn't be read — check free space and relaunch"
+            pendingReadWarning = message
+            writeIncident(message)
             throw error
         }
         do {
@@ -217,16 +251,25 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
                 lastOutcome = .skippedRows(
                     loaded: drops.count, skipped: dropped, lostIDs: lostIDs
                 )
+                let identity = "rows:\(contentDigest(data))"
+                lastObservation = StorageIncidentObservation(
+                    identity: identity, kind: .skippedRows,
+                    unreadableIDs: Set(lostIDs),
+                    unidentifiedRowCount: dropped - lostIDs.count
+                )
+                let preserved = preserveUnreadable(data)
+                canRewriteAfterLoad = preserved
                 // Round 14 (counsel surf-lens-1): an ACKNOWLEDGED incident is
                 // suppressed by content digest — the banner stays down for
                 // exactly these bytes, and NOTHING is deleted. New or changed
                 // bad content re-raises the incident.
-                if contentDigest(data) == acknowledgedDigest() {
-                    pendingReadWarning = nil
+                if acknowledgedDigest() == identity
+                    || acknowledgedDigest() == shortContentDigest(data) {
+                    pendingReadWarning = preserved ? nil
+                        : "Unreadable saved drops couldn't be backed up — editing is paused"
                 } else {
                     // Round 10 (counsel lens-6): the "kept on disk" claim is
                     // made only when the sidecar write actually succeeded.
-                    let preserved = preserveUnreadable(data)
                     let noun = dropped == 1 ? "1 saved drop" : "\(dropped) saved drops"
                     let message = preserved
                         ? "\(noun) couldn't be read (original kept on disk)"
@@ -237,7 +280,8 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
             } else {
                 pendingReadWarning = nil
                 lastOutcome = .clean(rowCount: drops.count)
-                try? FileManager.default.removeItem(at: acknowledgedDigestURL)
+                lastObservation = nil
+                canRewriteAfterLoad = true
                 // Round 10 (counsel own-1): NO auto-clear of the journaled
                 // incident here — a clean load after a quarantine is the
                 // library minus the destroyed rows reading cleanly; only the
@@ -250,25 +294,37 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
             // incident durably (round 4, C7/sync-2: an emptied library must
             // never be silent, not even after the next load).
             let quarantine = fileURL.appendingPathExtension(
-                "corrupt-\(Int(Date().timeIntervalSince1970))"
+                "corrupt-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString)"
             )
             // Round 10 (counsel lens-6): the backup claim is checked, never
             // asserted over a swallowed failure.
             let backedUp = (try? FileManager.default.moveItem(at: fileURL, to: quarantine)) != nil
+            canRewriteAfterLoad = backedUp
             log.error("drops.json unreadable — quarantine \(backedUp ? "kept" : "FAILED"): \(quarantine.lastPathComponent)")
-            pendingReadWarning = nil
             lastOutcome = .quarantinedWholeFile
+            let identity = "whole:\(contentDigest(data))"
+            lastObservation = StorageIncidentObservation(
+                identity: identity, kind: .wholeFile,
+                unreadableIDs: [], unidentifiedRowCount: nil
+            )
             // Round 6 (counsel flows-5 composition): no raw filename in user
             // copy — the log carries the diagnostics, the user gets meaning.
-            writeIncident(backedUp
-                ? "Your saved drops couldn't be read — a backup was kept on this device"
-                : "Your saved drops couldn't be read")
+            if acknowledgedDigest() != identity {
+                let message = backedUp
+                    ? "Your saved drops couldn't be read — a backup was kept on this device"
+                    : "Your saved drops couldn't be read"
+                pendingReadWarning = message
+                writeIncident(message)
+            } else {
+                pendingReadWarning = nil
+            }
             return []
         }
     }
 
     /// Round 6: the machine-checkable verdict of the last load.
     func lastLoadOutcome() async -> LocalLoadOutcome? { lastOutcome }
+    func lastStorageIncident() async -> StorageIncidentObservation? { lastObservation }
 
     /// Round 6 (counsel concurrency-5): the user may resolve the incident from
     /// the banner — a legitimately empty library must not carry the corruption
@@ -281,13 +337,19 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     /// NEW bad content re-raises the incident. The loss itself is recorded
     /// durably in the library's ledger regardless.
     func acknowledgeIncident() async {
-        if case .skippedRows? = lastOutcome,
-           let data = try? Data(contentsOf: fileURL) {
-            try? Data(contentDigest(data).utf8)
-                .write(to: acknowledgedDigestURL, options: .atomic)
+        do {
+            if let identity = lastObservation?.identity {
+                try Data(identity.utf8).write(to: acknowledgedDigestURL, options: .atomic)
+            }
+            if FileManager.default.fileExists(atPath: incidentNoteURL.path) {
+                try FileManager.default.removeItem(at: incidentNoteURL)
+            }
+            pendingReadWarning = nil
+            acknowledgementError = nil
+        } catch {
+            acknowledgementError = "Couldn't save the storage warning acknowledgement — please try again"
+            log.error("Storage warning acknowledgement failed: \(error.localizedDescription)")
         }
-        clearIncident()
-        pendingReadWarning = nil
     }
 
     private var acknowledgedDigestURL: URL {
@@ -300,8 +362,12 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     }
 
     private func contentDigest(_ data: Data) -> String {
-        SHA256.hash(data: data).prefix(8)
+        SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func shortContentDigest(_ data: Data) -> String {
+        String(contentDigest(data).prefix(16))
     }
 
     /// Counsel round 2 (C6/C14/C24): exactly one sidecar per DISTINCT
@@ -310,10 +376,13 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     /// Returns whether the original bytes are actually preserved on disk —
     /// the caller's user-facing claim depends on it (round 10, counsel lens-6).
     private func preserveUnreadable(_ data: Data) -> Bool {
-        let sidecar = fileURL.appendingPathExtension("unreadable-\(contentDigest(data))")
-        if FileManager.default.fileExists(atPath: sidecar.path) { return true }
+        let sidecar = fileURL.appendingPathExtension("unreadable-\(shortContentDigest(data))")
+        if FileManager.default.fileExists(atPath: sidecar.path) {
+            return (try? Data(contentsOf: sidecar)) == data
+        }
         do {
-            try data.write(to: sidecar)
+            try data.write(to: sidecar, options: .atomic)
+            guard try Data(contentsOf: sidecar) == data else { return false }
             log.error("Unreadable rows in drops.json — original kept at \(sidecar.lastPathComponent)")
             return true
         } catch {
@@ -326,13 +395,10 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
         try? Data(message.utf8).write(to: incidentNoteURL, options: .atomic)
     }
 
-    private func clearIncident() {
-        try? FileManager.default.removeItem(at: incidentNoteURL)
-    }
-
     /// The user-facing warning: a journaled incident outranks the transient
     /// last-load result; nil only when there is neither.
     func lastLoadReadWarning() -> String? {
+        if let acknowledgementError { return acknowledgementError }
         if let data = try? Data(contentsOf: incidentNoteURL),
            let incident = String(data: data, encoding: .utf8), !incident.isEmpty {
             return incident
@@ -345,6 +411,7 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
         // Counsel round 2 (C5): a throwing read must RETHROW — collapsing it to
         // [] and persisting would atomically erase the whole library.
         var drops = try await loadDrops(near: nil, radius: 0)
+        guard canRewriteAfterLoad else { throw UnsafeLocalRewrite.unpreservedOriginal }
         drops.removeAll { $0.id == drop.id }
         drops.append(drop)
         try persist(drops)
@@ -353,6 +420,7 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
 
     func delete(_ drop: GeoDrop) async throws {
         var drops = try await loadDrops(near: nil, radius: 0)
+        guard canRewriteAfterLoad else { throw UnsafeLocalRewrite.unpreservedOriginal }
         drops.removeAll { $0.id == drop.id }
         try persist(drops)
     }
@@ -362,6 +430,147 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(drops)
         try data.write(to: fileURL, options: .atomic)
+    }
+}
+
+private enum UnsafeLocalRewrite: LocalizedError {
+    case unpreservedOriginal
+
+    var errorDescription: String? {
+        "The unreadable original couldn't be backed up, so this change wasn't saved"
+    }
+}
+
+/// The evidence and the user's acknowledgement live in different fields.
+/// Keeping old records lets a restored row retire without erasing another
+/// row's incident or making identical corrupt bytes new again after Clear.
+private struct StorageIncidentRecord: Codable, Equatable {
+    let identity: String
+    let kind: StorageIncidentObservation.Kind
+    var unreadableIDs: Set<UUID>
+    var possiblyAffectedIDs: Set<UUID>
+    /// nil means the affected row count cannot be established from the file.
+    var unidentifiedRowCount: Int?
+
+    var isUnresolved: Bool {
+        !unreadableIDs.isEmpty || !possiblyAffectedIDs.isEmpty
+            || unidentifiedRowCount == nil || unidentifiedRowCount! > 0
+    }
+}
+
+private struct StorageIncidentLedgerState: Codable, Equatable {
+    var version = 1
+    var records: [StorageIncidentRecord] = []
+    var acknowledgedIdentities: Set<String> = []
+    /// Inventory of rows actually saved/read locally, including received
+    /// drops. It is evidence for a later whole-file quarantine, not a claim
+    /// that every such row was destroyed.
+    var knownLocalIDs: Set<UUID> = []
+}
+
+/// Tiny atomic JSON journal kept beside the local store. A failed write does
+/// not mutate the in-memory ledger, so Clear can never claim to have stuck
+/// when the next process would show the same incident again.
+private final class StorageIncidentLedger {
+    private let url: URL
+    private(set) var state: StorageIncidentLedgerState
+
+    init(url: URL) throws {
+        self.url = url
+        if FileManager.default.fileExists(atPath: url.path) {
+            state = try JSONDecoder().decode(
+                StorageIncidentLedgerState.self, from: Data(contentsOf: url)
+            )
+        } else {
+            state = StorageIncidentLedgerState()
+        }
+    }
+
+    var visibleRecords: [StorageIncidentRecord] {
+        state.records.filter {
+            $0.isUnresolved && !state.acknowledgedIdentities.contains($0.identity)
+        }
+    }
+
+    var visibleIDs: Set<UUID> {
+        visibleRecords.reduce(into: Set<UUID>()) {
+            $0.formUnion($1.unreadableIDs)
+            $0.formUnion($1.possiblyAffectedIDs)
+        }
+    }
+
+    func migrateLegacyIDs(_ ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        try change { state in
+            for id in ids {
+                let identity = "legacy:\(id.uuidString)"
+                guard !state.records.contains(where: { $0.identity == identity }) else { continue }
+                state.records.append(StorageIncidentRecord(
+                    identity: identity, kind: .skippedRows,
+                    unreadableIDs: [id], possiblyAffectedIDs: [], unidentifiedRowCount: 0
+                ))
+            }
+        }
+    }
+
+    func observe(_ observation: StorageIncidentObservation?, localIDs: Set<UUID>?,
+                 quarantine: Bool) throws {
+        try change { state in
+            if let localIDs {
+                let stillUnreadable = observation?.unreadableIDs ?? []
+                let restored = localIDs.subtracting(stillUnreadable)
+                for index in state.records.indices {
+                    state.records[index].unreadableIDs.subtract(restored)
+                    state.records[index].possiblyAffectedIDs.subtract(restored)
+                }
+                state.knownLocalIDs = localIDs
+            }
+            guard let observation else { return }
+            if let index = state.records.firstIndex(where: { $0.identity == observation.identity }) {
+                // An old observation retains its recovery history. A second
+                // sighting of identical bytes does not re-add a restored row.
+                if state.records[index].kind == .readFailure {
+                    state.records[index].possiblyAffectedIDs.formUnion(state.knownLocalIDs)
+                }
+                return
+            }
+            state.records.append(StorageIncidentRecord(
+                identity: observation.identity, kind: observation.kind,
+                unreadableIDs: observation.unreadableIDs,
+                possiblyAffectedIDs: quarantine ? state.knownLocalIDs : [],
+                unidentifiedRowCount: observation.unidentifiedRowCount
+            ))
+        }
+    }
+
+    func localSaveRestored(_ id: UUID) throws {
+        try change { state in
+            state.knownLocalIDs.insert(id)
+            for index in state.records.indices {
+                state.records[index].unreadableIDs.remove(id)
+                state.records[index].possiblyAffectedIDs.remove(id)
+            }
+        }
+    }
+
+    func localDelete(_ id: UUID) throws {
+        try change { _ = $0.knownLocalIDs.remove(id) }
+    }
+
+    func acknowledgeVisible() throws {
+        let identities = Set(visibleRecords.map(\.identity))
+        guard !identities.isEmpty else { return }
+        try change { $0.acknowledgedIdentities.formUnion(identities) }
+    }
+
+    private func change(_ edit: (inout StorageIncidentLedgerState) -> Void) throws {
+        var next = state
+        edit(&next)
+        guard next != state else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(next).write(to: url, options: .atomic)
+        state = next
     }
 }
 
@@ -410,17 +619,39 @@ final class DropLibrary: ObservableObject {
     /// read answered. Until this is true every surface reports "checking",
     /// never "Synced" — the good state is earned, not a fallthrough.
     @Published private(set) var hasCompletedCleanRefresh = false
-    /// Round 14 (counsel surf-lens-2/own-1 — the charter's last live hole):
-    /// the DURABLE LOSS LEDGER. Rows destroyed by corruption (skipped rows,
-    /// quarantines) are recorded HERE, permanently, independent of banners,
-    /// journals, reaps and evidence latches — "a loss that leaves no record"
-    /// can no longer converge to "Synced". Retired per-id by a genuine
-    /// restore (redeem) or a late server ack, or wholesale by the user.
+    /// Compatibility projection of IDs named by unresolved storage incidents.
+    /// A whole-file incident may include previously saved candidates; these
+    /// IDs do not assert irreversible loss. The file-backed ledger also keeps
+    /// id-less and unknown-extent incidents that cannot appear in this set.
     @Published private(set) var lostRowIDs: Set<UUID> = []
+    /// A journal write failure remains visible until a later successful
+    /// operation; it cannot turn a failed Clear into a successful one.
+    @Published private(set) var storageLedgerError: String?
+
+    /// The profile uses this structured summary, so count-only and unknown-
+    /// extent incidents never get described as a known number of lost drops.
+    var storageProblemText: String? {
+        guard let records = incidentLedger?.visibleRecords, !records.isEmpty else { return nil }
+        if records.count == 1, let record = records.first {
+            switch record.kind {
+            case .wholeFile:
+                return "Saved drops couldn't be read — the affected count is unknown"
+            case .readFailure:
+                return "Saved drops couldn't be read — check device storage and retry"
+            case .skippedRows:
+                let count = record.unreadableIDs.count + (record.unidentifiedRowCount ?? 0)
+                if count > 0 {
+                    return "\(count) saved drop\(count == 1 ? "" : "s") couldn't be read"
+                }
+            }
+        }
+        return "\(records.count) unresolved saved-data incident\(records.count == 1 ? "" : "s")"
+    }
 
     private let local: DropStore
     private let cloud: DropStore?
     private let defaults: UserDefaults
+    private let incidentLedger: StorageIncidentLedger?
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "library")
     private var syncTasks: [UUID: Task<Void, Never>] = [:]
     /// Counsel round 2 (C2/C18/C22): per-drop write generation — only the
@@ -498,12 +729,24 @@ final class DropLibrary: ObservableObject {
             ? FirebaseDropStore()
             : (AppConfig.cloudKitEnabled ? CloudKitDropStore() : nil),
         defaults: UserDefaults = .standard,
+        incidentLedgerURL: URL? = nil,
         absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.local = localStore
         self.cloud = cloudStore
         self.defaults = defaults
         self.absenceProbeTime = absenceProbeTime
+        let ledgerURL = incidentLedgerURL ?? (localStore as? LocalDropStore)?.lossLedgerURL
+        if let ledgerURL {
+            do {
+                incidentLedger = try StorageIncidentLedger(url: ledgerURL)
+            } catch {
+                incidentLedger = nil
+                storageLedgerError = "Saved-data incident history couldn't be read — check device storage"
+            }
+        } else {
+            incidentLedger = nil
+        }
         let pending = defaults.stringArray(forKey: Self.pendingDefaultsKey) ?? []
         pendingSyncIDs = Set(pending.compactMap(UUID.init(uuidString:)))
         let deletes = defaults.stringArray(forKey: Self.pendingDeleteDefaultsKey) ?? []
@@ -517,7 +760,19 @@ final class DropLibrary: ObservableObject {
         let proven = defaults.stringArray(forKey: Self.cloudProvenDefaultsKey) ?? []
         cloudProvenIDs = Set(proven.compactMap(UUID.init(uuidString:)))
         let lost = defaults.stringArray(forKey: Self.lostRowsDefaultsKey) ?? []
-        lostRowIDs = Set(lost.compactMap(UUID.init(uuidString:)))
+        let legacyIDs = Set(lost.compactMap(UUID.init(uuidString:)))
+        if let incidentLedger {
+            do {
+                try incidentLedger.migrateLegacyIDs(legacyIDs)
+                if !legacyIDs.isEmpty { defaults.removeObject(forKey: Self.lostRowsDefaultsKey) }
+                lostRowIDs = incidentLedger.visibleIDs
+            } catch {
+                lostRowIDs = legacyIDs.union(incidentLedger.visibleIDs)
+                storageLedgerError = "Saved-data incident history couldn't be updated — check device storage"
+            }
+        } else {
+            lostRowIDs = legacyIDs
+        }
     }
 
     /// Round 6: the "Uploading N…" count includes only drops that can actually
@@ -544,10 +799,12 @@ final class DropLibrary: ObservableObject {
 
         var merged: [UUID: GeoDrop] = [:]
         var localOutcome: LocalLoadOutcome?
+        var localLoadedIDs: Set<UUID> = []
         do {
             let localDrops = try await local.loadDrops(near: nil, radius: 0)
             guard refreshGeneration == generation else { return }
             for drop in localDrops { merged[drop.id] = drop }
+            localLoadedIDs = Set(localDrops.map(\.id))
         } catch {
             // Round 4 (sync-3): a sync pass that cannot read local truth must
             // ABORT, not proceed. Round 6 (counsel :281 ×3): the failure
@@ -562,6 +819,9 @@ final class DropLibrary: ObservableObject {
             hasCompletedCleanRefresh = false
             localReadWarning = warning
                 ?? "Your saved drops couldn't be read — pull to retry"
+            let observation = await localDiagnostics?.lastStorageIncident()
+            guard refreshGeneration == generation else { return }
+            recordStorageObservation(observation, localIDs: nil, quarantine: true)
             return
         }
         if let localDiagnostics {
@@ -571,6 +831,18 @@ final class DropLibrary: ObservableObject {
             let outcome = await localDiagnostics.lastLoadOutcome()
             guard refreshGeneration == generation else { return }
             localOutcome = outcome
+            let observation = await localDiagnostics.lastStorageIncident()
+            guard refreshGeneration == generation else { return }
+            let readIDs: Set<UUID>? = {
+                switch outcome {
+                case .clean(_)?, .skippedRows(_, _, _)?: return localLoadedIDs
+                default: return nil
+                }
+            }()
+            recordStorageObservation(
+                observation, localIDs: readIDs,
+                quarantine: outcome == .quarantinedWholeFile
+            )
         }
         // Round 10 (counsel own-2) + round 12 (counsel STATE-lens-4/FLOWS-
         // lens-4): TWO-PHASE PUBLISH, and phase 1 is ADDITIVE — it seeds from
@@ -686,16 +958,15 @@ final class DropLibrary: ObservableObject {
             // earned all-clear — "Synced" may not outlive the library it
             // described.
             hasCompletedCleanRefresh = false
-            // Round 14 (loss ledger): record WHICH rows were destroyed —
-            // permanently, before any reap or acknowledgement can erase the
-            // evidence they existed.
-            for id in lostIDs { markLost(id) }
+            if incidentLedger == nil {
+                for id in lostIDs { markLost(id) }
+            }
         case .quarantinedWholeFile?, .readFailed?:
             defaults.set(true, forKey: Self.incidentMemoryKey)
             hasCompletedCleanRefresh = false
-            if case .quarantinedWholeFile? = localOutcome {
-                // The whole file is gone; the rows we can still NAME as lost
-                // are the pending writes — provably never fully uploaded.
+            // The ledger's last local inventory includes received and other
+            // nonpending rows. Its whole-file record marks extent unknown.
+            if incidentLedger == nil, case .quarantinedWholeFile? = localOutcome {
                 for id in pendingSyncIDs { markLost(id) }
             }
         case .clean?:
@@ -724,7 +995,8 @@ final class DropLibrary: ObservableObject {
                 return false
             }
         }()
-        if localProvablyClean, cloud == nil || cloudReadServerServed {
+        if localProvablyClean, storageLedgerError == nil,
+           cloud == nil || cloudReadServerServed {
             hasCompletedCleanRefresh = true
         }
 
@@ -786,13 +1058,13 @@ final class DropLibrary: ObservableObject {
     func acknowledgeReadIncident() {
         refreshGeneration &+= 1
         let generation = refreshGeneration
-        localReadWarning = nil
         Task { [weak self] in
             await self?.localDiagnostics?.acknowledgeIncident()
             guard let self else { return }
+            let warning = await self.localDiagnostics?.lastLoadReadWarning()
             await MainActor.run {
                 guard self.refreshGeneration == generation else { return }
-                self.localReadWarning = nil
+                self.localReadWarning = warning
             }
             // Round 10 (counsel ux-3): the generation bump above may have
             // aborted an in-flight refresh — the dismissal must not strand
@@ -891,8 +1163,6 @@ final class DropLibrary: ObservableObject {
                 lastPersistError = "Couldn't save the drop: \(error.localizedDescription)"
                 persistError = error
             }
-        } else {
-            clearLost(drop.id)
         }
         // Round 12 (counsel own-A — CRITICAL) + round 14 (counsel state-3):
         // the staged-delete recall runs even when the persist FAILED — the
@@ -921,6 +1191,7 @@ final class DropLibrary: ObservableObject {
         lastPersistError = nil
         drops.removeAll { $0.id == drop.id }
         drops.insert(drop, at: 0)
+        clearLost(drop.id)
         enqueueCloudSync(drop)
     }
 
@@ -944,6 +1215,7 @@ final class DropLibrary: ObservableObject {
             throw error
         }
         lastPersistError = nil
+        clearLost(drop.id)
         enqueueCloudSync(drop)
     }
 
@@ -970,6 +1242,7 @@ final class DropLibrary: ObservableObject {
         }
         lastPersistError = nil
         drops.removeAll { $0.id == drop.id }
+        forgetLocalID(drop.id)
         syncGenerations[drop.id] = (syncGenerations[drop.id] ?? 0) &+ 1
         syncTasks[drop.id]?.cancel()
         syncTasks[drop.id] = nil
@@ -1073,10 +1346,9 @@ final class DropLibrary: ObservableObject {
             // has seen this id" a durable first-class fact — the delete
             // pipeline's verdicts stop guessing it from the outbox.
             markAcked(drop.id)
-            // Round 14 (loss ledger): a late ack proves the write made it
-            // after all (e.g. Firestore's own queue flushed a copy the local
-            // file lost) — the loss record retires.
-            clearLost(drop.id)
+            // A cloud ack proves the server accepted a write. It cannot prove
+            // the unreadable local row was restored, so its incident remains
+            // until a successful local save/load or explicit acknowledgement.
             // Round 8 (counsel B1/state-3): persist the SERVER-STAMPED ownerUid
             // back to disk. Without it the field is usually nil locally, so the
             // ownedByAnotherAccount pre-check could never fire in the field and
@@ -1268,16 +1540,66 @@ final class DropLibrary: ObservableObject {
     }
 
     private func clearLost(_ id: UUID) {
+        if let incidentLedger {
+            do {
+                let prior = incidentLedger.state
+                try incidentLedger.localSaveRestored(id)
+                lostRowIDs = incidentLedger.visibleIDs
+                if incidentLedger.state != prior { storageLedgerError = nil }
+            } catch {
+                storageLedgerError = "Saved-data recovery couldn't be recorded — check device storage"
+            }
+            return
+        }
         guard lostRowIDs.contains(id) else { return }
         lostRowIDs.remove(id)
         persistSet(lostRowIDs, key: Self.lostRowsDefaultsKey)
     }
 
-    /// Round 14 (loss ledger, user control per the durable-set shipping
-    /// gate): the user has seen the loss record and dismisses it.
+    /// Clear acknowledges the currently visible incident identities. The
+    /// evidence records and original files remain; a changed digest can
+    /// surface again. Commit to disk before changing the published status.
     func acknowledgeLosses() {
+        if let incidentLedger {
+            do {
+                let prior = incidentLedger.state
+                try incidentLedger.acknowledgeVisible()
+                lostRowIDs = incidentLedger.visibleIDs
+                if incidentLedger.state != prior { storageLedgerError = nil }
+            } catch {
+                storageLedgerError = "Couldn't save the storage acknowledgement — please try again"
+            }
+            return
+        }
+        guard storageLedgerError == nil else { return }
         lostRowIDs = []
         persistSet(lostRowIDs, key: Self.lostRowsDefaultsKey)
+    }
+
+    private func recordStorageObservation(
+        _ observation: StorageIncidentObservation?, localIDs: Set<UUID>?, quarantine: Bool
+    ) {
+        guard let incidentLedger else { return }
+        do {
+            let prior = incidentLedger.state
+            try incidentLedger.observe(observation, localIDs: localIDs, quarantine: quarantine)
+            lostRowIDs = incidentLedger.visibleIDs
+            if incidentLedger.state != prior { storageLedgerError = nil }
+        } catch {
+            storageLedgerError = "Saved-data incident history couldn't be updated — check device storage"
+            hasCompletedCleanRefresh = false
+        }
+    }
+
+    private func forgetLocalID(_ id: UUID) {
+        guard let incidentLedger else { return }
+        do {
+            let prior = incidentLedger.state
+            try incidentLedger.localDelete(id)
+            if incidentLedger.state != prior { storageLedgerError = nil }
+        } catch {
+            storageLedgerError = "Saved-data inventory couldn't be updated — check device storage"
+        }
     }
 
     private func markCloudProven(_ id: UUID) {

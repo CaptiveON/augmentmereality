@@ -160,6 +160,42 @@ final class LocalDropStoreTests: XCTestCase {
         )
     }
 
+    func testFailedWarningAcknowledgementKeepsWarningAndOriginalBytes() async throws {
+        let url = temporaryFile()
+        let bad = Data("[{\"id\":\"\(UUID().uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8)
+        try bad.write(to: url)
+        let store = LocalDropStore(fileURL: url)
+        _ = try await store.loadDrops(near: nil, radius: 0)
+        try FileManager.default.createDirectory(
+            at: url.appendingPathExtension("ackdigest"), withIntermediateDirectories: false
+        )
+
+        await store.acknowledgeIncident()
+
+        let warning = await store.lastLoadReadWarning()
+        XCTAssertTrue(warning?.contains("Couldn't save") == true)
+        XCTAssertEqual(try Data(contentsOf: url), bad)
+        XCTAssertEqual(siblings(of: url, prefix: "unreadable-").count, 1)
+    }
+
+    func testSaveCannotDiscardUnreadableRowsWhenRecoveryCopyIsUnavailable() async throws {
+        let url = temporaryFile()
+        let bad = Data("[{\"id\":\"\(UUID().uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8)
+        try bad.write(to: url)
+        let store = LocalDropStore(fileURL: url)
+        _ = try await store.loadDrops(near: nil, radius: 0)
+        let sidecar = try XCTUnwrap(siblings(of: url, prefix: "unreadable-").first)
+        let sidecarURL = url.deletingLastPathComponent().appendingPathComponent(sidecar)
+        try FileManager.default.removeItem(at: sidecarURL)
+        try FileManager.default.createDirectory(at: sidecarURL, withIntermediateDirectories: false)
+
+        do {
+            try await store.save(GeoDrop())
+            XCTFail("the original has no recovery copy, so rewriting must fail")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: url), bad)
+    }
+
     func testConcurrentSavesAllSurvive() async throws {
         // Wave C (counsel SWE-8): the store is an actor — N overlapping saves
         // from independent tasks must all land.
@@ -1392,6 +1428,170 @@ final class DropLibraryTests: XCTestCase {
 
         library.acknowledgeLosses() // the user's explicit clear
         XCTAssertTrue(library.lostRowIDs.isEmpty)
+    }
+
+    func testClearSurvivesRefreshAndRelaunchButChangedBytesResurface() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("incident-\(UUID().uuidString).json")
+        let id = UUID()
+        let original = Data("[{\"id\":\"\(id.uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8)
+        try original.write(to: url)
+        let defaults = makeDefaults()
+        let store = LocalDropStore(fileURL: url)
+        let first = DropLibrary(localStore: store, cloudStore: nil, defaults: defaults)
+        await first.refresh(near: nil)
+        XCTAssertEqual(first.lostRowIDs, [id])
+        XCTAssertNotNil(first.storageProblemText)
+
+        first.acknowledgeLosses()
+        XCTAssertNil(first.storageLedgerError)
+        XCTAssertNil(first.storageProblemText)
+        XCTAssertEqual(try Data(contentsOf: url), original, "Clear must not rewrite bad rows")
+        await first.refresh(near: nil)
+        XCTAssertNil(first.storageProblemText)
+
+        let relaunched = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
+        )
+        await relaunched.refresh(near: nil)
+        XCTAssertNil(relaunched.storageProblemText)
+        XCTAssertTrue(relaunched.lostRowIDs.isEmpty)
+
+        let changed = Data("[{\"id\":\"\(id.uuidString)\",\"heightAboveGround\":\"different bad bytes\"}]".utf8)
+        try changed.write(to: url)
+        await relaunched.refresh(near: nil)
+        XCTAssertEqual(relaunched.lostRowIDs, [id], "reused id with changed corruption is new")
+        XCTAssertNotNil(relaunched.storageProblemText)
+        XCTAssertEqual(try Data(contentsOf: url), changed)
+        XCTAssertEqual(
+            (try? FileManager.default.contentsOfDirectory(
+                atPath: url.deletingLastPathComponent().path
+            ))?.filter { $0.hasPrefix(url.lastPathComponent + ".unreadable-") }.count,
+            2, "each distinct original is preserved"
+        )
+    }
+
+    func testIdlessSkippedRowHasVisibleCountWithoutInventedID() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("idless-\(UUID().uuidString).json")
+        let original = Data("[{\"heightAboveGround\":\"bad\"}]".utf8)
+        try original.write(to: url)
+        let library = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: makeDefaults()
+        )
+
+        await library.refresh(near: nil)
+
+        XCTAssertTrue(library.lostRowIDs.isEmpty)
+        XCTAssertEqual(library.storageProblemText, "1 saved drop couldn't be read")
+        library.acknowledgeLosses()
+        XCTAssertNil(library.storageProblemText)
+        await library.refresh(near: nil)
+        XCTAssertNil(library.storageProblemText)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testReceivedOnlyWholeFileQuarantineHasUnknownExtentAndPreservesBackup() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("received-quarantine-\(UUID().uuidString).json")
+        let defaults = makeDefaults()
+        let library = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
+        )
+        var received = GeoDrop()
+        received.receivedViaLink = true
+        try await library.redeem(received)
+        XCTAssertTrue(library.pendingSyncIDs.isEmpty)
+
+        let bad = Data("not a JSON array".utf8)
+        try bad.write(to: url)
+        let relaunched = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
+        )
+        await relaunched.refresh(near: nil)
+
+        XCTAssertEqual(relaunched.lostRowIDs, [received.id])
+        XCTAssertEqual(
+            relaunched.storageProblemText,
+            "Saved drops couldn't be read — the affected count is unknown"
+        )
+        let backups = (try FileManager.default.contentsOfDirectory(
+            at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+        )).filter { $0.lastPathComponent.hasPrefix(url.lastPathComponent + ".corrupt-") }
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(try Data(contentsOf: backups[0]), bad)
+    }
+
+    func testRepairingOneRowKeepsOtherIncidentAndAcknowledgementHistory() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("partial-repair-\(UUID().uuidString).json")
+        let first = GeoDrop()
+        let second = GeoDrop()
+        let badA = "{\"id\":\"\(first.id.uuidString)\",\"heightAboveGround\":\"bad\"}"
+        let badB = "{\"id\":\"\(second.id.uuidString)\",\"heightAboveGround\":\"bad\"}"
+        try Data("[\(badA),\(badB)]".utf8).write(to: url)
+        let local = LocalDropStore(fileURL: url)
+        let library = DropLibrary(localStore: local, cloudStore: nil, defaults: makeDefaults())
+        await library.refresh(near: nil)
+        XCTAssertEqual(library.lostRowIDs, [first.id, second.id])
+
+        try await local.save(first)
+        await library.refresh(near: nil)
+
+        XCTAssertEqual(library.lostRowIDs, [second.id])
+        XCTAssertNotNil(library.storageProblemText)
+        let cleanVerdictBeforeAcknowledgement = library.hasCompletedCleanRefresh
+        library.acknowledgeLosses()
+        XCTAssertNil(library.storageProblemText)
+        XCTAssertEqual(library.lostRowIDs, [])
+        XCTAssertEqual(
+            library.hasCompletedCleanRefresh, cleanVerdictBeforeAcknowledgement,
+            "acknowledgement cannot mint a new sync verdict"
+        )
+    }
+
+    func testFailedClearDoesNotClaimDurableAcknowledgement() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clear-failure-\(UUID().uuidString).json")
+        let id = UUID()
+        let bad = Data("[{\"id\":\"\(id.uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8)
+        try bad.write(to: url)
+        let ledgerURL = url.appendingPathExtension("lossledger")
+        let library = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil,
+            defaults: makeDefaults(), incidentLedgerURL: ledgerURL
+        )
+        await library.refresh(near: nil)
+        XCTAssertEqual(library.lostRowIDs, [id])
+        try FileManager.default.removeItem(at: ledgerURL)
+        try FileManager.default.createDirectory(at: ledgerURL, withIntermediateDirectories: false)
+
+        library.acknowledgeLosses()
+
+        XCTAssertEqual(library.lostRowIDs, [id])
+        XCTAssertNotNil(library.storageProblemText)
+        XCTAssertTrue(library.storageLedgerError?.contains("Couldn't save") == true)
+        XCTAssertEqual(try Data(contentsOf: url), bad)
+    }
+
+    func testLegacyIDLedgerMigratesAndAcknowledgementRemainsDurable() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-loss-\(UUID().uuidString).json")
+        let defaults = makeDefaults()
+        let id = UUID()
+        defaults.set([id.uuidString], forKey: "lostRowIDs")
+        let library = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
+        )
+        XCTAssertEqual(library.lostRowIDs, [id])
+        XCTAssertNil(defaults.stringArray(forKey: "lostRowIDs"))
+
+        library.acknowledgeLosses()
+        let relaunched = DropLibrary(
+            localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
+        )
+        XCTAssertTrue(relaunched.lostRowIDs.isEmpty)
+        XCTAssertNil(relaunched.storageProblemText)
     }
 }
 

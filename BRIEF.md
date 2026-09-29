@@ -35,6 +35,9 @@ Pin virtual 3D things to real places from a map; anyone who faces the camera the
 - Transit: far objects (50 m–2 km) stable while panning, correctly sized, occluded by real
   buildings, ≥30 fps, no VIO smear.
 - Crash-free ≥ 99.5%; not thermally `.serious` at 10 min of AR.
+  These remain acceptance targets, not achieved measurements. The September 29
+  [implementation record](docs/IMPLEMENTATION-STATUS-2026-09-29.md) prioritizes
+  fixes available without a phone and leaves physical validation last.
 - Core retention loop present: discover → approach/reveal → react → create → share → return.
 
 ## Stack spine (see ENHANCEDMASTERPLAN §2)

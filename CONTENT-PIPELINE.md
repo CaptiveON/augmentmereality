@@ -7,6 +7,14 @@ tiers 1–3; marketplaces are filler only.
 
 ## Object spec (hard budgets)
 
+Runtime update, September 29: physical content keeps authored dimensions at every
+viewing distance. The independent discovery marker carries distance readability.
+Selected/current content prepares on demand; there is no whole-catalog preload.
+One decoder, eight queued identifiers, and a three-template / 24 MiB source-cost
+cache bound preparation. Source cost is not decoded RAM; live-scene memory,
+geometry limits, asset rights and explicit grounded/animated behavior still need
+the separate #9/#15/#20 gates. See ADR-055 and the implementation record.
+
 | Property | Budget | Why |
 |---|---|---|
 | File size | ≤ 5 MB (hero ≤ 10 MB) | app size, load time |

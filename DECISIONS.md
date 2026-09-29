@@ -1251,3 +1251,46 @@ operation deadlines are unchanged. A six-second first-Listen delay reproduces
 the old failure and passes all 157 tests with the correction; a 35-second delay
 still fails before the gates (the SDK can report offline before the outer
 budget expires). No physical performance improvement is claimed.
+
+## ADR-055 — Fixed physical scale and recovery-safe workload preparation (2026-09-29)
+
+**Supersedes ADR-049's content-scale compensation.** Physical content keeps its
+authored world dimensions at every viewing distance. Only the independent
+waypoint marker changes size for distant readability. Creation, authored edits,
+remote edits and asset replacement share the same scale/footprint update.
+`FIELDTESTS.md` FT-33 now checks constant dimensions and ordinary perspective.
+
+The September 11 background-return record showed room content disappearing
+after the ten-second relocalization fallback reset. Cold recovery now retains
+session-only room content and restores its camera-relative arrangement after a
+fresh normally tracked frame. This is explicitly approximate registration after
+loss of the old AR world; it is not a claim of recovered physical alignment.
+
+Catalog preloading is removed. Preparation is demand-driven, with selected-asset
+priority, one decoder, eight queued identifiers and a bounded LRU template cache.
+The cache budget uses source-file cost, not inferred decoded RAM. A bounded
+publisher deadline prevents one stalled resource from blocking every later
+request. Live clones survive eviction; completion swaps only waiting placeholders.
+GAR capture deduplication and a global eight-job Streetscape budget remove
+duplicate submissions and cross-update queue accumulation without changing the
+existing localization cadence. Concurrency ownership and total live-scene budgets
+remain separate work.
+
+Local WGS84 coordinates use independently checked tangent-frame math, with a
+five-kilometre checked domain. AR/GPS drift uses the heading correction saved
+with its reference frame. Location, heading and speed inputs carry freshness;
+unknown speed is not interpreted as stopped motion. Transit uses bounded
+timestamped filtering and suppresses geographic content while stale or reacquiring.
+Magnetic heading is provisional, and cannot authorize geographic write-back.
+
+Storage warnings now retain content-identified incident evidence separately from
+durable acknowledgement. Original unreadable bytes must be preserved before a
+normal save/delete can replace them. Id-less and whole-file incidents do not
+claim a known irreversible-loss count. Storage problems outrank sync progress.
+Unsupported profile delivery/reaction totals are hidden until an authoritative
+producer exists; the legacy document fields remain compatible.
+
+See [the implementation/evidence record](docs/IMPLEMENTATION-STATUS-2026-09-29.md)
+for test results and remaining issues. No physical heat, image quality, shared
+placement precision or production-release acceptance is inferred from simulator
+tests or the unsigned Release build.

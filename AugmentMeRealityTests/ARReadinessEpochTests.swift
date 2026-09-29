@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import AugmentMeReality
 
 final class ARReadinessEpochTests: XCTestCase {
@@ -81,5 +82,34 @@ final class ARReadinessEpochTests: XCTestCase {
         XCTAssertNil(epoch.heroSceneUpdateProxyAt)
         XCTAssertEqual(epoch.kind, .recovery)
         XCTAssertEqual(epoch.generation, 3)
+    }
+
+    func testRoomDropRecoveryWaitsForFreshNormalFrame() {
+        XCTAssertFalse(GeoARSessionManager.canRestoreRoomDrops(
+            frameCapturedAt: 100, sessionRunAt: 100, trackingNormal: true))
+        XCTAssertFalse(GeoARSessionManager.canRestoreRoomDrops(
+            frameCapturedAt: 101, sessionRunAt: 100, trackingNormal: false))
+        XCTAssertFalse(GeoARSessionManager.canRestoreRoomDrops(
+            frameCapturedAt: .nan, sessionRunAt: 100, trackingNormal: true))
+        XCTAssertTrue(GeoARSessionManager.canRestoreRoomDrops(
+            frameCapturedAt: 100.1, sessionRunAt: 100, trackingNormal: true))
+    }
+
+    func testRoomDropRecoveryReanchorsFromOldToNewCameraFrame() {
+        var oldCamera = matrix_identity_float4x4
+        oldCamera.columns.3 = SIMD4<Float>(10, 1, 0, 1)
+        var oldHolder = matrix_identity_float4x4
+        oldHolder.columns.3 = SIMD4<Float>(11, 0.5, -2, 1)
+        let relative = GeoARSessionManager.roomCameraRelativeTransform(
+            camera: oldCamera, holder: oldHolder)
+
+        var newCamera = matrix_identity_float4x4
+        newCamera.columns.3 = SIMD4<Float>(100, 3, 50, 1)
+        let restored = GeoARSessionManager.reanchoredRoomTransform(
+            camera: newCamera, relativeHolder: relative)
+        XCTAssertEqual(restored.columns.3.x, 101, accuracy: 0.0001)
+        XCTAssertEqual(restored.columns.3.y, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(restored.columns.3.z, 48, accuracy: 0.0001)
+        XCTAssertEqual(restored.columns.0.x, oldHolder.columns.0.x, accuracy: 0.0001)
     }
 }

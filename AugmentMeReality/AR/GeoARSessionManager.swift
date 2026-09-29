@@ -20,8 +20,8 @@ import os
 /// Design goals (from field testing): content must appear **instantly** with whatever
 /// GPS fix exists and stay **visible from any distance** in the correct direction —
 /// never "walk to the exact spot and wait". Placement is refined silently (smooth
-/// slides) as better fixes arrive, and far content is scaled up to a minimum apparent
-/// size that hands over to true perspective as you approach.
+/// slides) as better fixes arrive; a separate marker keeps far locations findable
+/// while the content itself keeps its authored physical size.
 @MainActor
 final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystemAdapter, PerceptionSubsystemSink {
     enum Mode: Equatable {
@@ -200,6 +200,18 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// indoors, GPS/compass/VPS are meters off by physics, so object features are
     /// tested against ARKit's room-scale tracking instead.
     private var roomDrops: [UUID: GeoDrop] = [:]
+    /// A tracking reset creates a new world coordinate system. Keep session-only
+    /// Room Test drops camera-relative until a fresh, normally tracked frame can
+    /// place them in that new system. Exact old-world registration is unavailable
+    /// after relocalization has failed, so this preserves their visual relation
+    /// to the last reliable camera pose rather than claiming a physical lock.
+    private struct RoomRecoveryPlacement {
+        let drop: GeoDrop
+        let cameraRelativeTransform: simd_float4x4
+        let hadGroundLock: Bool
+    }
+    private var pendingRoomRecovery: [RoomRecoveryPlacement] = []
+    private var lastNormalCameraTransform: simd_float4x4?
 
     // Tier A bookkeeping. All content hangs off one world-fixed root anchored at the
     // AR origin, so child positions are world coordinates and can be moved/animated.
@@ -227,16 +239,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// (Google's terrain can differ ±0.5 m) must not re-float the content.
     /// Cleared when the user moves the height slider (explicit override).
     private var groundLockBaseY: [UUID: Float] = [:]
-    /// ADR-023 grounding discs: the size-vs-distance disambiguator. Without a
-    /// ground-contact cue, angular growth is perceptually ambiguous between
-    /// "bigger" and "closer"; a shadow planted at the object's ground spot that
-    /// only grows laterally makes scaling read as "giant, still far away".
+    /// Ground-contact cue sized to the content's physical footprint. It changes
+    /// with authored edits or asset replacement, never with viewer distance.
     private var groundDiscs: [UUID: ModelEntity] = [:]
-    /// ADR-049: the perceptual-size factor currently baked into each content
-    /// entity's scale (content.scale = drop.scale × this). Invalidated whenever
-    /// the content model is swapped so the factor is re-applied to the fresh
-    /// entity on the next frame.
-    private var appliedCompensation: [UUID: Float] = [:]
     /// Drops being live-edited from the HUD sliders right now: every automatic
     /// positioner (compass re-sync, VPS anchor updates) keeps its hands off them
     /// so the object never fights the user's finger.
@@ -292,6 +297,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var lastCompassYawAR: Double?
     private var lastCompassSampleAt = Date.distantPast
     private var lastVPSHeadingSampleAt = Date.distantPast
+    private var lastConsumedCompassTimestamp = Date.distantPast
     /// Counsel MATH-3: the heading estimate was seeded from a magnetic-only
     /// sample (cold start, before Core Location could supply true north). The
     /// declination it injected is corrected the moment the first true-north
@@ -411,6 +417,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         semanticPass = nil
         geospatial.stop()
         resetPlacements()
+        pendingRoomRecovery.removeAll()
+        lastNormalCameraTransform = nil
         arView?.session.pause()
         recordSessionPaused()
         arView = nil
@@ -446,6 +454,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             ARBaselineMetrics.shared.setWorkload(name, enabled: false)
         }
         disarmSemanticMatte()
+        if reason == "cameraHidden" || reason == "suspend" || reason == "detach"
+            || reason == "interruption" || reason == "failure" {
+            DropEntityFactory.setAssetDemand(renderedAssetNames, active: false)
+        }
         ARBaselineMetrics.shared.event("perceptionInvalidated", details:
             "generation=\(workGeneration) reason=\(reason)")
     }
@@ -745,11 +757,11 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Drops a throwaway "IT WORKS 🎉" 15 m in the direction the user is facing —
     /// instant gratification without walking anywhere. Not persisted.
     func placeDemoDrop() {
-        guard let location = locationService?.location else { return }
-        let heading = locationService?.headingDegrees ?? 0
-        let coordinate = GeoMath.coordinate(
-            from: location.coordinate, bearingDegrees: heading, distanceMeters: 15
-        )
+        guard let location = locationService?.currentLocation(),
+              let heading = locationService?.currentHeading(),
+              let coordinate = GeoMath.checkedCoordinate(
+                from: location.coordinate, bearingDegrees: heading.degrees, distanceMeters: 15
+              ) else { return }
         let drop = GeoDrop(
             content: .text3D,
             message: "IT WORKS 🎉",
@@ -821,6 +833,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         placedHolders[drop.id] = holder
         DropEntityFactory.startAnimations(on: holder)
         renderedDropCount = placedHolders.count
+        synchronizeAssetDemand()
         observeSelectedContentReadiness()
     }
 
@@ -832,6 +845,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             removePerDropState(id)
         }
         roomDrops.removeAll()
+        pendingRoomRecovery.removeAll()
         renderedDropCount = placedHolders.count
     }
 
@@ -859,6 +873,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
     private func runGeoTracking() {
         guard arView != nil else { return }
+        let roomRecovery = snapshotRoomDropsForReset()
         if hasRunSession, readiness?.kind != .recovery || !readinessActive
             || readiness?.firstFreshFrameAt != nil {
             beginReadinessEpoch(.recovery)
@@ -867,6 +882,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         config.planeDetection = [.horizontal]
         runMeasuredSession(config, options: [.resetTracking, .removeExistingAnchors])
         resetPlacements()
+        pendingRoomRecovery = roomRecovery
+        lastNormalCameraTransform = nil
         geospatial.invalidateAllAnchors() // ARP-4: anchors die with the old frame
         mode = .geoTracking
         statusText = "Scanning surroundings to lock precise position…"
@@ -984,6 +1001,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
     private func runGPSCompass() {
         guard let arView else { return }
+        let roomRecovery = snapshotRoomDropsForReset()
         if hasRunSession, readiness?.kind != .recovery || !readinessActive
             || readiness?.firstFreshFrameAt != nil {
             beginReadinessEpoch(.recovery)
@@ -1005,6 +1023,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
         runMeasuredSession(config, options: [.resetTracking, .removeExistingAnchors])
         resetPlacements()
+        pendingRoomRecovery = roomRecovery
+        lastNormalCameraTransform = nil
         // Counsel ARP-4: the reset created a NEW world frame — every GARAnchor
         // still lives in the old one. Drop them (keeping the GARSession itself,
         // which is reset-robust) so anchors re-resolve in the fresh frame.
@@ -1055,7 +1075,6 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         placedDrops.removeAll()
         markers.removeAll()
         contentEntities.removeAll()
-        appliedCompensation.removeAll()
         groundDiscs.removeAll()
         groundLockBaseY.removeAll()
         deferredTargets.removeAll()
@@ -1076,6 +1095,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         lastCompassYawAR = nil
         lastCompassSampleAt = .distantPast
         lastVPSHeadingSampleAt = .distantPast
+        lastConsumedCompassTimestamp = .distantPast
         lastRefinementSync = .distantPast
         headingSeededMagneticOnly = false
         relocalizingSince = nil
@@ -1087,6 +1107,80 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         readyContentIDs.removeAll()
         timeToFirstHeroProxyMs = nil
 
+    }
+
+    /// Capture the previous normal frame before ARKit discards its world map.
+    /// A second reset while waiting for a new normal frame keeps the original
+    /// snapshot; otherwise the Room Test would vanish on a failure burst.
+    private func snapshotRoomDropsForReset() -> [RoomRecoveryPlacement] {
+        guard !roomDrops.isEmpty, let arView else { return pendingRoomRecovery }
+        let camera = lastNormalCameraTransform
+            ?? arView.session.currentFrame?.camera.transform
+            ?? arView.cameraTransform.matrix
+        let placed = roomDrops.values.compactMap { drop -> RoomRecoveryPlacement? in
+            guard let holder = placedHolders[drop.id] else { return nil }
+            return RoomRecoveryPlacement(
+                drop: drop,
+                cameraRelativeTransform: Self.roomCameraRelativeTransform(
+                    camera: camera, holder: holder.transformMatrix(relativeTo: nil)),
+                hadGroundLock: groundLockBaseY[drop.id] != nil
+            )
+        }
+        let placedIDs = Set(placed.map { $0.drop.id })
+        return pendingRoomRecovery.filter { !placedIDs.contains($0.drop.id) } + placed
+    }
+
+    /// Called only after the new run has delivered a fresh normal camera pose.
+    /// The old AR world cannot be recovered here; the approximate re-anchor is
+    /// explicit in the metric so a physical check can judge its presentation.
+    private func restoreRoomDropsIfReady(frame: ARFrame) {
+        guard !pendingRoomRecovery.isEmpty,
+              Self.canRestoreRoomDrops(
+                frameCapturedAt: frame.timestamp, sessionRunAt: sessionRunSince,
+                trackingNormal: frame.camera.trackingState == .normal
+              ), let arView else { return }
+        let root = ensureWorldRoot(in: arView)
+        let restoring = pendingRoomRecovery
+        pendingRoomRecovery.removeAll()
+        for snapshot in restoring {
+            let drop = snapshot.drop
+            roomDrops[drop.id] = drop
+            placedDrops[drop.id] = drop
+            let holder = makeHolder(for: drop)
+            holder.transform = Transform(matrix: Self.reanchoredRoomTransform(
+                camera: frame.camera.transform,
+                relativeHolder: snapshot.cameraRelativeTransform))
+            root.addChild(holder)
+            placedHolders[drop.id] = holder
+            if snapshot.hadGroundLock {
+                // The lock stores the holder's world Y (as used by GPS/VPS),
+                // not a terrain reference with authored height subtracted.
+                groundLockBaseY[drop.id] = holder.position.y
+            }
+            DropEntityFactory.startAnimations(on: holder)
+        }
+        renderedDropCount = placedHolders.count
+        ARBaselineMetrics.shared.event("roomDropsReanchored", details:
+            "count=\(restoring.count) generation=\(workGeneration) method=cameraRelativeApproximation")
+        observeSelectedContentReadiness()
+    }
+
+    nonisolated static func canRestoreRoomDrops(
+        frameCapturedAt: TimeInterval, sessionRunAt: TimeInterval, trackingNormal: Bool
+    ) -> Bool {
+        trackingNormal && frameCapturedAt.isFinite && frameCapturedAt > sessionRunAt
+    }
+
+    nonisolated static func roomCameraRelativeTransform(
+        camera: simd_float4x4, holder: simd_float4x4
+    ) -> simd_float4x4 {
+        simd_inverse(camera) * holder
+    }
+
+    nonisolated static func reanchoredRoomTransform(
+        camera: simd_float4x4, relativeHolder: simd_float4x4
+    ) -> simd_float4x4 {
+        camera * relativeHolder
     }
 
     /// VPS resolved (or refined) a drop's exact pose: glide to it once, then track
@@ -1291,6 +1385,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             updatePowerTier()
             return
         }
+        if let frame = arView?.session.currentFrame,
+           Self.canRestoreRoomDrops(
+               frameCapturedAt: frame.timestamp, sessionRunAt: sessionRunSince,
+               trackingNormal: frame.camera.trackingState == .normal
+           ) {
+            restoreRoomDropsIfReady(frame: frame)
+            lastNormalCameraTransform = frame.camera.transform
+        }
         updateNearest()
         applyRenderPathIfNeeded()
         updateWindowMode()
@@ -1358,6 +1460,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Snapshot projection and distance together, including the captured edit
     /// target while either slider finger remains down.
     private func updatePowerTier() {
+        synchronizeAssetDemand()
         let now = Date()
         if editingDropID != nil || gestureHeld,
            Self.gestureAbandoned(now: now, lastTick: lastLiveEditTickAt, held: gestureHeld) {
@@ -1412,6 +1515,39 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         } else {
             convergenceSprintStart = nil
         }
+    }
+
+    /// The asset queue follows content the camera can actually present. In
+    /// particular, opening the app does not decode the entire bundled catalog.
+    private var renderedAssetNames: Set<String> {
+        Set(placedDrops.values.compactMap { drop -> String? in
+            drop.content == .animated ? drop.assetName : nil
+        })
+    }
+
+    private func synchronizeAssetDemand() {
+        let active = cameraVisible && sessionRunning && !isInterrupted && !sessionFailed
+            && ProcessInfo.processInfo.thermalState != .critical
+            && !currentPerceptionPlan.recoveringFromCritical
+        var names = renderedAssetNames
+        var priority: String?
+        guard active else {
+            // Retain delivered identities for live clones during a short hide:
+            // cache eviction then need not schedule a pointless re-decode on return.
+            DropEntityFactory.setAssetDemand(names, active: false)
+            return
+        }
+        if let drop = nearestDrop, drop.content == .animated, let name = drop.assetName {
+            names.insert(name)
+            priority = name
+        }
+        if let heroID = readiness?.heroID,
+           let selected = placedDrops[heroID] ?? eligibleDrops.first(where: { $0.id == heroID }),
+           selected.content == .animated, let name = selected.assetName {
+            names.insert(name)
+            priority = name
+        }
+        DropEntityFactory.setAssetDemand(names, active: true, priority: priority)
     }
 
     /// This adapter is also the boundary used by deterministic transition tests.
@@ -1641,19 +1777,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             ? "eye level"
             : String(format: "%.0f m %@", abs(vertical), vertical > 0 ? "up" : "down")
 
-        // ADR-049 field truth: the visual angle the nearest content actually
-        // subtends in the camera right now (bounds include the perceptual
-        // factor), plus that factor when it is boosting.
+        // Report the physical content's current angular size. The separate
+        // waypoint marker does not enter these bounds.
         var sizeText = ""
         if let content = contentEntities[nearestID] {
             let distance = simd_length(offset)
             let height = content.visualBounds(relativeTo: holder).extents.y
             if distance > 0.5, height > 0.01 {
                 let degrees = 2 * atan(Double(height) / (2 * Double(distance))) * 180 / .pi
-                let factor = appliedCompensation[nearestID] ?? 1
-                sizeText = factor > 1.01
-                    ? String(format: " · %.1f° ×%.1f", degrees, factor)
-                    : String(format: " · %.1f°", degrees)
+                sizeText = String(format: " · %.1f°", degrees)
             }
         }
         renderDiagnostics = String(
@@ -1665,7 +1797,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Transitions are cheap and reversible: content entities are reused; only the
     /// positioning authority and the occluder set change.
     private func applyRenderPathIfNeeded() {
-        guard let arView else { return }
+        guard let arView, motionState != .unknown else { return }
         let desired: RenderPath = motionState == .vehicular ? .transit : .pedestrian
         guard desired != renderPath else { return }
         renderPath = desired
@@ -1681,6 +1813,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             vpsGlideUntil.removeAll()
             metricsLog.log("Render path → transit")
         case .pedestrian:
+            for (id, holder) in placedHolders where roomDrops[id] == nil { holder.isEnabled = true }
             geospatial.setOccludersHidden(false)
             // Force a clean world-locked re-sync; VPS re-glides as anchors update.
             placementBasis = nil
@@ -1707,7 +1840,6 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         markers[id] = nil
         contentEntities[id] = nil
         readyContentIDs.remove(id)
-        appliedCompensation[id] = nil
         groundDiscs[id] = nil
         groundLockBaseY[id] = nil
         deferredTargets[id] = nil
@@ -1787,11 +1919,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             return
         }
 
-        guard let fix = locationService.location, fix.horizontalAccuracy > 0 else {
-            statusText = "Waiting for a GPS fix…"
+        let now = Date()
+        let currentFix = locationService.currentLocation(at: now)
+        motionState = motion.update(location: currentFix, at: now)
+        guard let fix = currentFix else {
+            statusText = renderPath == .transit
+                ? "Transit — GPS stale · positions hidden"
+                : "Waiting for a current GPS fix…"
             return
         }
-        motionState = motion.update(speed: max(fix.speed, 0))
         guard let frame = arView.session.currentFrame else {
             statusText = "Starting camera…"
             return
@@ -1802,7 +1938,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         updateHeadingCorrection(frame: frame, alpha: renderPath == .transit ? 0.2 : 0.08)
 
         if renderPath == .transit {
-            tickTransit(drops: eligibleDrops, fix: fix)
+            tickTransit(drops: eligibleDrops)
             return
         }
 
@@ -1854,8 +1990,16 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             let cam = frame.camera.transform.columns.3
             let arEast = Double(cam.x - basisCameraPosition.x)
             let arNorth = Double(-(cam.z - basisCameraPosition.z))
-            let gpsDelta = GeoMath.enuOffset(from: basis.coordinate, to: fix.coordinate)
-            let correction = simd_length(SIMD2(gpsDelta.x - arEast, gpsDelta.y - arNorth))
+            guard let gpsDelta = GeoMath.checkedENUOffset(from: basis.coordinate, to: fix.coordinate),
+                  let correction = GeoMath.driftMeters(
+                    gpsENU: gpsDelta, arHorizontal: SIMD2(arEast, arNorth),
+                    basisHeadingCorrection: appliedHeadingCorrection
+                  ) else {
+                placementBasis = nil
+                syncGPSPlacements(drops: drops, fix: fix, frame: frame, animated: false)
+                statusText = "Location changed — placing nearby drops again"
+                return
+            }
 
             let headingDriftRad = abs(atan2(
                 sin(headingCorrection - appliedHeadingCorrection),
@@ -1890,7 +2034,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 fix.horizontalAccuracy
             )
         } else {
-            statusText = String(format: "Compass mode · GPS ±%.0f m", fix.horizontalAccuracy)
+            statusText = String(format: headingSeededMagneticOnly
+                ? "Provisional magnetic heading · GPS ±%.0f m"
+                : "Compass mode · GPS ±%.0f m", fix.horizontalAccuracy)
         }
     }
 
@@ -1905,9 +2051,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         let groundY = estimatedGroundY(frame: frame) ?? (cam.y - 1.5)
 
         var seen: Set<UUID> = []
+        var placedUsingValidOffset = false
         for drop in drops {
+            guard let enu = GeoMath.checkedENUOffset(from: fix.coordinate, to: drop.coordinate) else { continue }
             seen.insert(drop.id)
-            placedDrops[drop.id] = drop
+            if !liveEditingDrops.contains(drop.id) {
+                placedDrops[drop.id] = drop
+                synchronizePhysicalSize(for: drop.id, authoredScale: drop.scale)
+            }
 
             // Drops owned by VPS are world-accurate already — never touch them here.
             // Ditto anything mid-live-edit: the sliders own it until release.
@@ -1918,11 +2069,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
             // Rotate the true east/north offset into the AR frame, compensating for
             // the session's measured compass error.
-            let enu = GeoMath.enuOffset(from: fix.coordinate, to: drop.coordinate)
-            let distance = simd_length(enu)
-            let bearingAR = atan2(enu.x, enu.y) - headingCorrection
-            let east = distance * sin(bearingAR)
-            let north = distance * cos(bearingAR)
+            guard let horizontal = GeoMath.arHorizontal(fromENU: enu, headingCorrection: headingCorrection) else { continue }
+            let east = horizontal.x
+            let north = horizontal.y
+            placedUsingValidOffset = true
             // Whatever the ground estimate did, content must stay in the band the
             // viewer can actually see: never below their feet, never in the clouds.
             // A ground lock (ADR-027) wins outright — it's a real measurement.
@@ -1994,7 +2144,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         // already exists was latched from a trustworthy pose and must survive
         // a transient limited window untouched — relocalization preserves the
         // world frame, so it is still valid when tracking recovers.
-        if frame.camera.trackingState == .normal {
+        if placedUsingValidOffset, frame.camera.trackingState == .normal {
             placementBasis = fix
             basisCameraPosition = SIMD3(cam.x, cam.y, cam.z)
             appliedHeadingCorrection = headingCorrection
@@ -2068,6 +2218,32 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             to: content
         )
         return holder
+    }
+
+    /// Apply an authored scale to already rendered content. Called for live edits,
+    /// remote edits, and newly decoded assets; distance never enters this path.
+    /// The marker is repositioned but its independent readability scale is kept.
+    static func applyPhysicalSize(
+        _ authoredScale: Float, to content: Entity, in holder: Entity,
+        marker: Entity?, disc: Entity?, force: Bool = false
+    ) {
+        let target = SIMD3<Float>(repeating: authoredScale)
+        guard force || content.scale != target else { return }
+        content.scale = target
+        let top = content.visualBounds(relativeTo: holder).max.y
+        marker?.position.y = max(top, 0) + 2
+        if let disc {
+            let radius = groundDiscRadius(for: content, relativeTo: holder)
+            disc.scale = [radius, 0.01, radius]
+        }
+    }
+
+    private func synchronizePhysicalSize(
+        for id: UUID, authoredScale: Double, force: Bool = false
+    ) {
+        guard let holder = placedHolders[id], let content = contentEntities[id] else { return }
+        Self.applyPhysicalSize(Float(authoredScale), to: content, in: holder,
+                               marker: markers[id], disc: groundDiscs[id], force: force)
     }
 
     /// Slightly wider than the content's ground footprint, never smaller than 0.5 m.
@@ -2159,21 +2335,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 let bearingAR = rotation * .pi / 180 - headingCorrection
                 holder.orientation = simd_quatf(angle: Float(.pi - bearingAR), axis: [0, 1, 0])
             }
-            if let scale, let content = contentEntities[id] {
-                // ADR-049: the rendered scale is always drop.scale × the
-                // distance factor — the slider edits the true size only.
-                let factor = max(appliedCompensation[id] ?? 1, 1)
-                content.scale = SIMD3(repeating: Float(scale) * factor)
-                if let marker = markers[id] {
-                    let top = content.visualBounds(relativeTo: holder).max.y
-                    marker.position.y = max(top, 0) + 2
-                }
-                // ADR-023: the ground anchors grow with the content so "giant"
-                // keeps reading as far-away-giant, not approaching.
-                if let disc = groundDiscs[id] {
-                    let radius = Self.groundDiscRadius(for: content, relativeTo: holder)
-                    disc.scale = [radius, 0.01, radius]
-                }
+            if let scale {
+                synchronizePhysicalSize(for: id, authoredScale: scale)
             }
         }
 
@@ -2293,23 +2456,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private func assetTemplateDidLoad(_ name: String) {
         for (id, drop) in placedDrops
         where drop.content == .animated && drop.assetName == name {
-            guard let holder = placedHolders[id] else { continue }
+            guard !readyContentIDs.contains(id), let holder = placedHolders[id] else { continue }
             contentEntities[id]?.removeFromParent()
             let fresh = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
             holder.addChild(fresh)
             contentEntities[id] = fresh
             recordContentReadiness(for: drop)
-            appliedCompensation[id] = nil // ADR-049: re-applied on the next frame
+            synchronizePhysicalSize(for: id, authoredScale: drop.scale, force: true)
             DropEntityFactory.startAnimations(on: fresh)
-            // Re-seat the marker and grounding disc for the real model's bounds.
-            if let marker = markers[id] {
-                let top = fresh.visualBounds(relativeTo: holder).max.y
-                marker.position.y = max(top, 0) + 2
-            }
-            if let disc = groundDiscs[id] {
-                let radius = Self.groundDiscRadius(for: fresh, relativeTo: holder)
-                disc.scale = [radius, 0.01, radius]
-            }
         }
     }
 
@@ -2325,25 +2479,35 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         var updated = placedDrops[id] ?? drop
 
         // 1. New coordinate — VPS first, GPS+heading fallback.
-        if let geo = geospatial.geoCoordinate(of: worldPoint) {
+        guard worldPoint.x.isFinite, worldPoint.y.isFinite, worldPoint.z.isFinite else { return }
+        if let geo = geospatial.geoCoordinate(of: worldPoint), GeoMath.isValid(geo.coordinate) {
             updated.latitude = geo.coordinate.latitude
             updated.longitude = geo.coordinate.longitude
             metricsLog.log("Relocate via VPS ±\(geo.horizontalAccuracy) m")
-        } else if let fix = locationService?.location {
+        } else if let fix = locationService?.currentLocation() {
+            guard headingSampleCount > 0, !headingSeededMagneticOnly else {
+                showPersistError("Waiting for true north before saving this location")
+                return
+            }
             let camPos = arView.cameraTransform.translation
             let offset = worldPoint - camPos
             let eastAR = Double(offset.x)
             let northAR = Double(-offset.z)
-            let bearingTrue = atan2(eastAR, northAR) + headingCorrection
-            let distance = (eastAR * eastAR + northAR * northAR).squareRoot()
-            let coordinate = GeoMath.coordinate(
+            guard let enu = GeoMath.enu(fromARHorizontal: SIMD2(eastAR, northAR), headingCorrection: headingCorrection),
+                  let coordinate = GeoMath.checkedCoordinate(
                 from: fix.coordinate,
-                bearingDegrees: bearingTrue * 180 / .pi,
-                distanceMeters: distance
-            )
+                bearingDegrees: atan2(enu.x, enu.y) * 180 / .pi,
+                distanceMeters: simd_length(enu)
+            ) else {
+                showPersistError("Couldn’t locate this spot — wait for a reliable GPS fix")
+                return
+            }
             updated.latitude = coordinate.latitude
             updated.longitude = coordinate.longitude
             metricsLog.log("Relocate via GPS fallback (±\(fix.horizontalAccuracy) m)")
+        } else {
+            showPersistError("Couldn’t locate this spot — wait for a current GPS fix")
+            return
         }
 
         // 2. Height above ground at the tapped point (snap small values to 0).
@@ -2367,6 +2531,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             relativeTo: holder.parent, duration: 0.3, timingFunction: .easeInOut
         )
         groundLockBaseY[id] = worldPoint.y + 0.005
+        groundDiscs[id]?.position.y = -Float(updated.heightAboveGround) + 0.04
         deferredTargets[id] = nil
         deferredVPSTransforms[id] = nil
         if vpsOwnedDrops.contains(id) {
@@ -2400,7 +2565,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             holder.addChild(fresh)
             contentEntities[id] = fresh
             recordContentReadiness(for: drop)
-            appliedCompensation[id] = nil // fresh entity carries no factor yet
+            synchronizePhysicalSize(for: id, authoredScale: drop.scale, force: true)
             DropEntityFactory.startAnimations(on: fresh)
         }
     }
@@ -2542,7 +2707,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// bias, and CLHeading lagging the physical rotation during pans).
     private func updateHeadingCorrection(frame: ARFrame, alpha: Double) {
         if let sample = geospatial.headingErrorSample,
-           Date().timeIntervalSince(sample.timestamp) < 1.5 {
+           sample.timestamp > lastVPSHeadingSampleAt,
+           (0..<1.5).contains(Date().timeIntervalSince(sample.timestamp)) {
             // VPS path. Low noise ⇒ faster blend; seed instantly on first use.
             let vpsAlpha = headingSourceIsVPS ? max(alpha, 0.25) : 1.0
             ingestHeadingDelta(sample.radians, alpha: vpsAlpha)
@@ -2558,7 +2724,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
         guard !headingSourceIsVPS else { return }
 
-        guard let compassHeading = locationService?.headingDegrees else { return }
+        guard let heading = locationService?.currentHeading(),
+              heading.timestamp > lastConsumedCompassTimestamp else { return }
+        lastConsumedCompassTimestamp = heading.timestamp
+        let compassHeading = heading.degrees
         // Counsel MATH-3: magnetic heading differs from true north by the local
         // declination (±15° in major US cities) and `headingAccuracy` carries no
         // information about that error — the gate below is structurally blind to
@@ -2570,9 +2739,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         // here froze the gate's baseline at seed time, so the alpha-1 re-seed
         // arrived with dt > 3 s and bypassed ADR-017's pan rejection — a
         // mid-pan lagged compass reading could become the wholesale heading).
-        let isTrueNorth = locationService?.headingIsTrueNorth == true
-        if headingSampleCount > 0,
-           let accuracy = locationService?.headingAccuracy, accuracy < 0 || accuracy > 30 {
+        let isTrueNorth = heading.reference == .trueNorth
+        if headingSampleCount > 0, heading.accuracyDegrees > 30 {
             return // compass is unreliable right now; keep the current estimate
         }
         // Camera look direction, projected onto the ground plane.
@@ -2640,13 +2808,16 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
     /// Ensures holders exist for eligible drops and reports transit status. The
     /// actual positioning happens per render frame in `transitFrameUpdate`.
-    private func tickTransit(drops: [GeoDrop], fix: CLLocation) {
+    private func tickTransit(drops: [GeoDrop]) {
         guard let arView else { return }
         let root = ensureWorldRoot(in: arView)
         var seen: Set<UUID> = []
         for drop in drops {
             seen.insert(drop.id)
-            placedDrops[drop.id] = drop
+            if !liveEditingDrops.contains(drop.id) {
+                placedDrops[drop.id] = drop
+                synchronizePhysicalSize(for: drop.id, authoredScale: drop.scale)
+            }
             if placedHolders[drop.id] == nil {
                 let holder = makeHolder(for: drop)
                 root.addChild(holder)
@@ -2659,17 +2830,18 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
         renderedDropCount = placedHolders.count
 
-        let fixAge = Date().timeIntervalSince(fix.timestamp)
-        if fixAge > 8 {
-            // §6.5 honest degradation: never fake a lock we don't have.
-            statusText = "Transit — GPS stale (tunnel?), positions may lag"
-        } else if placedHolders.isEmpty {
-            statusText = "Transit mode — no drops within 2 km yet"
+        if let estimate = locationService?.transitEstimate() {
+            switch estimate.quality {
+            case .degraded:
+                statusText = String(format: "Transit — GPS %.0f s old · positions hidden", estimate.measurementAge)
+            case .reacquiring:
+                statusText = "Transit — checking the new GPS position…"
+            case .tracking:
+                statusText = placedHolders.isEmpty ? "Transit mode — no drops within 2 km yet"
+                    : String(format: "Transit mode · estimated ±%.0f m", estimate.horizontalUncertainty)
+            }
         } else {
-            statusText = String(
-                format: "Transit mode · %.0f km/h · GPS ±%.0f m",
-                max(fix.speed, 0) * 3.6, fix.horizontalAccuracy
-            )
+            statusText = "Transit — waiting for a reliable GPS position"
         }
         observeSelectedContentReadiness()
     }
@@ -2679,18 +2851,27 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// positions are relative to whatever the camera pose is *this frame*; rotation
     /// rides on ARKit yaw continuously corrected against the compass.
     private func transitFrameUpdate(arView: ARView) {
-        guard let fix = locationService?.location else { return }
+        guard let estimate = locationService?.transitEstimate(), estimate.quality == .tracking else {
+            for (id, holder) in placedHolders where roomDrops[id] == nil { holder.isEnabled = false }
+            return
+        }
         let camPos = arView.cameraTransform.translation
-        let device = GeoMath.predicted(from: fix, at: Date())
+        let device = estimate.coordinate
 
         for (id, holder) in placedHolders {
             guard roomDrops[id] == nil else { continue } // AR-space anchored (ADR-025)
             guard let drop = placedDrops[id] else { continue }
-            let enu = GeoMath.enuOffset(from: device, to: drop.coordinate)
-            let distance = simd_length(enu)
-            let bearingAR = atan2(enu.x, enu.y) - headingCorrection
-            let x = camPos.x + Float(distance * sin(bearingAR))
-            let z = camPos.z - Float(distance * cos(bearingAR))
+            guard let enu = GeoMath.checkedENUOffset(from: device, to: drop.coordinate) else {
+                holder.isEnabled = false
+                continue
+            }
+            holder.isEnabled = true
+            guard let horizontal = GeoMath.arHorizontal(fromENU: enu, headingCorrection: headingCorrection) else {
+                holder.isEnabled = false
+                continue
+            }
+            let x = camPos.x + Float(horizontal.x)
+            let z = camPos.z - Float(horizontal.y)
             // Flat-earth vertical over ≤2 km: viewer's eye ≈ 1.5 m above local ground.
             // Rooftop drops carry the nominal building height in transit too.
             let y = camPos.y - 1.5 + Float(drop.heightAboveGround)
@@ -2773,7 +2954,6 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
         guard !placedHolders.isEmpty else { return }
         let camPos = arView.cameraTransform.translation
-        applyPerceptualCompensation(camPos: camPos)
 
         let tanHalfAngle = Float(tan(AppConfig.minApparentAngleDegrees * .pi / 180 / 2))
 
@@ -2803,62 +2983,6 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             let requiredDiameter = 2 * distance * tanHalfAngle
             marker.scale = SIMD3(repeating: min(max(1, requiredDiameter / 0.8),
                                                 AppConfig.maxDistanceBoost))
-        }
-    }
-
-    /// ADR-049 perceptual size compensation. True perspective (d⁻¹ angular decay)
-    /// is geometrically exact but perceptually wrong on a phone: the optical
-    /// chain — a ~50° camera field aspect-filled onto a display that subtends
-    /// only ~12° at arm's length — shows *everything* at roughly a quarter of
-    /// its naked-eye visual angle. The real street survives because the brain
-    /// applies size constancy to familiar structure; an unfamiliar virtual
-    /// object gets no such correction and reads as a miniature.
-    ///
-    /// Correction: content scale × clamp((d/d₀)^β, 1, cap). Apparent angle then
-    /// decays as d^(β−1) — still strictly monotonic (farther is always smaller,
-    /// walking closer always grows it), never billboarded, and exactly identity
-    /// inside d₀, so near-field and room drops render untouched. The grounding
-    /// disc tracks the compensated footprint so the size-vs-distance cue
-    /// (ADR-023) stays coherent. Fireworks/beacon manage their own scale.
-    /// The ADR-049 law, kept pure so the invariants (identity near, capped far,
-    /// monotonic factor, and — critically — apparent angle still strictly
-    /// shrinking with distance) are provable in unit tests.
-    nonisolated static func perceptualFactor(atDistance distance: Float) -> Float {
-        guard distance.isFinite, distance > 0 else { return 1 }
-        return min(
-            max(pow(distance / AppConfig.perceptualD0, AppConfig.perceptualBeta), 1),
-            AppConfig.perceptualCap
-        )
-    }
-
-    private func applyPerceptualCompensation(camPos: SIMD3<Float>) {
-        guard AppConfig.perceptualCompensationEnabled else { return }
-        for (id, content) in contentEntities {
-            guard let holder = placedHolders[id], roomDrops[id] == nil,
-                  let drop = placedDrops[id],
-                  drop.content != .fireworks, drop.content != .beacon,
-                  !liveEditingDrops.contains(id)
-            else { continue }
-            let distance = simd_length(holder.position - camPos)
-            let factor = Self.perceptualFactor(atDistance: distance)
-            let target = Float(drop.scale) * factor
-            let current = content.scale.x
-            // 2% hysteresis on the *rendered* scale: steps stay imperceptible
-            // while avoiding per-frame transform churn, and the one check also
-            // catches remote scale edits and freshly swapped entities. Exact
-            // identity is always re-established inside d₀.
-            guard abs(target - current) > max(current, 0.001) * 0.02
-                || (factor == 1 && current != target) else { continue }
-            appliedCompensation[id] = factor
-            content.scale = SIMD3(repeating: target)
-            if let marker = markers[id] {
-                let top = content.visualBounds(relativeTo: holder).max.y
-                marker.position.y = max(top, 0) + 2
-            }
-            if let disc = groundDiscs[id] {
-                let radius = Self.groundDiscRadius(for: content, relativeTo: holder)
-                disc.scale = [radius, 0.01, radius]
-            }
         }
     }
 
@@ -2904,7 +3028,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             let geoAnchor = ARGeoAnchor(coordinate: drop.coordinate)
             arView.session.add(anchor: geoAnchor)
 
-            let anchorEntity = AnchorEntity(anchor: geoAnchor)
+            // Target-by-identifier avoids the ARAnchor convenience initializer's
+            // missing back-deployment symbol with Xcode 26.6 on iOS 17.
+            let anchorEntity = AnchorEntity(.anchor(identifier: geoAnchor.identifier))
             let entity = DropEntityFactory.makeEntity(for: drop, fullBright: contentFullBright)
             entity.position.y = Float(drop.heightAboveGround)
             // Geo anchor local frame: +X east, −Z north. Face the viewer's position.

@@ -1,16 +1,15 @@
 import Foundation
 
-/// Wave 6.1 identity (ADR-039). The profile is a trophy shelf, not a feed
-/// (PRODUCT-ROUTE §3A): moments delivered and reactions received are the
-/// headline numbers; captures hang off Memories, not off the profile doc.
+/// Wave 6.1 identity (ADR-039). Captures hang off Memories, not this document.
 struct UserProfile: Codable, Equatable {
     var uid: String
     /// Unique, lowercase, user-chosen; shown as @handle.
     var handle: String
     var displayName: String
     var createdAt: Date = Date()
-    /// Denormalized counters (Cloud Functions maintain them server-side later;
-    /// client-incremented until Wave 6.2's backend rules land).
+    /// Legacy fields kept for decoding existing profile documents. There is
+    /// no acknowledged-event producer or reconciliation path, so the profile
+    /// deliberately does not present these values as user totals.
     var momentsDelivered: Int = 0
     var reactionsReceived: Int = 0
 

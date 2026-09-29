@@ -104,6 +104,11 @@ private struct ARScreenContent: View {
                     systemImage: "camera.metering.unknown",
                     description: Text("World tracking isn't available here (e.g. in the Simulator). The Map and My Drops tabs still work.")
                 )
+                .onAppear {
+                    #if DEBUG
+                    LaunchSmoke.reached("cameraUnavailable")
+                    #endif
+                }
             } else if isActive, let arView = holder.arView {
                 HostedARView(arView: arView)
                     .ignoresSafeArea()
@@ -673,33 +678,43 @@ private struct ARScreenContent: View {
     }
 
     private var needsCompassCalibration: Bool {
-        guard let accuracy = locationService.headingAccuracy else { return false }
-        return accuracy < 0 || accuracy > 25
+        guard let sample = locationService.currentHeading(),
+              sample.reference == .trueNorth else { return false }
+        return sample.accuracyDegrees > 25
     }
 
     private func guidanceCard(drop: GeoDrop, distance: Double, viewer: CLLocation) -> some View {
         let bearing = GeoMath.bearing(from: viewer.coordinate, to: drop.coordinate)
-        let heading = locationService.headingDegrees ?? 0
-        // Signed relative angle in −180…180: negative = drop is to your left.
-        let raw = (bearing - heading) * .pi / 180
-        let relativeAngle = atan2(sin(raw), cos(raw)) * 180 / .pi
+        let heading = locationService.currentHeading()
+        // Signed relative angle in −180…180, only from a current reading.
+        let relativeAngle: Double? = heading.map { sample in
+            let raw = (bearing - sample.degrees) * .pi / 180
+            return atan2(sin(raw), cos(raw)) * 180 / .pi
+        }
 
         let directionText: String
-        if abs(relativeAngle) <= 30 {
-            directionText = "straight ahead"
-        } else if abs(relativeAngle) >= 150 {
-            directionText = "behind you — turn around"
-        } else if relativeAngle > 0 {
-            directionText = "turn right →"
+        let directionColor: Color
+        if let relativeAngle {
+            directionColor = abs(relativeAngle) <= 30 ? .green : .yellow
+            if abs(relativeAngle) <= 30 {
+                directionText = "straight ahead"
+            } else if abs(relativeAngle) >= 150 {
+                directionText = "behind you — turn around"
+            } else if relativeAngle > 0 {
+                directionText = "turn right →"
+            } else {
+                directionText = "← turn left"
+            }
         } else {
-            directionText = "← turn left"
+            directionText = "Waiting for current heading"
+            directionColor = .white
         }
 
         return HStack(spacing: 12) {
-            Image(systemName: "location.north.fill")
+            Image(systemName: relativeAngle == nil ? "location.slash" : "location.north.fill")
                 .font(.title2)
-                .foregroundStyle(abs(relativeAngle) <= 30 ? .green : .yellow)
-                .rotationEffect(.degrees(relativeAngle))
+                .foregroundStyle(directionColor)
+                .rotationEffect(.degrees(relativeAngle ?? 0))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(drop.title)
@@ -707,7 +722,12 @@ private struct ARScreenContent: View {
                     .lineLimit(1)
                 Text("\(GeoMath.distanceLabel(distance)) · \(directionText)")
                     .font(.caption.bold())
-                    .foregroundStyle(abs(relativeAngle) <= 30 ? .green : .yellow)
+                    .foregroundStyle(directionColor)
+                if heading?.reference == .magneticNorth {
+                    Text("Magnetic heading — direction approximate")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
                 Text("by \(drop.createdBy)")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.7))

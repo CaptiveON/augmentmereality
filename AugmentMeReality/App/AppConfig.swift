@@ -156,31 +156,18 @@ enum AppConfig {
     static let revealMaxSeconds: TimeInterval = 1.6
 
     /// Drops within this range of the viewer get rendered in AR (meters).
-    /// Far drops are shown scaled-up (see `minApparentAngleDegrees`) so pointing the
-    /// camera in their direction always shows something.
+    /// The separate way-point marker stays readable at range; content keeps its
+    /// authored physical size.
     static let arVisibilityRadius: CLLocationDistance = 2_000
 
     /// Radius used when fetching shared drops around the user (meters).
     static let nearbyQueryRadius: CLLocationDistance = 3_000
 
-    /// ADR-049 perceptual size compensation. The optical chain (camera FOV ≈50°
-    /// compressed onto a screen subtending ≈12° at arm's length) makes every
-    /// through-the-phone object ~4–5× smaller in visual angle than naked-eye
-    /// reality; the scene survives via size constancy, unfamiliar virtual
-    /// content does not. Correction: content scale × clamp((d/d0)^beta, 1, cap)
-    /// — apparent angle then decays as d^(beta−1) instead of d^(−1). Sub-linear,
-    /// capped, never billboarded (ADR-008's failure modes stay banned).
-    static let perceptualCompensationEnabled = true
-    static let perceptualD0: Float = 8
-    static let perceptualBeta: Float = 0.35
-    static let perceptualCap: Float = 12
-
-    /// Minimum apparent size of a drop on screen, in degrees of visual angle.
-    /// Content too small/far to reach this is scaled up so it stays visible; the
-    /// boost fades out as you approach and true perspective takes over.
+    /// Minimum apparent size of the separate way-point marker on screen, in
+    /// degrees of visual angle. It never changes the content or its footprint.
     static let minApparentAngleDegrees = 2.0
 
-    /// Cap on the far-distance scale boost (keeps multi-km drops sane).
+    /// Cap on the far-distance way-point marker scale.
     static let maxDistanceBoost: Float = 80
 
     /// Re-anchor when a better GPS fix implies our placement is off by more than

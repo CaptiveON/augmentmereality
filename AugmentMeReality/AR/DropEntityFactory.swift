@@ -48,19 +48,19 @@ enum DropEntityFactory {
     }
     @MainActor private static var cachedAssetNames: [String]?
 
-    /// Loaded template entities, cloned per placement. USDZ decode is 100s of ms
-    /// to seconds — paid once, always off-main.
-    @MainActor private static var animatedTemplates: [String: Entity] = [:]
-    /// Assets currently decoding, so preload and on-demand requests never race.
-    @MainActor private static var loadingAssets: Set<String> = []
-    /// Counts running publishers, excluding assets that are only queued for preload.
+    /// Decode admission and template residency are bounded independently of live
+    /// clones. Source-file cost is a conservative catalog budget proxy, not RAM.
+    @MainActor private static let preparation: AssetPreparationQueue<Entity> = {
+        let queue = AssetPreparationQueue<Entity>(cost: assetFileSize, load: decodeTemplate)
+        queue.onCompletion = { name, success in
+            ARBaselineMetrics.shared.event(success ? "Asset cache ready" : "Asset unavailable", details: name)
+            onAssetLoaded?(name, success)
+        }
+        return queue
+    }()
+    @MainActor private static var memoryWarningObserver: NSObjectProtocol?
+    /// Counts running publishers, excluding queued on-demand requests.
     @MainActor private static var activeDecodes = 0
-    /// Wave C (counsel SWE-6): assets whose decode FAILED. Without this
-    /// negative cache, a corrupt USDZ spun forever: the load callback fired as
-    /// if it succeeded, the manager rebuilt the entity, the rebuild re-requested
-    /// the same failing decode — CPU pegged, placeholder flickering, no log.
-    /// A failed name is never re-decoded this session; the bundle can't heal.
-    @MainActor private static var failedAssets: Set<String> = []
     /// Fired on the main actor when a decode FINISHES; `success` tells the
     /// session manager whether there is a template worth swapping in (SWE-6:
     /// a callback that can't distinguish success from failure is not a
@@ -68,13 +68,12 @@ enum DropEntityFactory {
     @MainActor static var onAssetLoaded: ((String, _ success: Bool) -> Void)?
 
     /// Round 4 (counsel arui-1): failure state is QUERYABLE at render time —
-    /// a subscriber that arrives after the decode (the session manager
-    /// attaches on camera intent; preload runs at launch) still sees truth.
+    /// a subscriber that arrives after a prior scene's decode still sees truth.
     @MainActor static func isAssetFailed(_ name: String) -> Bool {
-        failedAssets.contains(name)
+        preparation.failed.contains(name)
     }
     @MainActor static func isAssetReady(_ name: String) -> Bool {
-        animatedTemplates[name] != nil
+        preparation.contains(name)
     }
 
     private static let log = Logger(
@@ -114,7 +113,7 @@ enum DropEntityFactory {
         return await withCheckedContinuation { continuation in
             var cancellable: AnyCancellable?
             var loaded: Entity?
-            cancellable = Entity.loadAsync(named: resourceName, in: .main)
+            cancellable = AssetLoadDeadline.applying(to: Entity.loadAsync(named: resourceName, in: .main))
                 .sink(
                     receiveCompletion: { completion in
                         // Wave C SWE-6: the failure used to be dropped on the
@@ -138,52 +137,29 @@ enum DropEntityFactory {
         }
     }
 
-    /// Warm the cache at app start: sequential (parallel decode of 100+ MB would
-    /// spike memory), smallest files first so most models become available
-    /// quickly. ADR-047: assets over the pipeline budget (heavy dev scans) are
-    /// EXCLUDED from auto-preload — they decode on demand behind a placeholder,
-    /// never as an ambush during the launch window.
-    @MainActor static func preloadAnimatedAssets() {
-        guard ARBaselineExperiment.current.allows(.assetPreload) else { return }
-        let queue = bundledAnimatedAssets
-            .filter { animatedTemplates[$0] == nil && !loadingAssets.contains($0) }
-            .filter { assetFileSize($0) <= AppConfig.assetPreloadMaxBytes }
-            .sorted { assetFileSize($0) < assetFileSize($1) }
-        guard !queue.isEmpty else { return }
-        loadingAssets.formUnion(queue)
-        Task { @MainActor in
-            for name in queue {
-                let entity = await decodeTemplate(name)
-                loadingAssets.remove(name)
-                if let entity, animatedTemplates[name] == nil {
-                    animatedTemplates[name] = entity
-                    ARBaselineMetrics.shared.event("Asset cache ready", details: name)
-                } else if entity == nil {
-                    failedAssets.insert(name) // SWE-6: never re-decode a dud
-                }
-                onAssetLoaded?(name, entity != nil)
-            }
-        }
+    /// Only currently relevant content may prepare a template. Hiding the camera
+    /// removes queued work immediately; a decode already owned by RealityKit is
+    /// allowed to finish and its irrelevant result is discarded.
+    @MainActor static func setAssetDemand(_ names: Set<String>, active: Bool, priority: String? = nil) {
+        installMemoryWarningObserver()
+        preparation.setDemand(names, active: active, priority: priority)
     }
 
-    /// On-demand decode for one asset the user is actively waiting on (runs
-    /// alongside the preload; `loadingAssets` prevents double decodes and
-    /// `failedAssets` prevents the SWE-6 retry loop on a broken file).
     @MainActor static func requestAsset(_ name: String) {
-        guard animatedTemplates[name] == nil,
-              !loadingAssets.contains(name),
-              !failedAssets.contains(name) else { return }
-        loadingAssets.insert(name)
-        Task { @MainActor in
-            let entity = await decodeTemplate(name)
-            loadingAssets.remove(name)
-            if let entity, animatedTemplates[name] == nil {
-                animatedTemplates[name] = entity
-                ARBaselineMetrics.shared.event("Asset cache ready", details: name)
-            } else if entity == nil {
-                failedAssets.insert(name)
+        installMemoryWarningObserver()
+        preparation.request(name)
+    }
+
+    @MainActor private static func installMemoryWarningObserver() {
+        guard memoryWarningObserver == nil else { return }
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                preparation.releaseCachedTemplates()
+                ARBaselineMetrics.shared.event("Asset template cache released", details: "memory pressure")
             }
-            onAssetLoaded?(name, entity != nil)
         }
     }
 
@@ -257,10 +233,10 @@ enum DropEntityFactory {
         // Counsel round 2 (C19): a FAILED asset renders the explicit "3D?"
         // marker, not the loading orb — and must NOT re-request the decode
         // (that re-request was the SWE-6 infinite loop).
-        guard !failedAssets.contains(assetName) else {
+        guard !preparation.failed.contains(assetName) else {
             return text("3D?", color: color, fullBright: fullBright)
         }
-        guard let template = animatedTemplates[assetName] else {
+        guard let template = preparation.value(for: assetName) else {
             requestAsset(assetName)
             return loadingPlaceholder(color: color)
         }
