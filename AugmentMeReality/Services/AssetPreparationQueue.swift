@@ -80,6 +80,19 @@ final class AssetPreparationQueue<Value> {
         pump()
     }
 
+    /// Explicit user action after a failed decode. It arms only this failed
+    /// resource for one more attempt; current demand and camera activity still
+    /// control when it runs. A second failure restores the negative cache.
+    @discardableResult
+    func retryFailed(_ name: String) -> Bool {
+        guard failed.contains(name), inFlight != name,
+              !queued.contains(name) else { return false }
+        failed.remove(name)
+        delivered.remove(name)
+        pump()
+        return true
+    }
+
     func releaseCachedTemplates() {
         cache.removeAll()
         // Do not clear delivered: evicting an unused template must not decode

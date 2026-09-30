@@ -37,7 +37,7 @@ with synthetic options, and uses only `demo-amr-native-sdk` and fixed loopback
 ports: control `8187`, Firestore `8188`, HTTP/2 proxy `8189`.
 
 The proxy holds Firestore's streaming Write RPC while allowing Listen and
-transaction reads/commits. The native test proves all of the following:
+transaction reads/commits. The native tests prove all of the following:
 
 - With a real local pending delete, the old `.server` read reports missing and
   `hasPendingWrites == false` even though the remote document still exists.
@@ -49,9 +49,29 @@ transaction reads/commits. The native test proves all of the following:
   read succeeds after releasing the gate, exercising late completion.
 - The native `DropReaction` encoder and acknowledged-write seam produce exactly
   the expected five fields, including a Firestore timestamp, in a server round trip.
+- The production `FirebaseDropStore.loadOwnerPage` reads 10-row and 130-row
+  libraries in bounded document-ID pages (10 and 64/64/2), excludes foreign
+  rows, and records each page's actual native SDK latency in the test log.
+- Unfiltered and foreign-owner list queries fail under the dedicated fixture.
+  The reviewed-rules suite also tests the order/limit/cursor query shape under
+  `web/firestore.rules`.
+- A locally pending native write appears in a server-served owner page but is
+  excluded from that page's `serverConfirmedIDs` until acknowledged.
+- A held local delete is observed through a native owner query. The test logs
+  whether the SDK omits the row, changes the page length, reports completion,
+  or retains pending-write metadata; the library's pending-delete gate blocks
+  cursor advancement regardless of that metadata.
 
-Nonzero gate counters are asserted so accidentally bypassing either proxy path
-cannot pass. The fixture seeds synthetic documents using the emulator's local
+On the 2026-09-30 iOS simulator run, the production query returned 10 documents
+in 236 ms and 130 documents in pages of 64/64/2 at 20/16/8 ms. These are
+loopback fixture timings, not production latency targets. With a held delete,
+the server-served first owner page returned 63 documents, omitted the deleted
+row, and reported `reachedEnd=true` while `hasPendingWrites=false`. This is the
+observed case requiring the library's owner-bound pending-delete cursor guard.
+
+Nonzero gate counters and exactly one 142-document owner-page seed are asserted
+so bypassing either proxy path or skipping the paging test cannot pass. The
+fixture seeds synthetic documents using the emulator's local
 admin interface; it does not use credentials, the default Firebase app, account
 creation, or any production endpoint. It validates SDK semantics and the helper;
 the normal rules suite still owns actual authorization policy. Review the

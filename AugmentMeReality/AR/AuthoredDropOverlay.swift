@@ -8,6 +8,7 @@ struct AuthoredDropOverlay {
         let longitude: Double
         let geographicQuality: GeographicQuality?
         let heightAboveGround: Double
+        let verticalPlacement: VerticalPlacement?
         let scale: Double
         let facingDegrees: Double?
         let anchorMode: String
@@ -17,6 +18,7 @@ struct AuthoredDropOverlay {
             longitude = drop.longitude
             geographicQuality = drop.geographicQuality
             heightAboveGround = drop.heightAboveGround
+            verticalPlacement = drop.verticalPlacement
             scale = drop.scale
             facingDegrees = drop.facingDegrees
             anchorMode = drop.anchorMode
@@ -28,6 +30,7 @@ struct AuthoredDropOverlay {
             result.longitude = longitude
             result.geographicQuality = geographicQuality
             result.heightAboveGround = heightAboveGround
+            result.verticalPlacement = verticalPlacement
             result.scale = scale
             result.facingDegrees = facingDegrees
             result.anchorMode = anchorMode

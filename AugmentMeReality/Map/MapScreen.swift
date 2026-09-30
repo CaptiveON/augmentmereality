@@ -127,7 +127,7 @@ struct MapScreen: View {
             .safeAreaInset(edge: .top) { searchBar }
             .safeAreaInset(edge: .bottom) { hintBar }
             .task(id: locationService.location == nil) {
-                await library.refresh(near: locationService.location)
+                await library.refreshLibrary()
             }
             .onAppear {
                 // ADR-043: warm everything EXCEPT the camera — no green dot

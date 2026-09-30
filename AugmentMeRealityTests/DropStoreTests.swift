@@ -23,17 +23,17 @@ final class LocalDropStoreTests: XCTestCase {
         drop.message = "field test"
         try await store.save(drop)
 
-        var loaded = try await store.loadDrops(near: nil, radius: 0)
+        var loaded = try await store.loadLibraryDrops()
         XCTAssertEqual(loaded.map(\.id), [drop.id])
 
         drop.message = "edited"
         try await store.save(drop)
-        loaded = try await store.loadDrops(near: nil, radius: 0)
+        loaded = try await store.loadLibraryDrops()
         XCTAssertEqual(loaded.count, 1, "same id must upsert, not duplicate")
         XCTAssertEqual(loaded.first?.message, "edited")
 
         try await store.delete(drop)
-        loaded = try await store.loadDrops(near: nil, radius: 0)
+        loaded = try await store.loadLibraryDrops()
         XCTAssertTrue(loaded.isEmpty)
     }
 
@@ -43,7 +43,7 @@ final class LocalDropStoreTests: XCTestCase {
         try Data("this is not json {{{".utf8).write(to: url)
 
         let store = LocalDropStore(fileURL: url)
-        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        let loaded = try await store.loadLibraryDrops()
         XCTAssertTrue(loaded.isEmpty, "corrupt file must yield empty, not throw forever")
 
         XCTAssertFalse(
@@ -59,7 +59,7 @@ final class LocalDropStoreTests: XCTestCase {
 
         // And the store must be fully usable afterwards.
         try await store.save(GeoDrop())
-        let after = try await store.loadDrops(near: nil, radius: 0)
+        let after = try await store.loadLibraryDrops()
         XCTAssertEqual(after.count, 1)
     }
 
@@ -71,11 +71,11 @@ final class LocalDropStoreTests: XCTestCase {
         try Data("not json at all".utf8).write(to: url)
         let store = LocalDropStore(fileURL: url)
 
-        _ = try await store.loadDrops(near: nil, radius: 0) // quarantines
+        _ = try await store.loadLibraryDrops() // quarantines
         let first = await store.lastLoadReadWarning()
         XCTAssertNotNil(first)
 
-        _ = try await store.loadDrops(near: nil, radius: 0) // file now absent
+        _ = try await store.loadLibraryDrops() // file now absent
         let second = await store.lastLoadReadWarning()
         XCTAssertNotNil(second, "the incident must survive the next (empty) load")
 
@@ -83,7 +83,7 @@ final class LocalDropStoreTests: XCTestCase {
         // NOT resolve the incident: the destroyed rows don't come back when
         // the file reads clean again. Only the user's acknowledgement does.
         try await store.save(GeoDrop())
-        _ = try await store.loadDrops(near: nil, radius: 0)
+        _ = try await store.loadLibraryDrops()
         let afterCleanLoad = await store.lastLoadReadWarning()
         XCTAssertNotNil(afterCleanLoad, "a clean load must never auto-expire the incident")
 
@@ -103,7 +103,7 @@ final class LocalDropStoreTests: XCTestCase {
         try Data("[\(goodJSON),\(bad)]".utf8).write(to: url)
 
         let store = LocalDropStore(fileURL: url)
-        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        let loaded = try await store.loadLibraryDrops()
         XCTAssertEqual(loaded.map(\.id), [good.id], "the good row must survive")
 
         XCTAssertEqual(
@@ -115,13 +115,13 @@ final class LocalDropStoreTests: XCTestCase {
 
         // Round 2 (C6/C14): reloading the SAME bad content must not accumulate
         // sidecars (content-digest naming dedupes).
-        _ = try await store.loadDrops(near: nil, radius: 0)
+        _ = try await store.loadLibraryDrops()
         XCTAssertEqual(siblings(of: url, prefix: "unreadable-").count, 1)
 
         // Round 10 (counsel own-1): the journaled incident outlives a clean
         // rewrite — the skipped row's data is still gone; the user resolves it.
         try await store.save(good)
-        _ = try await store.loadDrops(near: nil, radius: 0)
+        _ = try await store.loadLibraryDrops()
         let afterCleanLoad = await store.lastLoadReadWarning()
         XCTAssertNotNil(afterCleanLoad, "a clean rewrite must not auto-expire the incident")
         await store.acknowledgeIncident()
@@ -142,7 +142,7 @@ final class LocalDropStoreTests: XCTestCase {
         try Data("[\(goodJSON),\(bad)]".utf8).write(to: url)
 
         let store = LocalDropStore(fileURL: url)
-        _ = try await store.loadDrops(near: nil, radius: 0) // journals the incident
+        _ = try await store.loadLibraryDrops() // journals the incident
         let beforeAck = await store.lastLoadReadWarning()
         XCTAssertNotNil(beforeAck)
 
@@ -150,7 +150,7 @@ final class LocalDropStoreTests: XCTestCase {
         let afterAck = await store.lastLoadReadWarning()
         XCTAssertNil(afterAck)
 
-        let reloaded = try await store.loadDrops(near: nil, radius: 0)
+        let reloaded = try await store.loadLibraryDrops()
         XCTAssertEqual(reloaded.map(\.id), [good.id])
         let afterReload = await store.lastLoadReadWarning()
         XCTAssertNil(afterReload, "the accepted loss must not re-journal on the next load")
@@ -165,7 +165,7 @@ final class LocalDropStoreTests: XCTestCase {
         let bad = Data("[{\"id\":\"\(UUID().uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8)
         try bad.write(to: url)
         let store = LocalDropStore(fileURL: url)
-        _ = try await store.loadDrops(near: nil, radius: 0)
+        _ = try await store.loadLibraryDrops()
         try FileManager.default.createDirectory(
             at: url.appendingPathExtension("ackdigest"), withIntermediateDirectories: false
         )
@@ -183,7 +183,7 @@ final class LocalDropStoreTests: XCTestCase {
         let bad = Data("[{\"id\":\"\(UUID().uuidString)\",\"heightAboveGround\":\"bad\"}]".utf8)
         try bad.write(to: url)
         let store = LocalDropStore(fileURL: url)
-        _ = try await store.loadDrops(near: nil, radius: 0)
+        _ = try await store.loadLibraryDrops()
         let sidecar = try XCTUnwrap(siblings(of: url, prefix: "unreadable-").first)
         let sidecarURL = url.deletingLastPathComponent().appendingPathComponent(sidecar)
         try FileManager.default.removeItem(at: sidecarURL)
@@ -207,7 +207,7 @@ final class LocalDropStoreTests: XCTestCase {
         )
         try damaged.write(to: url)
         let store = LocalDropStore(fileURL: url)
-        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        let loaded = try await store.loadLibraryDrops()
         XCTAssertEqual(loaded.map(\.id), [good.id])
         let sidecar = try XCTUnwrap(siblings(of: url, prefix: "unreadable-").first)
         let sidecarURL = url.deletingLastPathComponent().appendingPathComponent(sidecar)
@@ -237,7 +237,7 @@ final class LocalDropStoreTests: XCTestCase {
             }
             try await group.waitForAll()
         }
-        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        let loaded = try await store.loadLibraryDrops()
         XCTAssertEqual(
             Set(loaded.map(\.id)), Set(drops.map(\.id)),
             "every concurrent save must survive — no lost writes"
@@ -268,7 +268,7 @@ final class LocalDropStoreTests: XCTestCase {
             try await group.waitForAll()
         }
 
-        let loaded = try await store.loadDrops(near: nil, radius: 0)
+        let loaded = try await store.loadLibraryDrops()
         XCTAssertEqual(Set(loaded.map(\.id)), Set(added.map(\.id)))
     }
 }
@@ -294,7 +294,7 @@ final class DropLibraryTests: XCTestCase {
     }
 
     private func makeLibrary(
-        local: DropStore? = nil, cloud: DropStore? = nil, defaults: UserDefaults? = nil,
+        local: LibraryDropLoading? = nil, cloud: DropStore? = nil, defaults: UserDefaults? = nil,
         absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         currentUID: @escaping @MainActor () -> String? = { "test-owner" }
     ) -> DropLibrary {
@@ -343,7 +343,7 @@ final class DropLibraryTests: XCTestCase {
         try await library.remove(near)
         XCTAssertEqual(library.drops.count, 1)
 
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertEqual(library.drops.map(\.id), [far.id])
     }
 
@@ -419,7 +419,7 @@ final class DropLibraryTests: XCTestCase {
                 && !library.pendingSyncIDs.contains(healthy.id)
         }
 
-        await library.refresh(near: nil) // successful (empty) cloud read
+        await library.refreshLibrary() // successful (empty) cloud read
         XCTAssertTrue(
             library.terminalSyncFailureIDs.contains(terminal.id),
             "a drop that can never sync must stay visibly failed after ANY success"
@@ -470,7 +470,7 @@ final class DropLibraryTests: XCTestCase {
         await cloud.setLoadResult([drop])
         await cloud.setGateLoads(true)
 
-        let refreshTask = Task { await library.refresh(near: nil) }
+        let refreshTask = Task { await library.refreshLibrary() }
         try await waitUntil { await cloud.parkedLoadCount == 1 }
 
         try await library.remove(drop) // bumps the refresh generation
@@ -496,7 +496,7 @@ final class DropLibraryTests: XCTestCase {
         try await waitUntil { await cloud.saveAttempts > 0 }
 
         await local.setThrowOnLoad(true)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
 
         XCTAssertNotNil(library.localReadWarning, "an unreadable store must be reported")
         XCTAssertTrue(library.drops.contains { $0.id == drop.id }, "in-memory state survives")
@@ -521,7 +521,7 @@ final class DropLibraryTests: XCTestCase {
         try await waitUntil { await cloud.deleteAttempts >= 1 }
         XCTAssertTrue(library.pendingDeleteIDs.contains(drop.id), "refused delete keeps the tombstone")
 
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(
             library.drops.contains { $0.id == drop.id },
             "the tombstone must suppress resurrection from the cloud copy"
@@ -544,7 +544,7 @@ final class DropLibraryTests: XCTestCase {
             localStore: LocalDropStore(fileURL: absentURL), cloudStore: nil,
             defaults: defaults
         )
-        await library1.refresh(near: nil)
+        await library1.refreshLibrary()
         XCTAssertTrue(
             library1.pendingSyncIDs.contains(ghost),
             "an absent file is not proof — the outbox must survive it"
@@ -559,7 +559,7 @@ final class DropLibraryTests: XCTestCase {
             defaults: defaults
         )
         XCTAssertTrue(library2.pendingSyncIDs.contains(ghost))
-        await library2.refresh(near: nil)
+        await library2.refreshLibrary()
         XCTAssertFalse(
             library2.pendingSyncIDs.contains(ghost),
             "a clean load proves absence — the orphan is reaped"
@@ -608,7 +608,7 @@ final class DropLibraryTests: XCTestCase {
         // OFFLINE refresh sees via latency compensation after its own delete,
         // and what any refresh sees after a uid change. NOT retirement-grade.
         await cloud.setLoadResult([])
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(
             library.pendingDeleteIDs.contains(drop.id),
             "absence from a narrowed query must never retire a tombstone (round-7 state-1/state-2)"
@@ -616,7 +616,7 @@ final class DropLibraryTests: XCTestCase {
 
         // The SERVER answers per-document: the row is gone. Now it retires.
         await cloud.setServerAbsent([drop.id])
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(
             library.pendingDeleteIDs.contains(drop.id),
             "server-confirmed absence retires the tombstone"
@@ -646,7 +646,7 @@ final class DropLibraryTests: XCTestCase {
         try await waitUntil { library.unresolvedDeleteIDs.contains(drop.id) }
         XCTAssertFalse(library.pendingDeleteIDs.contains(drop.id), "no longer counted as in-progress")
 
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(
             library.drops.contains { $0.id == drop.id },
             "an unresolved delete still suppresses resurrection"
@@ -656,7 +656,7 @@ final class DropLibraryTests: XCTestCase {
         // answer, not an emptied query result.
         await cloud.setLoadResult([])
         await cloud.setServerAbsent([drop.id])
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(
             library.unresolvedDeleteIDs.contains(drop.id),
             "server-confirmed absence retires the unresolved delete"
@@ -772,7 +772,7 @@ final class DropLibraryTests: XCTestCase {
         let drop = GeoDrop() // ownerUid nil, like every locally created drop
         try await library.add(drop)
         try await waitUntil {
-            (try? await local.loadDrops(near: nil, radius: 0))?
+            (try? await local.loadLibraryDrops())?
                 .first(where: { $0.id == drop.id })?.ownerUid == "uid-stamped"
         }
         XCTAssertEqual(
@@ -794,7 +794,7 @@ final class DropLibraryTests: XCTestCase {
             library.hasCompletedCleanRefresh,
             "cold start must present as checking, not Synced"
         )
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(
             library.hasCompletedCleanRefresh,
             "clean local load + answered cloud read earn the positive state"
@@ -813,12 +813,12 @@ final class DropLibraryTests: XCTestCase {
             cloudStore: GatedCloudStore(), defaults: makeDefaults()
         )
 
-        await library.refresh(near: nil) // quarantines the file, journals
+        await library.refreshLibrary() // quarantines the file, journals
         XCTAssertFalse(
             library.hasCompletedCleanRefresh,
             "a quarantining load must not earn the positive state"
         )
-        await library.refresh(near: nil) // file now absent — journal remains
+        await library.refreshLibrary() // file now absent — journal remains
         XCTAssertFalse(
             library.hasCompletedCleanRefresh,
             "quarantine-absence with a journaled incident must not earn it either"
@@ -831,7 +831,7 @@ final class DropLibraryTests: XCTestCase {
         let local = FlakyLocalStore()
         await local.setThrowOnLoad(true)
         let library = makeLibrary(local: local, cloud: GatedCloudStore())
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(
             library.hasCompletedCleanRefresh,
             "unreadable local truth must not earn the positive state"
@@ -843,7 +843,7 @@ final class DropLibraryTests: XCTestCase {
             userInfo: [NSLocalizedDescriptionKey: "unavailable"]
         ))
         let library2 = makeLibrary(cloud: failingCloud)
-        await library2.refresh(near: nil)
+        await library2.refreshLibrary()
         XCTAssertFalse(
             library2.hasCompletedCleanRefresh,
             "an unanswered cloud read must not earn the positive state"
@@ -864,7 +864,7 @@ final class DropLibraryTests: XCTestCase {
             localStore: LocalDropStore(fileURL: absentURL), cloudStore: nil,
             defaults: defaults
         )
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertEqual(library.uploadingCount, 0, "not progress")
         XCTAssertEqual(
             library.unpushablePendingCount, 1,
@@ -923,13 +923,13 @@ final class DropLibraryTests: XCTestCase {
         let cloud = GatedCloudStore()
         await cloud.setServedFromCache(true)
         let library = makeLibrary(cloud: cloud)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(
             library.hasCompletedCleanRefresh,
             "a cache-served read is not server confirmation"
         )
         await cloud.setServedFromCache(false)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(library.hasCompletedCleanRefresh, "a server-served read earns it")
     }
 
@@ -962,7 +962,7 @@ final class DropLibraryTests: XCTestCase {
             library.drops.first(where: { $0.id == drop.id })?.message,
             "local edit — newer", "memory keeps the pending edit"
         )
-        let onDisk = try await local.loadDrops(near: nil, radius: 0)
+        let onDisk = try await local.loadLibraryDrops()
         XCTAssertEqual(
             onDisk.first(where: { $0.id == drop.id })?.message,
             "local edit — newer", "disk keeps the pending edit"
@@ -1012,7 +1012,7 @@ final class DropLibraryTests: XCTestCase {
         try await waitUntil { await cloud.deleteAttempts >= 1 }
 
         await cloud.setServerAbsent([drop.id]) // would retire IF probed
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(
             library.pendingDeleteIDs.contains(drop.id),
             "no probe may run — or retire — under rules that cannot answer absence"
@@ -1030,22 +1030,22 @@ final class DropLibraryTests: XCTestCase {
         var uptime: TimeInterval = 0
         let library = makeLibrary(cloud: cloud, defaults: defaults, absenceProbeTime: { uptime })
 
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(library.pendingDeleteIDs.contains(id))
         await cloud.setAbsenceCapability(.answers) // A rules rollout changes the capability.
         uptime = 59
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         let beforeBackoff = await cloud.absenceProbeCalls
         XCTAssertEqual(beforeBackoff, 1, "Denials back off instead of probing every refresh")
 
         uptime = 61
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         let afterBackoff = await cloud.absenceProbeCalls
         XCTAssertEqual(afterBackoff, 2, "The same session must recover after a rules rollout")
         XCTAssertTrue(library.pendingDeleteIDs.contains(id), "Capability is not proof this drop is gone")
 
         await cloud.setServerAbsent([id])
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertFalse(library.pendingDeleteIDs.contains(id), "Per-document proof retires the tombstone")
         let afterRetirement = await cloud.absenceProbeCalls
         XCTAssertEqual(afterRetirement, 2, "Positive capability can be reused")
@@ -1085,7 +1085,7 @@ final class DropLibraryTests: XCTestCase {
         await cloud.setAbsenceCapability(.denied)
         let library = makeLibrary(cloud: cloud, defaults: defaults, absenceProbeTime: { 0 })
 
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         await cloud.setAbsenceCapability(.answers)
         await cloud.setServerAbsent([id])
         await library.authDidBecomeReady(uid: "first-user")
@@ -1175,7 +1175,7 @@ final class DropLibraryTests: XCTestCase {
         fetched.receivedViaLink = true
         try await library.redeem(fetched)
         XCTAssertTrue(library.drops.contains { $0.id == drop.id })
-        let onDisk = try await local.loadDrops(near: nil, radius: 0)
+        let onDisk = try await local.loadLibraryDrops()
         XCTAssertEqual(
             onDisk.first(where: { $0.id == drop.id })?.message, "the last copy",
             "the fetched copy is restored to disk — it is the only copy left"
@@ -1191,14 +1191,14 @@ final class DropLibraryTests: XCTestCase {
         cloudDrop.message = "cloud only"
         await cloud.setLoadResult([cloudDrop])
         let library = makeLibrary(cloud: cloud)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(library.drops.contains { $0.id == cloudDrop.id })
 
         await cloud.setFailLoads(NSError(
             domain: "test", code: 14,
             userInfo: [NSLocalizedDescriptionKey: "unavailable"]
         ))
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(
             library.drops.contains { $0.id == cloudDrop.id },
             "a failed pass must not un-publish rows a completed pass contributed"
@@ -1216,7 +1216,7 @@ final class DropLibraryTests: XCTestCase {
         await cloud.setLoadResult([staged])
         await cloud.setUnackedRows([staged.id])
         let library = makeLibrary(cloud: cloud, defaults: defaults)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         let acked = defaults.stringArray(forKey: "ackedCloudDropIDs") ?? []
         XCTAssertFalse(
             acked.contains(staged.id.uuidString),
@@ -1224,7 +1224,7 @@ final class DropLibraryTests: XCTestCase {
         )
 
         await cloud.setUnackedRows([])
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         let ackedAfter = defaults.stringArray(forKey: "ackedCloudDropIDs") ?? []
         XCTAssertTrue(ackedAfter.contains(staged.id.uuidString))
     }
@@ -1295,18 +1295,18 @@ final class DropLibraryTests: XCTestCase {
         let library = DropLibrary(
             localStore: local, cloudStore: GatedCloudStore(), defaults: makeDefaults()
         )
-        await library.refresh(near: nil) // quarantines + remembers
+        await library.refreshLibrary() // quarantines + remembers
         XCTAssertFalse(library.hasCompletedCleanRefresh)
 
         await local.acknowledgeIncident() // the user taps Dismiss
-        await library.refresh(near: nil) // absent file, journal gone — memory remains
+        await library.refreshLibrary() // absent file, journal gone — memory remains
         XCTAssertFalse(
             library.hasCompletedCleanRefresh,
             "Dismiss retires the banner, never the evidence bar"
         )
 
         try await local.save(GeoDrop()) // a genuinely clean library returns
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(library.hasCompletedCleanRefresh, "a clean LOAD retires the memory")
     }
 
@@ -1319,18 +1319,18 @@ final class DropLibraryTests: XCTestCase {
             domain: "test", code: 14,
             userInfo: [NSLocalizedDescriptionKey: "server unavailable"]
         ))
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertNotNil(library.lastSyncError)
 
         await cloud.setFailLoads(nil)
         await cloud.setServedFromCache(true)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertNotNil(
             library.lastSyncError,
             "a cache-served read may not revoke a verdict only the server issued"
         )
         await cloud.setServedFromCache(false)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertNil(library.lastSyncError)
     }
 
@@ -1352,7 +1352,7 @@ final class DropLibraryTests: XCTestCase {
         let removeTask = Task { try await library.remove(drop) }
         try await waitUntil { await local.parkedDeleteCount == 1 }
 
-        await library.refresh(near: nil) // must NOT supersede the remove
+        await library.refreshLibrary() // must NOT supersede the remove
         await local.releaseAllDeletes()
         try? await removeTask.value
 
@@ -1470,7 +1470,7 @@ final class DropLibraryTests: XCTestCase {
         let library = DropLibrary(
             localStore: local, cloudStore: GatedCloudStore(), defaults: makeDefaults()
         )
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertTrue(library.lostRowIDs.contains(lostID), "the loss is recorded BY ID")
         XCTAssertFalse(
             library.hasCompletedCleanRefresh,
@@ -1478,7 +1478,7 @@ final class DropLibraryTests: XCTestCase {
         )
 
         await local.acknowledgeIncident() // the user taps Dismiss
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertNil(library.localReadWarning, "the banner stays down for these bytes")
         XCTAssertTrue(
             library.lostRowIDs.contains(lostID),
@@ -1503,7 +1503,7 @@ final class DropLibraryTests: XCTestCase {
         let defaults = makeDefaults()
         let store = LocalDropStore(fileURL: url)
         let first = DropLibrary(localStore: store, cloudStore: nil, defaults: defaults)
-        await first.refresh(near: nil)
+        await first.refreshLibrary()
         XCTAssertEqual(first.lostRowIDs, [id])
         XCTAssertNotNil(first.storageProblemText)
 
@@ -1511,19 +1511,19 @@ final class DropLibraryTests: XCTestCase {
         XCTAssertNil(first.storageLedgerError)
         XCTAssertNil(first.storageProblemText)
         XCTAssertEqual(try Data(contentsOf: url), original, "Clear must not rewrite bad rows")
-        await first.refresh(near: nil)
+        await first.refreshLibrary()
         XCTAssertNil(first.storageProblemText)
 
         let relaunched = DropLibrary(
             localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
         )
-        await relaunched.refresh(near: nil)
+        await relaunched.refreshLibrary()
         XCTAssertNil(relaunched.storageProblemText)
         XCTAssertTrue(relaunched.lostRowIDs.isEmpty)
 
         let changed = Data("[{\"id\":\"\(id.uuidString)\",\"heightAboveGround\":\"different bad bytes\"}]".utf8)
         try changed.write(to: url)
-        await relaunched.refresh(near: nil)
+        await relaunched.refreshLibrary()
         XCTAssertEqual(relaunched.lostRowIDs, [id], "reused id with changed corruption is new")
         XCTAssertNotNil(relaunched.storageProblemText)
         XCTAssertEqual(try Data(contentsOf: url), changed)
@@ -1544,13 +1544,13 @@ final class DropLibraryTests: XCTestCase {
             localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: makeDefaults()
         )
 
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
 
         XCTAssertTrue(library.lostRowIDs.isEmpty)
         XCTAssertEqual(library.storageProblemText, "1 saved drop couldn't be read")
         library.acknowledgeLosses()
         XCTAssertNil(library.storageProblemText)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertNil(library.storageProblemText)
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
@@ -1572,7 +1572,7 @@ final class DropLibraryTests: XCTestCase {
         let relaunched = DropLibrary(
             localStore: LocalDropStore(fileURL: url), cloudStore: nil, defaults: defaults
         )
-        await relaunched.refresh(near: nil)
+        await relaunched.refreshLibrary()
 
         XCTAssertEqual(relaunched.lostRowIDs, [received.id])
         XCTAssertEqual(
@@ -1596,11 +1596,11 @@ final class DropLibraryTests: XCTestCase {
         try Data("[\(badA),\(badB)]".utf8).write(to: url)
         let local = LocalDropStore(fileURL: url)
         let library = DropLibrary(localStore: local, cloudStore: nil, defaults: makeDefaults())
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertEqual(library.lostRowIDs, [first.id, second.id])
 
         try await local.save(first)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
 
         XCTAssertEqual(library.lostRowIDs, [second.id])
         XCTAssertNotNil(library.storageProblemText)
@@ -1625,7 +1625,7 @@ final class DropLibraryTests: XCTestCase {
             localStore: LocalDropStore(fileURL: url), cloudStore: nil,
             defaults: makeDefaults(), incidentLedgerURL: ledgerURL
         )
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
         XCTAssertEqual(library.lostRowIDs, [id])
         try FileManager.default.removeItem(at: ledgerURL)
         try FileManager.default.createDirectory(at: ledgerURL, withIntermediateDirectories: false)
@@ -1698,7 +1698,7 @@ final class DropLibraryTests: XCTestCase {
         previous.ownerUid = "previous-account"
         try await local.save(previous)
         let library = makeLibrary(local: local, cloud: cloud)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
 
         XCTAssertEqual(library.ownershipRole(id: previous.id), .unresolved)
         XCTAssertFalse(library.canEditLocally(id: previous.id))
@@ -1718,7 +1718,7 @@ final class DropLibraryTests: XCTestCase {
         let legacy = GeoDrop()
         try await local.save(legacy)
         let library = makeLibrary(local: local, cloud: cloud)
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
 
         XCTAssertEqual(library.ownershipRole(id: legacy.id), .legacyLocal)
         XCTAssertTrue(library.canEditLocally(id: legacy.id))
@@ -1798,7 +1798,7 @@ final class DropLibraryTests: XCTestCase {
         legacy.message = "before"
         try await local.save(legacy)
         let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
-        await library.refresh(near: nil)
+        await library.refreshLibrary()
 
         await local.setGateSaves(true)
         var edited = legacy
@@ -1897,7 +1897,7 @@ final class DropLibraryTests: XCTestCase {
         let removal = Task { try await library.removeLocalCopy(id: received.id) }
         try await waitUntil { await local.parkedDeleteCount == 1 }
         await cloud.setGateLoads(true)
-        let refresh = Task { await library.refresh(near: nil) }
+        let refresh = Task { await library.refreshLibrary() }
         try await waitUntil { await cloud.parkedLoadCount == 1 }
 
         await local.releaseAllDeletes()
@@ -1954,7 +1954,7 @@ final class DropLibraryTests: XCTestCase {
         let relaunched = makeLibrary(
             local: local, cloud: cloud, defaults: defaults, currentUID: { uid }
         )
-        await relaunched.refresh(near: nil)
+        await relaunched.refreshLibrary()
         await relaunched.waitForCloudDeleteAttempt(id: drop.id)
         XCTAssertTrue(relaunched.pendingDeleteIDs.contains(drop.id))
         let attemptsUnderB = await cloud.deleteAttempts
@@ -2094,6 +2094,311 @@ final class DropLibraryTests: XCTestCase {
             in: laterOrder, at: IndexSet(integer: 0)
         ))
     }
+    // MARK: - Owner-library pagination (#26)
+
+    private func ownerDrop(_ index: Int) -> GeoDrop {
+        let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012X", index))!
+        var drop = GeoDrop(id: id)
+        drop.message = "owner \(index)"
+        drop.ownerUid = "test-owner"
+        return drop
+    }
+
+    func testHundredsOfOwnerRowsOverlapAndBoundaryUpdatesAreReachable() async throws {
+        let cloud = PaginatedOwnerStore(rows: (0..<235).map { ownerDrop($0 * 2) })
+        await cloud.setOverlapAtBoundary(true)
+        let local = LocalDropStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("owner-pages-\(UUID().uuidString).json"))
+        var received = GeoDrop()
+        received.receivedViaLink = true
+        try await local.save(received)
+        let library = makeLibrary(local: local, cloud: cloud)
+
+        await library.refreshLibrary()
+        XCTAssertEqual(library.ownerSyncProgress?.loadedRows, 64)
+        XCTAssertFalse(library.ownerSyncProgress?.isComplete ?? true)
+        XCTAssertTrue(library.drops.contains { $0.id == received.id })
+        XCTAssertFalse(library.hasCompletedCleanRefresh)
+
+        // A row at the old boundary is returned again, now edited. A new
+        // document behind the cursor waits for the next sweep.
+        var boundary = ownerDrop(126)
+        boundary.message = "boundary edited"
+        await cloud.upsert(boundary)
+        await cloud.upsert(ownerDrop(19))
+        for _ in 0..<10 where library.ownerSyncProgress?.isComplete != true {
+            await library.refreshLibrary()
+        }
+        XCTAssertTrue(library.ownerSyncProgress?.isComplete == true)
+        XCTAssertEqual(library.ownerSyncProgress?.loadedRows, 235)
+        XCTAssertEqual(Set(library.drops.map(\.id)).count, 236)
+        XCTAssertEqual(library.drops.first { $0.id == boundary.id }?.message, "boundary edited")
+        XCTAssertFalse(library.drops.contains { $0.id == ownerDrop(19).id })
+        XCTAssertTrue(library.hasCompletedCleanRefresh)
+        let readCount = await cloud.readDocumentCount
+        let pageCount = await cloud.readAttempts.count
+        XCTAssertLessThanOrEqual(readCount, pageCount * OwnerLibraryPagingPolicy.pageSize)
+
+        await library.refreshLibrary() // new sweep starts at the first ID
+        XCTAssertTrue(library.drops.contains { $0.id == ownerDrop(19).id })
+        XCTAssertEqual(Set(library.drops.map(\.id)).count, 237)
+    }
+
+    func testInterruptedPageResumesAndNeverDeletesUnvisitedRows() async throws {
+        let rows = (0..<140).map(ownerDrop)
+        let cloud = PaginatedOwnerStore(rows: rows)
+        let library = makeLibrary(cloud: cloud)
+        await library.refreshLibrary()
+        let boundary = rows[63].id.uuidString
+        await cloud.failOnce(after: boundary)
+
+        await library.refreshLibrary()
+        XCTAssertEqual(library.ownerSyncProgress?.pagesRead, 1)
+        XCTAssertNotNil(library.lastSyncError)
+        XCTAssertEqual(library.drops.count, 64)
+
+        await library.refreshLibrary()
+        XCTAssertEqual(library.ownerSyncProgress?.pagesRead, 2)
+        XCTAssertEqual(library.drops.count, 128)
+        await library.refreshLibrary()
+        XCTAssertTrue(library.ownerSyncProgress?.isComplete == true)
+        XCTAssertEqual(library.drops.count, 140)
+        XCTAssertNil(library.lastSyncError)
+
+        // Query omission during the next sweep is not per-document absence.
+        await cloud.removeRow(rows[10].id)
+        await library.refreshLibrary()
+        XCTAssertTrue(library.drops.contains { $0.id == rows[10].id })
+        XCTAssertEqual(library.drops.count, 140)
+        let requests = await cloud.readAttempts
+        XCTAssertEqual(requests[1].cursor, boundary)
+        XCTAssertEqual(requests[2].cursor, boundary, "the failed page kept its cursor")
+    }
+
+    func testEarlierPageServerEditDoesNotRevertToStaleLocalDiskOnNextPage() async throws {
+        let local = LocalDropStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("owner-stale-\(UUID().uuidString).json"))
+        var stale = ownerDrop(0)
+        stale.message = "stale disk copy"
+        try await local.save(stale)
+        var fresh = stale
+        fresh.message = "server edit"
+        let cloud = PaginatedOwnerStore(rows: [fresh] + (1..<80).map(ownerDrop))
+        let library = makeLibrary(local: local, cloud: cloud)
+
+        await library.refreshLibrary()
+        XCTAssertEqual(library.drops.first { $0.id == fresh.id }?.message, "server edit")
+        await library.refreshLibrary()
+        XCTAssertEqual(library.drops.first { $0.id == fresh.id }?.message, "server edit")
+    }
+
+    func testPendingLocalWriteWinsPagedCloudEchoAndCacheCannotAdvance() async throws {
+        let defaults = makeDefaults()
+        let cloud = PaginatedOwnerStore(rows: [])
+        await cloud.setFailSaves(true)
+        let library = makeLibrary(cloud: cloud, defaults: defaults)
+        var edit = ownerDrop(4)
+        edit.message = "new local edit"
+        try await library.add(edit)
+        try await waitUntil { await cloud.saveAttempts > 0 }
+
+        var stale = edit
+        stale.message = "old cloud copy"
+        await cloud.upsert(stale)
+        await cloud.setUnackedRows([edit.id])
+        await cloud.serveNextFromCache()
+        await library.refreshLibrary()
+        XCTAssertNil(library.ownerSyncProgress)
+        XCTAssertFalse(library.hasCompletedCleanRefresh)
+        XCTAssertEqual(library.drops.first { $0.id == edit.id }?.message, "new local edit")
+
+        await library.refreshLibrary()
+        XCTAssertNil(library.ownerSyncProgress, "a pending-write overlay cannot define the cursor")
+        XCTAssertEqual(library.drops.first { $0.id == edit.id }?.message, "new local edit")
+        XCTAssertTrue(library.pendingSyncIDs.contains(edit.id))
+        XCTAssertFalse((defaults.stringArray(forKey: "ackedCloudDropIDs") ?? [])
+            .contains(edit.id.uuidString))
+
+        await cloud.setFailSaves(false)
+        library.retrySync(id: edit.id)
+        try await waitUntil { !library.pendingSyncIDs.contains(edit.id) }
+        await cloud.setUnackedRows([])
+        await library.refreshLibrary()
+        XCTAssertTrue(library.ownerSyncProgress?.isComplete == true)
+    }
+
+    func testOwnerCursorAndCloudOnlyRowsResetOnAccountChange() async throws {
+        let a = (0..<80).map(ownerDrop)
+        let cloud = PaginatedOwnerStore(rows: a)
+        var uid = "account-a"
+        let library = makeLibrary(cloud: cloud, currentUID: { uid })
+        await library.refreshLibrary()
+        XCTAssertEqual(library.ownerSyncProgress?.pagesRead, 1)
+
+        let b = ownerDrop(900)
+        await cloud.replaceRows([b])
+        uid = "account-b"
+        await library.refreshLibrary()
+        XCTAssertTrue(library.ownerSyncProgress?.isComplete == true)
+        XCTAssertEqual(library.drops.map(\.id), [b.id])
+        let requests = await cloud.readAttempts
+        XCTAssertNil(requests.last?.cursor)
+    }
+
+    func testEarlierAccountsPendingDeleteDoesNotStallNewOwnersSweep() async throws {
+        var old = ownerDrop(1)
+        old.ownerUid = "account-a"
+        let cloud = PaginatedOwnerStore(rows: [old])
+        let local = LocalDropStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("owner-switch-delete-\(UUID().uuidString).json"))
+        try await local.save(old)
+        var uid = "account-a"
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        await library.refreshLibrary()
+
+        await cloud.setFailDeletes(true)
+        try await library.removeOwned(id: old.id)
+        try await waitUntil { await cloud.deleteAttempts > 0 }
+        XCTAssertTrue(library.pendingDeleteIDs.contains(old.id))
+
+        let nextOwnerRows = (100..<180).map { index -> GeoDrop in
+            var drop = ownerDrop(index)
+            drop.ownerUid = "account-b"
+            return drop
+        }
+        await cloud.replaceRows(nextOwnerRows)
+        uid = "account-b"
+        await library.refreshLibrary()
+        XCTAssertEqual(library.ownerSyncProgress?.loadedRows, 64)
+        await library.refreshLibrary()
+        XCTAssertTrue(library.ownerSyncProgress?.isComplete == true)
+        XCTAssertEqual(library.ownerSyncProgress?.loadedRows, 80)
+        XCTAssertTrue(library.pendingDeleteIDs.contains(old.id))
+        XCTAssertFalse(library.drops.contains { $0.id == old.id })
+    }
+
+    func testEarlierAccountsPendingSyncDoesNotStallNewOwnersSweep() async throws {
+        let cloud = PaginatedOwnerStore(rows: [])
+        await cloud.setFailSaves(true)
+        var uid = "account-a"
+        let library = makeLibrary(cloud: cloud, currentUID: { uid })
+        var old = ownerDrop(1)
+        old.ownerUid = "account-a"
+        try await library.add(old)
+        try await waitUntil { await cloud.saveAttempts > 0 }
+        XCTAssertTrue(library.pendingSyncIDs.contains(old.id))
+
+        let nextOwnerRows = (100..<180).map { index -> GeoDrop in
+            var drop = ownerDrop(index)
+            drop.ownerUid = "account-b"
+            return drop
+        }
+        await cloud.replaceRows(nextOwnerRows)
+        uid = "account-b"
+        await library.refreshLibrary()
+        XCTAssertEqual(library.ownerSyncProgress?.loadedRows, 64)
+        await library.refreshLibrary()
+        XCTAssertTrue(library.ownerSyncProgress?.isComplete == true)
+        XCTAssertEqual(library.ownerSyncProgress?.loadedRows, 80)
+        XCTAssertTrue(library.pendingSyncIDs.contains(old.id))
+    }
+
+    func testNewOwnerSweepRevokesCleanEvidenceUntilItsLastPage() async {
+        let cloud = PaginatedOwnerStore(rows: (0..<80).map(ownerDrop))
+        let library = makeLibrary(cloud: cloud)
+        await library.refreshLibrary()
+        await library.refreshLibrary()
+        XCTAssertTrue(library.hasCompletedCleanRefresh)
+
+        await library.refreshLibrary()
+        XCTAssertFalse(library.ownerSyncProgress?.isComplete ?? true)
+        XCTAssertFalse(library.hasCompletedCleanRefresh)
+        await library.refreshLibrary()
+        XCTAssertTrue(library.hasCompletedCleanRefresh)
+    }
+
+    func testAccountSwitchMasksCloudOnlyRowsEvenWhenLocalReadFails() async throws {
+        let local = FlakyLocalStore()
+        var received = GeoDrop()
+        received.receivedViaLink = true
+        try await local.save(received)
+        let oldOwner = ownerDrop(2)
+        let cloud = PaginatedOwnerStore(rows: [oldOwner])
+        var uid = "account-a"
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        await library.refreshLibrary()
+        XCTAssertTrue(library.drops.contains { $0.id == oldOwner.id })
+
+        await local.setThrowOnLoad(true)
+        uid = "account-b"
+        await library.refreshLibrary()
+        XCTAssertFalse(library.drops.contains { $0.id == oldOwner.id })
+        XCTAssertTrue(library.drops.contains { $0.id == received.id })
+        XCTAssertNotNil(library.localReadWarning)
+    }
+
+    func testSignOutRefreshHidesOwnerCloudOnlyRows() async throws {
+        let local = FlakyLocalStore()
+        var received = GeoDrop()
+        received.receivedViaLink = true
+        try await local.save(received)
+        let owner = ownerDrop(3)
+        let cloud = PaginatedOwnerStore(rows: [owner])
+        var uid: String? = "account-a"
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        await library.refreshLibrary()
+        XCTAssertTrue(library.drops.contains { $0.id == owner.id })
+
+        uid = nil
+        await library.refreshLibrary()
+        XCTAssertFalse(library.drops.contains { $0.id == owner.id })
+        XCTAssertTrue(library.drops.contains { $0.id == received.id })
+        XCTAssertNil(library.ownerSyncProgress)
+        XCTAssertFalse(library.hasCompletedCleanRefresh)
+    }
+
+    func testPagedQueryOmissionCannotRetireDeleteWithoutDocumentRead() async throws {
+        let cloud = PaginatedOwnerStore(rows: [])
+        let library = makeLibrary(cloud: cloud)
+        let drop = ownerDrop(11)
+        try await library.add(drop)
+        try await waitUntil { !library.pendingSyncIDs.contains(drop.id) }
+        await cloud.setFailDeletes(true)
+        try await library.remove(drop)
+        try await waitUntil { await cloud.deleteAttempts > 0 }
+
+        await cloud.removeRow(drop.id)
+        await library.refreshLibrary()
+        XCTAssertTrue(library.pendingDeleteIDs.contains(drop.id)
+            || library.unresolvedDeleteIDs.contains(drop.id))
+        await cloud.setServerAbsent([drop.id])
+        await library.refreshLibrary()
+        XCTAssertFalse(library.pendingDeleteIDs.contains(drop.id)
+            || library.unresolvedDeleteIDs.contains(drop.id))
+    }
+
+    func testTerminalOverlapCannotClaimOwnerSweepComplete() {
+        let read = CloudRead(drops: [], servedFromCache: false, serverConfirmedIDs: [])
+        let repeated = OwnerLibraryPage(
+            read: read, documentIDs: ["A"], reachedEnd: true,
+            containsPendingWrites: false, unreadableDocumentCount: 0
+        )
+        XCTAssertThrowsError(try OwnerLibraryPagingPolicy.nextCursor(after: "A", page: repeated))
+        let oversized = OwnerLibraryPage(
+            read: read,
+            documentIDs: (0...OwnerLibraryPagingPolicy.pageSize).map { String($0) },
+            reachedEnd: false, containsPendingWrites: false,
+            unreadableDocumentCount: 0
+        )
+        XCTAssertThrowsError(try OwnerLibraryPagingPolicy.nextCursor(after: nil, page: oversized))
+        let pendingDeleteOverlay = OwnerLibraryPage(
+            read: read, documentIDs: ["A"], reachedEnd: true,
+            containsPendingWrites: false, unreadableDocumentCount: 0
+        )
+        XCTAssertFalse(OwnerLibraryPagingPolicy.mayAdvance(
+            pendingDeleteOverlay, pendingLocalOperations: true
+        ), "a deleted local row may disappear without pending-write metadata")
+    }
 }
 
 /// Round 8 (counsel B1): the refusal taxonomy — driven through the exposed
@@ -2130,9 +2435,99 @@ final class RefusalTaxonomyTests: XCTestCase {
             "only Firestore's own refusal codes may go terminal"
         )
     }
+
+
 }
 
 // MARK: - Test doubles (round 4, counsel concurrency-6)
+
+/// Mirrors the production owner query's document-ID order, limit, cursor and
+/// per-row provenance. Optional inclusive boundaries exercise deduplication
+/// even if a backend repeats the last row of the previous page.
+actor PaginatedOwnerStore: OwnerLibraryPaging, DropAbsenceVerifying {
+    struct Attempt: Sendable {
+        let cursor: String?
+        let limit: Int
+    }
+
+    private var rows: [UUID: GeoDrop]
+    private var overlapAtBoundary = false
+    private var failNextCursor: String?
+    private var nextReadFromCache = false
+    private var unackedRows: Set<UUID> = []
+    private var failSaves = false
+    private var failDeletes = false
+    private var absentIDs: Set<UUID> = []
+    private(set) var readAttempts: [Attempt] = []
+    private(set) var readDocumentCount = 0
+    private(set) var saveAttempts = 0
+    private(set) var deleteAttempts = 0
+
+    init(rows: [GeoDrop]) {
+        self.rows = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+    }
+
+    func setOverlapAtBoundary(_ enabled: Bool) { overlapAtBoundary = enabled }
+    func failOnce(after cursor: String) { failNextCursor = cursor }
+    func serveNextFromCache() { nextReadFromCache = true }
+    func setUnackedRows(_ ids: Set<UUID>) { unackedRows = ids }
+    func setFailSaves(_ enabled: Bool) { failSaves = enabled }
+    func setFailDeletes(_ enabled: Bool) { failDeletes = enabled }
+    func upsert(_ drop: GeoDrop) { rows[drop.id] = drop }
+    func removeRow(_ id: UUID) { rows[id] = nil }
+    func replaceRows(_ drops: [GeoDrop]) {
+        rows = Dictionary(uniqueKeysWithValues: drops.map { ($0.id, $0) })
+    }
+    func setServerAbsent(_ ids: Set<UUID>) { absentIDs = ids }
+
+    func loadOwnerPage(after documentID: String?, limit: Int) async throws -> OwnerLibraryPage {
+        readAttempts.append(Attempt(cursor: documentID, limit: limit))
+        if let targetCursor = failNextCursor, targetCursor == documentID {
+            failNextCursor = nil
+            throw NSError(domain: "page-test", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "interrupted page"])
+        }
+        let ordered = rows.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        let candidates = ordered.filter { drop in
+            guard let documentID else { return true }
+            return overlapAtBoundary
+                ? drop.id.uuidString >= documentID
+                : drop.id.uuidString > documentID
+        }
+        let pageRows = Array(candidates.prefix(limit))
+        readDocumentCount += pageRows.count
+        let fromCache = nextReadFromCache
+        nextReadFromCache = false
+        return OwnerLibraryPage(
+            read: CloudRead(
+                drops: pageRows,
+                servedFromCache: fromCache,
+                serverConfirmedIDs: Set(pageRows.map(\.id)).subtracting(unackedRows)
+            ),
+            documentIDs: pageRows.map { $0.id.uuidString },
+            reachedEnd: candidates.count < limit,
+            containsPendingWrites: pageRows.contains { unackedRows.contains($0.id) },
+            unreadableDocumentCount: 0
+        )
+    }
+
+    func serverConfirmsAbsent(_ id: UUID) async -> Bool { absentIDs.contains(id) }
+    func probeAbsenceCapability() async -> AbsenceCapability { .answers }
+
+    @discardableResult
+    func save(_ drop: GeoDrop) async throws -> GeoDrop {
+        saveAttempts += 1
+        if failSaves { throw DropStoreError.ackTimedOut }
+        rows[drop.id] = drop
+        return drop
+    }
+
+    func delete(_ drop: GeoDrop) async throws {
+        deleteAttempts += 1
+        if failDeletes { throw DropStoreError.ackTimedOut }
+        rows[drop.id] = nil
+    }
+}
 
 /// A cloud stand-in that reproduces production's ISOLATION and SUSPENSION
 /// POINTS: an actor whose operations can be parked mid-flight on a gate the
@@ -2224,7 +2619,7 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
         return absenceCapabilityAnswer
     }
 
-    func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop] {
+    func loadLibraryDrops() async throws -> [GeoDrop] {
         if gateLoads {
             await withCheckedContinuation { parkedLoads.append($0) }
         }
@@ -2232,10 +2627,8 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
         return loadResult
     }
 
-    func loadDropsWithProvenance(
-        near location: CLLocation?, radius: CLLocationDistance
-    ) async throws -> CloudRead {
-        let rows = try await loadDrops(near: location, radius: radius)
+    func loadLibraryDropsWithProvenance() async throws -> CloudRead {
+        let rows = try await loadLibraryDrops()
         return CloudRead(
             drops: rows,
             servedFromCache: servedFromCache,
@@ -2271,7 +2664,7 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
 /// reads and deletes can be made to fail on demand. Round 6: conforms to the
 /// diagnostics PROTOCOL, so the library branches it gates are genuinely
 /// reachable from tests (the round-4 concrete downcast made them vacuous).
-actor FlakyLocalStore: DropStore, LocalStoreDiagnostics {
+actor FlakyLocalStore: LibraryDropLoading, LocalStoreDiagnostics {
     private var rows: [GeoDrop] = []
     private var throwOnLoad = false
     private var failDeleteIDs: Set<UUID> = []
@@ -2310,7 +2703,7 @@ actor FlakyLocalStore: DropStore, LocalStoreDiagnostics {
     func lastLoadReadWarning() async -> String? { warning }
     func acknowledgeIncident() async { warning = nil }
 
-    func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop] {
+    func loadLibraryDrops() async throws -> [GeoDrop] {
         if throwOnLoad {
             outcome = .readFailed
             warning = "disk unreadable — test double"

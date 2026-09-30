@@ -50,15 +50,28 @@ enum FirebaseHealthcheck {
             heightAboveGround: 1, scale: 1, colorHex: "#34C759", createdBy: "test"
         )
         drop.facingDegrees = 90
-        try await store.save(drop)
-        let loaded = try await store.loadDrops(near: nil, radius: 0)
-        guard loaded.contains(where: { $0.id == drop.id && $0.message == "HEALTHCHECK" }) else {
-            throw NSError(
-                domain: "healthcheck", code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "saved drop did not come back"]
+        let stored = try await store.save(drop)
+        do {
+            // An exact server read verifies this diagnostic's row without
+            // draining an arbitrarily large owner library to find its page.
+            let document = try await FirestoreServerRead.document(
+                Firestore.firestore().collection("drops").document(stored.id.uuidString)
             )
+            guard let payload = document.data()?["drop"] as? [String: Any] else {
+                throw NSError(domain: "healthcheck", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "saved drop did not come back"])
+            }
+            let loaded = try Firestore.Decoder().decode(GeoDrop.self, from: payload)
+            guard loaded.id == stored.id, loaded.message == "HEALTHCHECK",
+                  loaded.ownerUid == stored.ownerUid else {
+                throw NSError(domain: "healthcheck", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "saved drop did not match"])
+            }
+            try await store.delete(stored)
+        } catch {
+            try? await store.delete(stored)
+            throw error
         }
-        try await store.delete(drop)
         return "uid=\(user.uid.prefix(8))… authOK firestoreOK dropStoreOK"
     }
 }

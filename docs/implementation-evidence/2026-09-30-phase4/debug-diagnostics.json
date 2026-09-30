@@ -1,0 +1,26 @@
+{
+  "boundaryDiagnostics": [],
+  "buildSucceeded": true,
+  "byFile": {},
+  "diagnostics": [],
+  "logSHA256": "d53d86e43b14e4a6ded99056439b3956c826375b2674d4bc65901dda157333d8",
+  "uncompiledBoundaries": [
+    "AR/AuthoredDropOverlay.swift",
+    "AR/DropEffects.swift",
+    "AR/DropEntityFactory.swift",
+    "AR/GeoARSessionManager.swift",
+    "AR/GeospatialEngine.swift",
+    "AR/MidFieldDepthEstimator.swift",
+    "AR/SceneUpdateAdmission.swift",
+    "AR/SemanticOcclusionPass.swift",
+    "AR/VPSCorrectionAdmission.swift",
+    "Models/GeoDrop.swift",
+    "Services/AssetPreparationQueue.swift",
+    "Services/CloudKitDropStore.swift",
+    "Services/DropStore.swift",
+    "Services/FirebaseDropStore.swift",
+    "Services/LocationService.swift",
+    "Services/PersonSentinel.swift"
+  ],
+  "uniqueAppDiagnostics": 0
+}

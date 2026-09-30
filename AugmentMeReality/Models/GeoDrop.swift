@@ -52,8 +52,19 @@ struct GeoDrop: Identifiable, Codable, Equatable, Hashable, Sendable {
     /// How this saved coordinate was authored and its estimated geographic
     /// uncertainty. Nil on legacy rows means unknown, never precise by default.
     var geographicQuality: GeographicQuality? = nil
-    /// Where the content floats relative to the local ground (meters).
+    /// Offset above the selected terrain, roof or local support (metres).
     var heightAboveGround: Double = 2
+    /// Display/geometry bound for damaged external rows. The stored authored
+    /// value stays intact; geographic anchor admission checks that raw value.
+    static let supportedHeightRange: ClosedRange<Double> = -2...20
+    var presentationHeightAboveGround: Double {
+        guard heightAboveGround.isFinite else { return 0 }
+        return min(max(heightAboveGround, Self.supportedHeightRange.lowerBound),
+                   Self.supportedHeightRange.upperBound)
+    }
+    /// Vertical support and optional geographic altitude. Nil on legacy rows:
+    /// their reference is explicitly unresolved until measured or reauthored.
+    var verticalPlacement: VerticalPlacement? = nil
     /// 1.0 = default size (3D text ≈ 0.6 m tall letters).
     var scale: Double = 1
     /// Compass bearing the content's front faces (degrees, 0 = north), chosen by
@@ -70,7 +81,28 @@ struct GeoDrop: Identifiable, Codable, Equatable, Hashable, Sendable {
     /// building model — `heightAboveGround` then means height above the ROOF.
     var anchorMode: String = "ground"
 
-    var isRooftop: Bool { anchorMode == "rooftop" }
+    var isRooftop: Bool { preferredAnchorMode == "rooftop" }
+    var verticalReference: String {
+        verticalPlacement?.knownReference ?? VerticalPlacement.Reference.unresolved
+    }
+
+    /// A present but unknown reference is newer or damaged metadata. Keep it
+    /// readable, but do not silently reinterpret that support as terrain.
+    var requiresVerticalResolutionBeforeAnchor: Bool {
+        verticalPlacement != nil
+            && verticalReference == VerticalPlacement.Reference.unresolved
+    }
+
+    /// A known saved reference takes precedence. Legacy and local-only support
+    /// keep the old terrain/rooftop anchor route, without claiming that an old
+    /// row had a measured support or a geographic altitude.
+    var preferredAnchorMode: String {
+        switch verticalReference {
+        case VerticalPlacement.Reference.rooftop: return "rooftop"
+        case VerticalPlacement.Reference.terrain: return "ground"
+        default: return anchorMode == "rooftop" ? "rooftop" : "ground"
+        }
+    }
     /// Creator's Firebase UID (set by the cloud store; nil on legacy/local drops).
     var ownerUid: String?
     /// Who this drop is for — shown in the share/receive flow.
@@ -117,6 +149,16 @@ extension GeoDrop {
         longitude = try c.decodeIfPresent(Double.self, forKey: .longitude) ?? 0
         geographicQuality = try? c.decodeIfPresent(GeographicQuality.self, forKey: .geographicQuality)
         heightAboveGround = try c.decodeIfPresent(Double.self, forKey: .heightAboveGround) ?? 2
+        // Missing/null is a legacy row. A present but damaged value is a
+        // different case: keep the drop readable without granting its old
+        // terrain/roof anchorMode authority over an unknown support.
+        if c.contains(.verticalPlacement),
+           (try? c.decodeNil(forKey: .verticalPlacement)) != true {
+            verticalPlacement = (try? c.decode(VerticalPlacement.self, forKey: .verticalPlacement))
+                ?? VerticalPlacement(reference: VerticalPlacement.Reference.unresolved)
+        } else {
+            verticalPlacement = nil
+        }
         scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1
         facingDegrees = try c.decodeIfPresent(Double.self, forKey: .facingDegrees)
         assetName = try c.decodeIfPresent(String.self, forKey: .assetName)

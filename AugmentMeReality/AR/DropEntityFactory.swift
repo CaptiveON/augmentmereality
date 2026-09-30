@@ -151,6 +151,13 @@ enum DropEntityFactory {
         preparation.request(name)
     }
 
+    /// The retry button may re-arm one failed asset. Ordinary view refreshes
+    /// keep respecting the negative cache and cannot start a retry loop.
+    @MainActor @discardableResult static func retryFailedAsset(_ name: String) -> Bool {
+        installMemoryWarningObserver()
+        return preparation.retryFailed(name)
+    }
+
     @MainActor private static func installMemoryWarningObserver() {
         guard memoryWarningObserver == nil else { return }
         memoryWarningObserver = NotificationCenter.default.addObserver(

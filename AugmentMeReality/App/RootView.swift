@@ -296,8 +296,13 @@ struct RootView: View {
             // composed entry point. The old refresh-then-accountDidChange
             // sequence reset the evidence latch the refresh had just earned,
             // pinning the ladder at "Checking sync status…" every session.
-            guard let uid = account.uid else { return }
-            await library.authDidBecomeReady(uid: uid)
+            if let uid = account.uid {
+                await library.authDidBecomeReady(uid: uid)
+            } else {
+                // Sign-out must retire the preceding owner's cloud-only page
+                // state even if the next disk/network read fails.
+                await library.refreshLibrary()
+            }
         }
     }
 

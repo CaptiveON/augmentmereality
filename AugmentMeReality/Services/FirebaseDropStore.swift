@@ -1,4 +1,3 @@
-import CoreLocation
 import FirebaseAuth
 import FirebaseFirestore
 import Foundation
@@ -11,11 +10,32 @@ import Foundation
 ///   ownerUid    — the creator (rules: only the owner writes)
 ///   geohash     — precision-9 geohash of the coordinate (geo-queries, Wave 7)
 ///   visibility  — "private" | "link" | "public"  (Wave 6.2/7 use link/public)
-/// Wave 6.1 scope: sync MY drops across installs; recipients and public
-/// discovery ride on the same schema next waves.
-/// The store has no mutable instance state. Firebase SDK objects are obtained
-/// inside each operation; only value snapshots leave the async methods.
-final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
+/// This store synchronizes only the signed-in owner's library. Link receipts
+/// use a separate per-document read; no public or geographic enumeration is
+/// implied by this query.
+/// The production store has no mutable instance state. Firebase SDK objects
+/// are obtained inside each operation; only value snapshots leave the async
+/// methods. A Debug-only initializer routes native emulator tests through the
+/// same owner-page method without configuring the default Firebase app.
+final class FirebaseDropStore: DropStore, DropAbsenceVerifying, OwnerLibraryPaging {
+    #if DEBUG
+    private struct EmulatorFixture: @unchecked Sendable {
+        let database: Firestore
+        let ownerUID: String
+    }
+    private let emulatorFixture: EmulatorFixture?
+
+    init(emulatorDatabase: Firestore, ownerUID: String) {
+        emulatorFixture = EmulatorFixture(database: emulatorDatabase, ownerUID: ownerUID)
+    }
+    #endif
+
+    init() {
+        #if DEBUG
+        emulatorFixture = nil
+        #endif
+    }
+
     private struct CloudDrop: Codable {
         var drop: GeoDrop
         var ownerUid: String
@@ -45,31 +65,40 @@ final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropS
         }
     }
 
-    func loadDrops(
-        near location: CLLocation?, radius: CLLocationDistance
-    ) async throws -> [GeoDrop] {
-        try await loadDropsWithProvenance(near: location, radius: radius).drops
-    }
-
     /// Round 10 (counsel ux-1): the read reports its PROVENANCE — Firestore
     /// serves `getDocuments()` from the local cache when offline, and no
     /// positive claim (the B4 evidence latch, the acked-ids fact) may be
-    /// earned by a read no server answered.
-    func loadDropsWithProvenance(
-        near location: CLLocation?, radius: CLLocationDistance
-    ) async throws -> CloudRead {
+    /// earned by a read no server answered. Exactly one owner page is read;
+    /// document-ID ordering remains stable when a drop moves or is edited.
+    func loadOwnerPage(after documentID: String?, limit: Int) async throws -> OwnerLibraryPage {
         // Wave C (counsel SWE-3): "no user yet" must be distinguishable from
         // "user has no drops" — a silent [] made a pre-auth refresh look like
         // an empty (but healthy) library.
-        guard let uid = Auth.auth().currentUser?.uid else {
+        #if DEBUG
+        let uid = emulatorFixture?.ownerUID ?? Auth.auth().currentUser?.uid
+        let database = emulatorFixture?.database ?? Firestore.firestore()
+        #else
+        let uid = Auth.auth().currentUser?.uid
+        let database = Firestore.firestore()
+        #endif
+        guard let uid else {
             throw DropStoreError.notSignedIn
         }
-        let snapshot = try await Firestore.firestore().collection("drops")
+        precondition((1...OwnerLibraryPagingPolicy.pageSize).contains(limit))
+        var query: Query = database.collection("drops")
             .whereField("ownerUid", isEqualTo: uid)
-            .getDocuments()
+            .order(by: FieldPath.documentID())
+            .limit(to: limit)
+        if let documentID { query = query.start(after: [documentID]) }
+        let snapshot = try await query.getDocuments()
         var confirmed: Set<UUID> = []
+        var unreadable = 0
         let rows = snapshot.documents.compactMap { document -> GeoDrop? in
-            guard var cloud = try? document.data(as: CloudDrop.self) else { return nil }
+            guard var cloud = try? document.data(as: CloudDrop.self),
+                  UUID(uuidString: document.documentID) == cloud.drop.id else {
+                unreadable += 1
+                return nil
+            }
             // Round 8 (counsel B1): rows uploaded before the drop-level stamp
             // existed carry the uid only on the envelope — propagate it so the
             // library can persist it locally.
@@ -86,10 +115,17 @@ final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropS
             }
             return cloud.drop
         }
-        return CloudRead(
-            drops: rows,
-            servedFromCache: snapshot.metadata.isFromCache,
-            serverConfirmedIDs: confirmed
+        return OwnerLibraryPage(
+            read: CloudRead(
+                drops: rows,
+                servedFromCache: snapshot.metadata.isFromCache,
+                serverConfirmedIDs: confirmed
+            ),
+            documentIDs: snapshot.documents.map(\.documentID),
+            reachedEnd: snapshot.documents.count < limit,
+            containsPendingWrites: snapshot.metadata.hasPendingWrites
+                || snapshot.documents.contains { $0.metadata.hasPendingWrites },
+            unreadableDocumentCount: unreadable
         )
     }
 

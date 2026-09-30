@@ -23,7 +23,7 @@ let holdReads = false;
 const held = new Set();
 const upstreamSessions = new Set();
 const incomingSessions = new Set();
-const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0, seedRequests: 0, startupListens: 0 };
+const counters = { heldWrites: 0, heldReads: 0, readyRequests: 0, seedRequests: 0, ownerPageSeeds: 0, startupListens: 0 };
 function faultDelay(name, maximum) {
   const value = Number(process.env[name] ?? '0');
   if (!Number.isInteger(value) || value < 0 || value > maximum) {
@@ -64,6 +64,33 @@ async function backendDocument(method, document, fields, timeoutMs, delayMs = 0)
     console.error(`Native SDK backend ${method} ${document} failed after ${Math.round(performance.now() - started)}ms: ${error.name}: ${error.message}`);
     throw error;
   }
+}
+
+function ownerPageID(index) {
+  return `00000000-0000-0000-0000-${index.toString(16).toUpperCase().padStart(12, '0')}`;
+}
+
+async function seedOwnerPages() {
+  const documents = [
+    ...Array.from({ length: 130 }, (_, index) => ({ id: ownerPageID(index * 2), owner: 'fixture-owner' })),
+    ...Array.from({ length: 10 }, (_, index) => ({ id: ownerPageID(1000 + index), owner: 'fixture-small' })),
+    { id: ownerPageID(31), owner: 'foreign-owner' },
+    { id: ownerPageID(95), owner: 'foreign-owner' }
+  ];
+  // Bound fixture setup too: eight loopback PATCH requests at a time, each
+  // with one exact document ID. No public collection endpoint is involved.
+  for (let offset = 0; offset < documents.length; offset += 8) {
+    await Promise.all(documents.slice(offset, offset + 8).map(({ id, owner }) =>
+      backendDocument('PATCH', `drops/${id}`, {
+        ownerUid: { stringValue: owner },
+        drop: { mapValue: { fields: {
+          id: { stringValue: id },
+          ownerUid: { stringValue: owner },
+          message: { stringValue: `server-${id}` }
+        } } }
+      }, 20000)));
+  }
+  console.log(`Native owner-page fixture seeded ${documents.length} documents`);
 }
 
 async function warmBackend() {
@@ -223,6 +250,10 @@ const control = http.createServer(async (request, response) => {
         allowDelete: { booleanValue: kind === 'accepted' },
         marker: { stringValue: 'server-existing' }
       }, 20000, counters.seedRequests === 1 ? firstSeedDelay : 0);
+    } else if (path === '/seed-owner-pages') {
+      if (counters.ownerPageSeeds !== 0) throw new Error('Owner pages can be seeded only once');
+      counters.ownerPageSeeds++;
+      await seedOwnerPages();
     } else if (path === '/hold-writes') {
       holdWrites = true;
     } else if (path === '/release-writes') {
@@ -264,9 +295,10 @@ const code = await new Promise(resolve => {
   child.on('exit', value => resolve(value ?? 1));
 });
 console.log(`Native SDK gate counters: ${JSON.stringify(counters)}`);
-const exercisedNativeGate = counters.heldWrites > 0 && counters.heldReads > 0 && counters.seedRequests === 3;
+const exercisedNativeGate = counters.heldWrites > 0 && counters.heldReads > 0 &&
+  counters.seedRequests === 3 && counters.ownerPageSeeds === 1;
 if (code === 0 && !exercisedNativeGate) {
-  console.error('Native regression requires both RPC gates and exactly three seeds; skips, empty selections, or duplicated mutations cannot pass');
+  console.error('Native regression requires both RPC gates, three document seeds and one owner-page seed; skips, empty selections, or duplicated mutations cannot pass');
 }
 for (const session of incomingSessions) session.destroy();
 for (const session of upstreamSessions) session.destroy();

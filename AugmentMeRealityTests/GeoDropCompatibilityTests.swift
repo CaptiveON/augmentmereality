@@ -30,6 +30,10 @@ final class GeoDropCompatibilityTests: XCTestCase {
         XCTAssertEqual(drop.message, "HAPPY BIRTHDAY!")
         XCTAssertEqual(drop.visibility, "private", "new fields default, never throw")
         XCTAssertEqual(drop.anchorMode, "ground")
+        XCTAssertNil(drop.verticalPlacement)
+        XCTAssertEqual(drop.verticalReference, VerticalPlacement.Reference.unresolved)
+        XCTAssertFalse(drop.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertEqual(drop.preferredAnchorMode, "ground")
         XCTAssertNil(drop.ownerUid)
         XCTAssertNil(drop.receivedViaLink)
     }
@@ -59,8 +63,100 @@ final class GeoDropCompatibilityTests: XCTestCase {
         drop.assetName = "toy_drummer"
         drop.visibility = "link"
         drop.recipientName = "Sara"
+        drop.verticalPlacement = VerticalPlacement(
+            reference: VerticalPlacement.Reference.rooftop,
+            resolvedSupportAltitudeMeters: 38.4,
+            verticalDatum: VerticalPlacement.Datum.wgs84Ellipsoid,
+            verticalUncertaintyMeters: 0.8,
+            measuredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            provenance: VerticalPlacement.Provenance.vpsProjection
+        )
         let data = try JSONEncoder().encode([drop])
         let back = try JSONDecoder().decode([GeoDrop].self, from: data).first
         XCTAssertEqual(back, drop)
+    }
+
+    func testMalformedAndFutureVerticalMetadataDoNotLoseTheDrop() throws {
+        let malformed = #"{"message":"survives","anchorMode":"rooftop","verticalPlacement":17}"#
+        let drop = try JSONDecoder().decode(GeoDrop.self, from: Data(malformed.utf8))
+        XCTAssertEqual(drop.message, "survives")
+        XCTAssertEqual(drop.verticalReference, VerticalPlacement.Reference.unresolved)
+        XCTAssertNotNil(drop.verticalPlacement,
+                        "a present malformed value must differ from absent legacy metadata")
+        XCTAssertTrue(drop.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertFalse(GeographicAnchorIntent(drop).canRequestVPSAnchor)
+        XCTAssertEqual(drop.preferredAnchorMode, "rooftop",
+                       "the old mode remains readable but cannot resolve this support")
+
+        let future = #"{"verticalPlacement":{"reference":"bridgeDeckV4","verticalDatum":"futureDatum","resolvedSupportAltitudeMeters":20,"verticalUncertaintyMeters":0.1,"measuredAt":1700000000,"provenance":"futureSensor"}}"#
+        let futureDrop = try JSONDecoder().decode(GeoDrop.self, from: Data(future.utf8))
+        XCTAssertEqual(futureDrop.verticalPlacement?.reference, "bridgeDeckV4")
+        XCTAssertEqual(futureDrop.verticalReference, VerticalPlacement.Reference.unresolved)
+        XCTAssertTrue(futureDrop.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertNil(futureDrop.verticalPlacement?.usableResolvedSupportAltitudeMeters)
+    }
+
+    func testNullVerticalMetadataKeepsLegacyAnchorRoute() throws {
+        let json = #"{"anchorMode":"ground","verticalPlacement":null}"#
+        let drop = try JSONDecoder().decode(GeoDrop.self, from: Data(json.utf8))
+        XCTAssertNil(drop.verticalPlacement)
+        XCTAssertFalse(drop.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertTrue(GeographicAnchorIntent(drop).allowsTerrainGeoAnchor)
+    }
+
+    func testExtremeStoredHeightKeepsRawValueButBoundsPresentation() throws {
+        var drop = GeoDrop(heightAboveGround: 1e100)
+        XCTAssertEqual(drop.presentationHeightAboveGround, 20)
+        let restored = try JSONDecoder().decode(GeoDrop.self, from: JSONEncoder().encode(drop))
+        XCTAssertEqual(restored.heightAboveGround, 1e100)
+        XCTAssertEqual(restored.presentationHeightAboveGround, 20)
+
+        drop.heightAboveGround = -8
+        XCTAssertEqual(drop.presentationHeightAboveGround, -2)
+        drop.heightAboveGround = .nan
+        XCTAssertEqual(drop.presentationHeightAboveGround, 0)
+    }
+
+    func testVerticalDatumAndReferencePrecedence() throws {
+        var drop = GeoDrop(anchorMode: "ground")
+        drop.verticalPlacement = VerticalPlacement(reference: VerticalPlacement.Reference.rooftop)
+        XCTAssertEqual(drop.preferredAnchorMode, "rooftop")
+        drop.anchorMode = "rooftop"
+        drop.verticalPlacement = VerticalPlacement(reference: VerticalPlacement.Reference.terrain)
+        XCTAssertEqual(drop.preferredAnchorMode, "ground")
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        var placement = VerticalPlacement(
+            reference: VerticalPlacement.Reference.localSupport,
+            resolvedSupportAltitudeMeters: 21.5,
+            verticalDatum: "egm96Geoid",
+            verticalUncertaintyMeters: 1,
+            measuredAt: date,
+            provenance: VerticalPlacement.Provenance.vpsProjection
+        )
+        XCTAssertNil(placement.usableResolvedSupportAltitudeMeters)
+        placement.verticalDatum = VerticalPlacement.Datum.wgs84Ellipsoid
+        XCTAssertEqual(placement.usableResolvedSupportAltitudeMeters, 21.5)
+        placement.provenance = VerticalPlacement.Provenance.localARRaycast
+        XCTAssertNil(placement.usableResolvedSupportAltitudeMeters,
+                     "AR world Y is not a geographic altitude")
+        placement.provenance = VerticalPlacement.Provenance.vpsProjection
+        placement.measuredAt = nil
+        XCTAssertNil(placement.usableResolvedSupportAltitudeMeters)
+        placement.measuredAt = date
+        placement.resolvedSupportAltitudeMeters = nil
+        XCTAssertNil(placement.usableResolvedSupportAltitudeMeters)
+        placement.resolvedSupportAltitudeMeters = .infinity
+        XCTAssertNil(placement.usableResolvedSupportAltitudeMeters)
+    }
+
+    func testDamagedOptionalVerticalFieldsRemainUnresolved() throws {
+        let json = #"{"message":"kept","verticalPlacement":{"reference":42,"resolvedSupportAltitudeMeters":"high","verticalDatum":9,"verticalUncertaintyMeters":-1,"measuredAt":"bad"}}"#
+        let drop = try JSONDecoder().decode(GeoDrop.self, from: Data(json.utf8))
+        XCTAssertEqual(drop.message, "kept")
+        XCTAssertEqual(drop.verticalReference, VerticalPlacement.Reference.unresolved)
+        XCTAssertTrue(drop.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertNil(drop.verticalPlacement?.usableResolvedSupportAltitudeMeters)
+        XCTAssertNil(drop.verticalPlacement?.verticalUncertaintyMeters)
     }
 }

@@ -1375,3 +1375,32 @@ exhausted. PRs #36/#37 are merged; hosted CI is deferred without disabling its
 workflow. See the [phase-three status and evidence](docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE3.md)
 for local validation. Physical shared-placement accuracy and overheating
 acceptance remain open.
+
+## ADR-059 — Measured support, explicit readiness and bounded library sync (2026-09-30)
+
+Vertical placement distinguishes terrain, rooftop, measured local support and
+unresolved records. Resolved geographic support carries a datum, uncertainty,
+capture time and provenance. Only compatible WGS84 ellipsoidal evidence can
+be used as an absolute altitude; AR-world Y is session-local. Grounding requires
+a fresh horizontal plane polygon or a direct upward-facing mesh hit at the
+object's footprint. Pose, relative offset, ground lock and contact cue change
+together. Unknown terrain/roof elevation remains visibly provisional, including
+transit; the viewer's assumed eye height and a nominal roof height are removed.
+
+Camera capture, selected asset readiness and the first qualified hero scene
+update are separate observations. A deadline opens the viewfinder with honest
+loading/recovery guidance, never successful placement evidence. Current frame
+and scene-update liveness can revoke readiness while preserving historical
+timings. Visibility uses bounded content-bounds sampling with current pose and
+camera projection. The hero metric remains a scene-update proxy; presented
+pixels still require physical observation. Retry restarts failed work explicitly;
+an in-flight load offers wait guidance. New-world reset/transit discloses expiry
+of session-only pins.
+
+Owner-library synchronization uses document-ID cursor pages of at most 64 rows.
+It has no geographic parameters. Cache reads, pending owner mutations, pending
+SDK writes and malformed rows cannot earn a complete clean-sync claim. Omitting
+a row from a page never proves deletion. Account changes reset the sweep and
+hide the former account's cloud-only rows; durable work belonging to another
+UID cannot block the new account's cursor. See the [paging contract](docs/OWNER-LIBRARY-PAGINATION-2026-09-30.md)
+and [phase-four validation](docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE4.md).

@@ -9,23 +9,17 @@ import Foundation
 /// keep `AppConfig.cloudKitEnabled = false` and everything runs on the local store.
 /// The store has no mutable instance state; each operation owns its CloudKit
 /// request and returns value drops to the caller.
-final class CloudKitDropStore: DropStore {
+final class CloudKitDropStore: LibraryDropLoading {
     private static let recordType = "GeoDrop"
 
     private var database: CKDatabase {
         CKContainer(identifier: AppConfig.cloudKitContainerID).publicCloudDatabase
     }
 
-    func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop] {
-        let predicate: NSPredicate
-        if let location {
-            predicate = NSPredicate(
-                format: "distanceToLocation:fromLocation:(location, %@) < %f",
-                location, radius
-            )
-        } else {
-            predicate = NSPredicate(value: true)
-        }
+    func loadLibraryDrops() async throws -> [GeoDrop] {
+        // Disabled legacy public backend; this is a library read, not a nearby
+        // or owner-scoped query. Enabling it still requires an ownership contract.
+        let predicate = NSPredicate(value: true)
         let query = CKQuery(recordType: Self.recordType, predicate: predicate)
         query.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
 
@@ -85,6 +79,15 @@ extension GeoDrop {
         if let data = record["geographicQuality"] as? Data {
             geographicQuality = try? JSONDecoder().decode(GeographicQuality.self, from: data)
         }
+        anchorMode = record["anchorMode"] as? String ?? "ground"
+        if let saved = record["verticalPlacement"] {
+            if let data = saved as? Data {
+                verticalPlacement = (try? JSONDecoder().decode(VerticalPlacement.self, from: data))
+                    ?? VerticalPlacement(reference: VerticalPlacement.Reference.unresolved)
+            } else {
+                verticalPlacement = VerticalPlacement(reference: VerticalPlacement.Reference.unresolved)
+            }
+        }
     }
 
     func populate(_ record: CKRecord) {
@@ -102,5 +105,8 @@ extension GeoDrop {
         // attached to a manually relocated point on the next read.
         let qualityData = geographicQuality.flatMap { try? JSONEncoder().encode($0) }
         record["geographicQuality"] = qualityData as CKRecordValue?
+        record["anchorMode"] = anchorMode
+        let verticalData = verticalPlacement.flatMap { try? JSONEncoder().encode($0) }
+        record["verticalPlacement"] = verticalData as CKRecordValue?
     }
 }

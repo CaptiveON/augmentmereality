@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
 import {
   doc, getDocFromServer, getDocFromCache, setDoc, updateDoc, deleteDoc,
-  deleteField, collection, query, where, getDocs, orderBy, limit, Timestamp,
+  deleteField, collection, query, where, getDocs, orderBy, documentId, limit, startAfter, Timestamp,
   disableNetwork, enableNetwork, runTransaction,
 } from 'firebase/firestore';
 import { appEmojiList, appReactionKeys } from './drift-check.mjs';
@@ -93,6 +93,55 @@ describe('reviewed local rules', { timeout: 60_000 }, async () => {
     assert.deepEqual(snapshot.docs.map((entry) => entry.id).sort(), ['link-drop', 'private-drop', 'public-drop']);
     assert.ok(snapshot.docs.every((entry) => entry.data().ownerUid === OWNER));
   });
+  test('drops LIST: document-ID owner pages reach every row without foreign enumeration',
+    { timeout: 60_000 }, async () => {
+      const idFor = (index) => `00000000-0000-0000-0000-${index.toString(16).toUpperCase().padStart(12, '0')}`;
+      await env.withSecurityRulesDisabled(async (context) => {
+        const db = context.firestore();
+        try {
+          const fixtures = [
+            ...Array.from({ length: 130 }, (_, index) => [idFor(index * 2), OWNER]),
+            [idFor(31), STRANGER], [idFor(95), STRANGER],
+          ];
+          for (let offset = 0; offset < fixtures.length; offset += 16) {
+            await Promise.all(fixtures.slice(offset, offset + 16).map(([id, uid]) =>
+              setDoc(doc(db, `drops/${id}`), dropData(uid))));
+          }
+        } finally {
+          await db.terminate();
+        }
+      });
+
+      const base = query(collection(owner, 'drops'),
+        where('ownerUid', '==', OWNER), orderBy(documentId()));
+      const found = new Set();
+      const pageSizes = [];
+      let cursor;
+      for (let pageNumber = 0; pageNumber < 5; pageNumber++) {
+        const pageQuery = cursor === undefined
+          ? query(base, limit(64))
+          : query(base, startAfter(cursor), limit(64));
+        const snapshot = await assertSucceeds(getDocs(pageQuery));
+        pageSizes.push(snapshot.size);
+        assert.ok(snapshot.size <= 64);
+        for (const row of snapshot.docs) {
+          assert.equal(row.data().ownerUid, OWNER);
+          assert.equal(found.has(row.id), false, `repeated owner ID ${row.id}`);
+          found.add(row.id);
+        }
+        if (snapshot.size < 64) break;
+        cursor = snapshot.docs.at(-1).id;
+      }
+      assert.deepEqual(pageSizes, [64, 64, 5]);
+      assert.equal(found.size, 133);
+      assert.ok(found.has(idFor(0)) && found.has(idFor(258)));
+      assert.equal(found.has(idFor(31)) || found.has(idFor(95)), false);
+
+      await assertFails(getDocs(query(collection(stranger, 'drops'),
+        where('ownerUid', '==', OWNER), orderBy(documentId()), limit(64))));
+      await assertFails(getDocs(query(collection(owner, 'drops'),
+        orderBy(documentId()), limit(64))));
+    });
   for (const [name, build] of [
     ['unscoped', (db) => collection(db, 'drops')],
     ['limited but unscoped', (db) => query(collection(db, 'drops'), limit(1))],

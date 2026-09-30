@@ -47,4 +47,37 @@ final class CloudKitDropCodecTests: XCTestCase {
         XCTAssertEqual(restored.message, drop.message)
         XCTAssertNil(restored.geographicQuality)
     }
+    func testVerticalReferenceAltitudeAndDatumSurviveRoundTripAndClear() throws {
+        var drop = GeoDrop(heightAboveGround: 0.005, anchorMode: "rooftop")
+        drop.verticalPlacement = VerticalPlacement(
+            reference: VerticalPlacement.Reference.localSupport,
+            resolvedSupportAltitudeMeters: 120.25,
+            verticalDatum: VerticalPlacement.Datum.wgs84Ellipsoid,
+            verticalUncertaintyMeters: 1, measuredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            provenance: VerticalPlacement.Provenance.vpsProjection
+        )
+        let record = CKRecord(recordType: "GeoDrop", recordID: .init(recordName: drop.id.uuidString))
+        drop.populate(record)
+        let restored = try XCTUnwrap(GeoDrop(record: record))
+        XCTAssertEqual(restored.verticalPlacement, drop.verticalPlacement)
+        XCTAssertEqual(restored.anchorMode, drop.anchorMode)
+        XCTAssertEqual(restored.heightAboveGround, 0.005)
+
+        drop.verticalPlacement = nil
+        drop.populate(record)
+        XCTAssertNil(record["verticalPlacement"])
+        XCTAssertEqual(try XCTUnwrap(GeoDrop(record: record)).verticalReference,
+                       VerticalPlacement.Reference.unresolved)
+        record["verticalPlacement"] = Data("broken".utf8)
+        let malformed = try XCTUnwrap(GeoDrop(record: record))
+        XCTAssertEqual(malformed.id, drop.id)
+        XCTAssertTrue(malformed.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertFalse(GeographicAnchorIntent(malformed).canRequestVPSAnchor)
+
+        record["verticalPlacement"] = "broken"
+        let wrongType = try XCTUnwrap(GeoDrop(record: record))
+        XCTAssertTrue(wrongType.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertFalse(GeographicAnchorIntent(wrongType).canRequestVPSAnchor)
+    }
+
 }
