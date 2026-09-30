@@ -1,0 +1,66 @@
+{
+  "checkedAt": "2026-09-29T22:20:40.612001+00:00",
+  "sourceAggregateSHA256": "de0e6a9a4c3d8d16d10c00f6c01898fb120f643a6829e0d74cd19e5bcc5045fe",
+  "configurationExclusions": [
+    "GoogleService-Info.plist",
+    "Secrets.plist"
+  ],
+  "liveFirebaseIntegrationTests": "excluded",
+  "phoneUsed": false,
+  "debugSimulatorBuild": "passed",
+  "unsignedReleaseDeviceBuild": "passed",
+  "tests": {
+    "currentIOS26_5": {
+      "passed": 246,
+      "failed": 0,
+      "skipped": 0,
+      "nativeEmulatorContract": "passed"
+    },
+    "minimumIOS17_0_1": {
+      "passed": 245,
+      "failed": 0,
+      "skipped": 1,
+      "skipReason": "native emulator contract opt-in only; exercised in current lane"
+    }
+  },
+  "otherChecks": {
+    "rulesVerifierUnitTests": 9,
+    "baselineParserTests": 6,
+    "simulatorSelectorTests": 3,
+    "emojiAndReactionDriftLocks": "passed",
+    "gitDiffCheck": "passed"
+  },
+  "logs": {
+    "minimum-before": {
+      "path": "/tmp/amr-sep29/minimum-before.log",
+      "sha256": "c3f297bb94e0a84cf66d8097a570ee74253977af95e9ac76e3d510ee8085251f"
+    },
+    "build-verified": {
+      "path": "/tmp/amr-sep29/build-verified.log",
+      "sha256": "e609828aa951ef7bb4826c7993087d61b4ca8b5cde42fd75d3a5c5e92c686590"
+    },
+    "current-verified": {
+      "path": "/tmp/amr-sep29/current-verified.log",
+      "sha256": "1fbf676ffc7b54d66e0b8e3eac570e169c658b0312fe5a44ac807516a43fcf45"
+    },
+    "minimum-verified": {
+      "path": "/tmp/amr-sep29/minimum-verified.log",
+      "sha256": "685246bbd4342763c63dd018cd2bae873781c4b6a76230d6a73286232dd51be0"
+    },
+    "release-verified": {
+      "path": "/tmp/amr-sep29/release-verified.log",
+      "sha256": "f785cb9a19bd4c34eee8b60867884ebdad3996a9d55466304f76569149542089"
+    }
+  },
+  "resultBundles": [
+    "/tmp/amr-sep29/current-verified.xcresult",
+    "/tmp/amr-sep29/minimum-verified.xcresult"
+  ],
+  "remaining": [
+    "physical thermal and visual acceptance",
+    "physical minimum-iOS launch",
+    "Release launch",
+    "remote CI execution",
+    "unimplemented issues in implementation-status record"
+  ]
+}

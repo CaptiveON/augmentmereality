@@ -4,12 +4,9 @@ import SwiftUI
 
 /// App-level owner of the ARView + placement engine (ADR-013, master plan §5.1).
 ///
-/// Killer #1 demands content on screen at camera frame one. The single biggest cold
-/// cost is bringing up the camera, VIO, and VPS *after* the user taps the camera tab —
-/// so the session is pre-warmed while intent is forming (map tab, app foreground) and
-/// kept alive for a bounded window when the camera tab is left. The window
-/// (`AppConfig.prewarmWindowSeconds`) bounds battery use and how long the system
-/// camera indicator stays on outside the camera tab.
+/// Owns the one ARView and session across camera appearances. The view may be
+/// prepared before camera intent; capture begins only when the camera is opened
+/// and pauses after the bounded return grace.
 @MainActor
 final class ARSessionHolder: ObservableObject {
     let manager = GeoARSessionManager()
@@ -27,19 +24,10 @@ final class ARSessionHolder: ObservableObject {
         if self.locationService == nil {
             self.locationService = locationService
             self.library = library
-            // ADR-032/035: warm the model cache without blocking (async loads),
-            // and only after the launch window — cold start already pays camera
-            // + VIO + VPS bring-up; piling asset decodes on top was part of the
-            // 3-minute heat ramp.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                DropEntityFactory.preloadAnimatedAssets()
-            }
         }
     }
 
-    /// ADR-043: warm everything that does NOT touch the camera — the ARView
-    /// exists (Metal surface allocated), models decode, location/heading stream.
+    /// Prepare the ARView without starting capture or asset decode.
     /// The capture session itself starts only on camera intent, so the green
     /// indicator can never appear while the user is on the map.
     func warmWithoutCamera() {

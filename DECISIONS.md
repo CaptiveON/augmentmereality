@@ -1251,3 +1251,77 @@ operation deadlines are unchanged. A six-second first-Listen delay reproduces
 the old failure and passes all 157 tests with the correction; a 35-second delay
 still fails before the gates (the SDK can report offline before the outer
 budget expires). No physical performance improvement is claimed.
+
+## ADR-055 — Fixed physical scale and recovery-safe workload preparation (2026-09-29)
+
+**Supersedes ADR-049's content-scale compensation.** Physical content keeps its
+authored world dimensions at every viewing distance. Only the independent
+waypoint marker changes size for distant readability. Creation, authored edits,
+remote edits and asset replacement share the same scale/footprint update.
+`FIELDTESTS.md` FT-33 now checks constant dimensions and ordinary perspective.
+
+The September 11 background-return record showed room content disappearing
+after the ten-second relocalization fallback reset. Cold recovery now retains
+session-only room content and restores its camera-relative arrangement after a
+fresh normally tracked frame. This is explicitly approximate registration after
+loss of the old AR world; it is not a claim of recovered physical alignment.
+
+Catalog preloading is removed. Preparation is demand-driven, with selected-asset
+priority, one decoder, eight queued identifiers and a bounded LRU template cache.
+The cache budget uses source-file cost, not inferred decoded RAM. A bounded
+publisher deadline prevents one stalled resource from blocking every later
+request. Live clones survive eviction; completion swaps only waiting placeholders.
+GAR capture deduplication and a global eight-job Streetscape budget remove
+duplicate submissions and cross-update queue accumulation without changing the
+existing localization cadence. Concurrency ownership and total live-scene budgets
+remain separate work.
+
+Local WGS84 coordinates use independently checked tangent-frame math, with a
+five-kilometre checked domain. AR/GPS drift uses the heading correction saved
+with its reference frame. Location, heading and speed inputs carry freshness;
+unknown speed is not interpreted as stopped motion. Transit uses bounded
+timestamped filtering and suppresses geographic content while stale or reacquiring.
+Magnetic heading is provisional, and cannot authorize geographic write-back.
+
+Storage warnings now retain content-identified incident evidence separately from
+durable acknowledgement. Original unreadable bytes must be preserved before a
+normal save/delete can replace them. Id-less and whole-file incidents do not
+claim a known irreversible-loss count. Storage problems outrank sync progress.
+Unsupported profile delivery/reaction totals are hidden until an authoritative
+producer exists; the legacy document fields remain compatible.
+
+See [the implementation/evidence record](docs/IMPLEMENTATION-STATUS-2026-09-29.md)
+for test results and remaining issues. No physical heat, image quality, shared
+placement precision or production-release acceptance is inferred from simulator
+tests or the unsigned Release build.
+
+## ADR-056 — Bounded live scenes and explicit AR resource ownership (2026-09-30)
+
+One admission policy now covers geographic and Room Test content. It keeps a
+stable selected/nearby set within full-model, cue, work-unit and compressed-source
+limits, with smaller allocations under thermal or memory pressure. Evicting a
+room visual preserves its world pose and data. A late decode can replace only
+currently admitted, waiting full models. Source bytes are a compatibility proxy;
+decoded geometry, textures and total process memory still require measurement.
+
+GAR geometry stays on the main actor while a per-update copy quota produces
+owned Sendable snapshots. Serial background validation precedes RealityKit's
+actor-isolated asynchronous mesh generation. Count/triangle/payload reservations
+include outstanding work. Unique tickets reject obsolete results across memory
+shedding, and silent generation has a cancellation deadline.
+
+RealityKit callback slots are main-actor owned. Attachment epochs reject stale
+callbacks, which still copy their required output. CPU encoding and teardown
+share a lock; a completion lease holds Core Video wrappers and Metal resources
+until GPU completion. Scene update notifications coalesce into one main-actor
+wakeup without retaining an ARFrame or asserting an undocumented callback actor.
+LocationService creates and commands its CLLocationManager on the main actor;
+delegate entry points copy value data before publication, consistent with
+[Apple's creation-run-loop contract](https://developer.apple.com/documentation/corelocation/cllocationmanager).
+
+The project stays in Swift 5 mode while the 19 existing storage ownership
+diagnostics are migrated separately. A full-compile CI gate rejects regressions
+in the repaired AR boundaries. The [September 30 status and evidence](docs/IMPLEMENTATION-STATUS-2026-09-30.md)
+record 267 current-iOS test passes, 266 minimum-iOS passes with one expected skip,
+30 targeted simulator TSan passes, and the unsigned Release build. Physical
+thermal, decoded-memory and live-render acceptance remain unmeasured.

@@ -1,5 +1,6 @@
 import ARCore
 import ARKit
+import Combine
 import CoreLocation
 import RealityKit
 import UIKit
@@ -38,8 +39,46 @@ final class GeospatialEngine {
     /// actually needs the >60 m matte (or transit). Toggled via GARSession
     /// reconfiguration; costs nothing when off.
     private(set) var semanticActive = false
-    private var semanticSupported = false
+    private(set) var semanticRequested = false
+    private(set) var semanticSupported = false
     private var configuration: GARSessionConfiguration?
+    private var workAdmission = PerceptionWorkAdmission()
+    private var captureSubmission = CaptureSubmissionGate()
+    private enum RuntimeOperation: String {
+        case update, transform, semantics
+    }
+    private var runtimeFailureCounts: [RuntimeOperation: UInt64] = [:]
+    private var lastRuntimeFailureLog: [RuntimeOperation: TimeInterval] = [:]
+    var isAvailable: Bool { garSession != nil }
+    /// If ARCore refuses a semantic disable, stop feeding it until a later
+    /// policy update successfully retries that configuration. Otherwise its
+    /// unusable model would keep running as a side effect of localization.
+    var canUpdate: Bool {
+        workAdmission.allowed && !(semanticActive && !semanticRequested)
+    }
+
+    /// Suspend asynchronous publication while retaining the warm GAR session
+    /// and already installed anchors/meshes within the same camera generation.
+    /// A new generation has a new world frame, so its old meshes are removed.
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
+        let previousGeneration = workAdmission.sessionGeneration
+        guard workAdmission.setAllowed(allowed, generation: generation) else { return }
+        semanticFeed.setWorkAdmission(allowed, generation: generation)
+        requestedDrops.subtract(inFlightAnchorTokens.keys)
+        inFlightAnchorTokens.removeAll()
+        cancelPendingMeshCaptures()
+        meshBuildsInFlight.clear()
+        latestMeshTransforms.removeAll()
+        meshRetryGate.clear()
+        seenGeometry.replace([], token: workAdmission.token)
+        if previousGeneration != generation { removeAllOccluders() }
+        // A pending coverage reply from before this edge is no longer valid.
+        // Reset its coordinate gate so a fresh update can issue the check again.
+        lastCoverageCheck = nil
+        headingErrorSample = nil
+        if !allowed { setSemanticsActive(false) }
+        recordSemanticBlock()
+    }
 
     /// ADR-017: session heading error measured by VPS — the yaw difference between
     /// the AR frame and true north, from `eastUpSouthQTarget`. Compass-free, so it
@@ -119,6 +158,15 @@ final class GeospatialEngine {
             return
         }
         self.arView = arView
+        if memoryWarningObserver == nil {
+            memoryWarningObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.releaseMeshesForMemoryPressure() }
+            }
+        }
         do {
             let session = try GARSession(
                 apiKey: AppConfig.googleGeospatialAPIKey,
@@ -132,11 +180,13 @@ final class GeospatialEngine {
             configuration.semanticMode = .disabled
             semanticSupported = session.isSemanticModeSupported(.enabled)
             semanticActive = false
+            semanticRequested = false
             var error: NSError?
             session.setConfiguration(configuration, error: &error)
             if let error { throw error }
             self.configuration = configuration
             garSession = session
+            captureSubmission.reset()
             state = .searching
             ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
             ARBaselineMetrics.shared.setWorkload("GAR session", enabled: true)
@@ -159,14 +209,15 @@ final class GeospatialEngine {
     /// Queries coverage once per ~300 m of movement (Google's recommended
     /// pattern: check availability instead of running VPS blind).
     func checkCoverage(at coordinate: CLLocationCoordinate2D) {
-        guard let garSession else { return }
+        guard let token = workAdmission.token, let garSession else { return }
         if let last = lastCoverageCheck {
-            let moved = GeoMath.enuOffset(from: last, to: coordinate)
-            guard simd_length(moved) > 300 else { return }
+            if let moved = GeoMath.checkedENUOffset(from: last, to: coordinate),
+               simd_length(moved) <= 300 { return }
         }
         lastCoverageCheck = coordinate
         garSession.checkVPSAvailability(coordinate: coordinate) { [weak self] availability in
-            self?.vpsCoverageAvailable = availability == .available
+            guard let self, self.workAdmission.accepts(token) else { return }
+            self.vpsCoverageAvailable = availability == .available
         }
     }
 
@@ -179,52 +230,63 @@ final class GeospatialEngine {
         guard let garSession, case .localized(let h, _) = state else { return nil }
         var transform = matrix_identity_float4x4
         transform.columns.3 = SIMD4(worldPosition.x, worldPosition.y, worldPosition.z, 1)
-        guard let geo = try? garSession.geospatialTransform(transform: transform) else {
+        do {
+            let geo = try garSession.geospatialTransform(transform: transform)
+            return (geo.coordinate, max(h, geo.horizontalAccuracy))
+        } catch {
+            recordRuntimeFailure(.transform, error: error)
             return nil
         }
-        return (geo.coordinate, max(h, geo.horizontalAccuracy))
     }
 
     /// ADR-035: toggle Google's semantic segmentation NN at runtime. GARSession
     /// accepts reconfiguration; when off the model simply doesn't run per feed.
     func setSemanticsActive(_ on: Bool) {
+        semanticRequested = on && workAdmission.allowed
+        let on = semanticRequested
+        defer { recordSemanticBlock() }
+        if !on { semanticFeed.clear() }
         guard on != semanticActive, semanticSupported,
               let garSession, let configuration else { return }
         configuration.semanticMode = on ? .enabled : .disabled
         var error: NSError?
         garSession.setConfiguration(configuration, error: &error)
-        guard error == nil else {
-            ARBaselineMetrics.shared.event("GAR semantics configuration failed")
+        if let error {
+            recordRuntimeFailure(.semantics, error: error)
             return
         }
         semanticActive = on
         ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: on)
-        if !on {
-            semanticFeed.update(labels: nil, confidence: nil)
-        }
+    }
+
+    private func recordSemanticBlock() {
+        ARBaselineMetrics.shared.setWorkload("GAR blocked by semantic disable", enabled:
+            semanticActive && !semanticRequested)
     }
 
     func stop() {
+        setWorkAdmission(false, generation: workAdmission.sessionGeneration &+ 1)
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+            self.memoryWarningObserver = nil
+        }
         ARBaselineMetrics.shared.setWorkload("GAR session", enabled: false)
         ARBaselineMetrics.shared.setWorkload("GAR semantics", enabled: false)
         garSession = nil
+        captureSubmission.reset()
         anchorIDToDropID.removeAll()
         requestedDrops.removeAll()
         resolvedDrops.removeAll()
         garAnchorsByDropID.removeAll()
         inFlightAnchorTokens.removeAll()
-        if let occluderRoot {
-            arView?.scene.removeAnchor(occluderRoot)
-        }
+        removeAllOccluders()
+        if let occluderRoot { arView?.scene.removeAnchor(occluderRoot) }
         occluderRoot = nil
-        occluders.removeAll()
-        occluderCount = 0
-        // Round 2 (counsel STATE-8): the build pipeline dies with the engine —
-        // in-flight landings see an empty seen-set and self-discard.
-        meshBuildsInFlight.removeAll()
-        seenGeometry.replace([])
+        seenGeometry.replace([], token: nil)
         headingErrorSample = nil
         semanticActive = false
+        semanticRequested = false
+        recordSemanticBlock()
         semanticSupported = false
         configuration = nil
         vpsCoverageAvailable = nil
@@ -237,7 +299,8 @@ final class GeospatialEngine {
     /// Feed every ARKit frame. Results surface via `state`, `onDropTransform`,
     /// and the occluder entities this engine maintains in the scene.
     func update(with frame: ARFrame) {
-        guard let garSession else { return }
+        guard canUpdate, let token = workAdmission.token, let garSession else { return }
+        guard captureSubmission.admit(frame.timestamp) else { return }
         let metrics = ARBaselineMetrics.shared
         let updatedFrame: GARFrame?
         do {
@@ -246,7 +309,7 @@ final class GeospatialEngine {
             metrics.observe("GAR update")
             updatedFrame = try garSession.update(frame)
         } catch {
-            metrics.event("GAR update failed")
+            recordRuntimeFailure(.update, error: error)
             return
         }
         guard let garFrame = updatedFrame else {
@@ -272,9 +335,24 @@ final class GeospatialEngine {
         if semanticActive {
             semanticFeed.update(
                 labels: garFrame.semanticImage,
-                confidence: garFrame.semanticConfidenceImage
+                confidence: garFrame.semanticConfidenceImage,
+                generation: token.sessionGeneration
             )
         }
+    }
+
+    /// Keep fixed-size counters and a rate-limited error identity. SDK domain and
+    /// code are enough to diagnose failures without logging keys or scene data.
+    private func recordRuntimeFailure(_ operation: RuntimeOperation, error: Error) {
+        let count = (runtimeFailureCounts[operation] ?? 0) &+ 1
+        runtimeFailureCounts[operation] = count
+        let now = ProcessInfo.processInfo.systemUptime
+        guard lastRuntimeFailureLog[operation].map({ now - $0 >= 10 }) ?? true else { return }
+        lastRuntimeFailureLog[operation] = now
+        let failure = error as NSError
+        log.error("GAR \(operation.rawValue, privacy: .public) failed: \(failure.domain, privacy: .public) code=\(failure.code) count=\(count)")
+        ARBaselineMetrics.shared.event("GAR runtime failure", details:
+            "operation=\(operation.rawValue) domain=\(failure.domain) code=\(failure.code) count=\(count)")
     }
 
     private func updateState(earth: GAREarth) {
@@ -337,7 +415,7 @@ final class GeospatialEngine {
     /// Pin a drop to the terrain at its exact coordinate; Google resolves the
     /// ground elevation, `heightAboveGround` rides on top of it.
     func requestAnchor(for drop: GeoDrop, viewer: CLLocation?) {
-        guard let garSession, isAccuratelyLocalized,
+        guard let workToken = workAdmission.token, let garSession, isAccuratelyLocalized,
               !requestedDrops.contains(drop.id) else { return }
         requestedDrops.insert(drop.id)
         anchorRequestCounter += 1
@@ -367,8 +445,9 @@ final class GeospatialEngine {
                     Task { @MainActor in
                         guard let self else { return }
                         // Stale request (invalidated or superseded): discard.
-                        guard self.inFlightAnchorTokens[drop.id] == token else {
-                            if let anchor { self.garSession?.remove(anchor) }
+                        guard self.workAdmission.accepts(workToken),
+                              self.inFlightAnchorTokens[drop.id] == token else {
+                            if let anchor { garSession.remove(anchor) }
                             return
                         }
                         self.inFlightAnchorTokens[drop.id] = nil
@@ -392,8 +471,9 @@ final class GeospatialEngine {
                     Task { @MainActor in
                         guard let self else { return }
                         // Stale request (invalidated or superseded): discard.
-                        guard self.inFlightAnchorTokens[drop.id] == token else {
-                            if let anchor { self.garSession?.remove(anchor) }
+                        guard self.workAdmission.accepts(workToken),
+                              self.inFlightAnchorTokens[drop.id] == token else {
+                            if let anchor { garSession.remove(anchor) }
                             return
                         }
                         self.inFlightAnchorTokens[drop.id] = nil
@@ -449,96 +529,277 @@ final class GeospatialEngine {
 
     // MARK: - Streetscape building occluders
 
-    /// Wave D (counsel ARP-7): mesh construction runs OFF the main actor. The
-    /// old path copied every vertex/triangle in a scalar loop and called the
-    /// synchronous `MeshResource.generate` inside the per-frame GAR update —
-    /// a dozen streamed buildings on one corner turn = tens-to-hundreds of ms
-    /// of main-thread stall exactly when far occlusion should engage (the
-    /// main-thread class ADR-032 banned for USDZ, resurrected for buildings).
+    /// GAR objects and raw pointers stay on this actor. Each update copies at
+    /// most a small slice into owned values; validation runs on the serial
+    /// queue; RealityKit's actor-isolated async generator does the mesh build.
+    /// Tickets cover capture, queueing, validation AND generation, even after a
+    /// scene generation is invalidated.
     private let meshQueue = DispatchQueue(label: "streetscape-mesh", qos: .userInitiated)
-    private var meshBuildsInFlight: Set<UUID> = []
-    /// Round 2 (counsel STATE-8): geometry ids present in the LATEST update,
-    /// readable from the mesh queue — the relevance check runs BEFORE the
-    /// expensive extraction, so a departed building costs nothing.
+    private let meshLimits = StreetscapeMeshLimits.live
+    private var meshBuildsInFlight = StreetscapeBuildRegistry()
+    private var meshWorkBudget = OutstandingWorkBudget(limit: StreetscapeMeshLimits.live.outstandingBuilds)
+    private var meshLedger = StreetscapeMeshLedger(limits: .live)
+    private struct PendingMeshCapture {
+        let ticket: UUID
+        let token: PerceptionWorkAdmission.Token
+        let capture: StreetscapeMeshCapture
+    }
+    private var pendingMeshCaptures: [UUID: PendingMeshCapture] = [:]
+    private var meshCaptureOrder: [UUID] = []
+    private var latestMeshTransforms: [UUID: simd_float4x4] = [:]
+    private var installedMeshDistances: [UUID: Float] = [:]
+    private var meshRetryGate = StreetscapeMeshRetryGate()
+    private var meshFailureCount: UInt64 = 0
+    private var lastMeshFailureLog: TimeInterval = -.infinity
+    private var memoryWarningObserver: NSObjectProtocol?
+    private var meshShedUntil: TimeInterval = 0
+
+    /// The only unchecked handoff is this small locked relevance mailbox. It
+    /// holds Sendable IDs and tokens, never geometry or RealityKit resources.
     private final class SeenGeometryBox: @unchecked Sendable {
         private let lock = NSLock()
         private var ids: Set<UUID> = []
-        func replace(_ new: Set<UUID>) { lock.lock(); ids = new; lock.unlock() }
-        func contains(_ id: UUID) -> Bool {
+        private var token: PerceptionWorkAdmission.Token?
+        func replace(_ new: Set<UUID>, token: PerceptionWorkAdmission.Token?) {
+            lock.lock()
+            ids = new
+            self.token = token
+            lock.unlock()
+        }
+        func contains(_ id: UUID, token: PerceptionWorkAdmission.Token) -> Bool {
             lock.lock(); defer { lock.unlock() }
-            return ids.contains(id)
+            return self.token == token && ids.contains(id)
         }
     }
     private let seenGeometry = SeenGeometryBox()
-    /// Round 2 (counsel STATE-8): builds admitted per sync pass — a corner
-    /// turn streaming a dense block queues the NEAREST few; the rest re-offer
-    /// on later frames instead of pinning N vertex buffers in a backlog.
-    private static let meshBuildBudgetPerPass = 8
 
     private func syncOccluders(_ geometries: [GARStreetscapeGeometry]) {
-        guard let arView else { return }
+        guard let token = workAdmission.token, let arView else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= meshShedUntil else { return }
         let camPos = arView.cameraTransform.translation
         var seen: Set<UUID> = []
-        var pending: [(geometry: GARStreetscapeGeometry, id: UUID, distance: Float)] = []
-        for geometry in geometries where geometry.type == .building {
+        var candidates: [(id: UUID, mesh: GARMesh, transform: simd_float4x4,
+                          distance: Float)] = []
+        for geometry in geometries where geometry.type == .building
+            && geometry.trackingState == .tracking {
             let id = geometry.identifier
+            let transform = geometry.meshTransform
+            guard transformIsFinite(transform) else { continue }
             seen.insert(id)
+            let t = transform.columns.3
+            let distance = simd_length(SIMD3(t.x, t.y, t.z) - camPos)
             if let entity = occluders[id] {
-                entity.setTransformMatrix(geometry.meshTransform, relativeTo: nil)
+                entity.setTransformMatrix(transform, relativeTo: nil)
+                installedMeshDistances[id] = distance
                 continue
             }
-            guard !meshBuildsInFlight.contains(id) else { continue }
-            let t = geometry.meshTransform.columns.3
-            pending.append((geometry, id, simd_length(SIMD3(t.x, t.y, t.z) - camPos)))
+            if meshBuildsInFlight[id] != nil {
+                latestMeshTransforms[id] = transform
+                continue
+            }
+            guard meshRetryGate.allows(id, at: now) else { continue }
+            candidates.append((id, geometry.mesh, transform, distance))
         }
-        seenGeometry.replace(seen)
-        // Nearest first — the buildings most likely to occlude content now.
-        for build in pending.sorted(by: { $0.distance < $1.distance })
-            .prefix(Self.meshBuildBudgetPerPass) {
+        seenGeometry.replace(seen, token: token)
+        meshRetryGate.retainOnly(seen)
+        for id in Array(occluders.keys) where !seen.contains(id) { removeOccluder(id) }
+        for (id, pending) in Array(pendingMeshCaptures) where !seen.contains(id) {
+            retireMeshTicket(pending.ticket, id: id, token: pending.token)
+            pendingMeshCaptures[id] = nil
+        }
+        meshCaptureOrder.removeAll { pendingMeshCaptures[$0] == nil }
+        latestMeshTransforms = latestMeshTransforms.filter { seen.contains($0.key) }
+
+        // Nearest first. The total ticket and residency limits include all old
+        // jobs, so repeated GAR updates cannot create an accumulating backlog.
+        for build in candidates.sorted(by: { $0.distance < $1.distance }) {
+            guard let ticket = meshWorkBudget.begin() else { break }
             let id = build.id
-            let geometry = build.geometry
-            meshBuildsInFlight.insert(id)
-            // The GARStreetscapeGeometry is retained by the closure, keeping
-            // its vertex buffers valid for the background extraction.
-            meshQueue.async { [weak self, seenGeometry] in
-                // STATE-8: relevance BEFORE extraction — a building that
-                // streamed out while queued costs zero mesh work.
-                guard seenGeometry.contains(id) else {
-                    Task { @MainActor [weak self] in
-                        self?.meshBuildsInFlight.remove(id)
-                    }
-                    return
+            let source = GARStreetscapeMeshSource(build.mesh)
+            var rejection = meshLedger.reserve(ticket: ticket,
+                                               vertices: source.vertexCount,
+                                               triangles: source.triangleCount)
+            if rejection == .residentLimit {
+                // A newly nearer building may replace a farther installed one.
+                for farthest in installedMeshDistances.sorted(by: { $0.value > $1.value })
+                    where farthest.value > build.distance {
+                    removeOccluder(farthest.key)
+                    rejection = meshLedger.reserve(ticket: ticket,
+                                                   vertices: source.vertexCount,
+                                                   triangles: source.triangleCount)
+                    if rejection == nil { break }
                 }
-                let descriptor = Self.makeMeshDescriptor(from: geometry.mesh)
-                var mesh: MeshResource?
-                if let descriptor {
-                    // ARP-7: a malformed geometry is a DIAGNOSTIC (logged on
-                    // the main hop below), never a silently missing occluder.
-                    mesh = try? MeshResource.generate(from: [descriptor])
+            }
+            if let rejection {
+                meshWorkBudget.finish(ticket)
+                if rejection != .residentLimit {
+                    meshRetryGate.reject(id, at: now)
+                    recordMeshFailure("admission=\(String(describing: rejection))")
                 }
+                continue
+            }
+            let buildKey = StreetscapeBuildRegistry.Key(token: token, ticket: ticket)
+            guard meshBuildsInFlight.begin(id: id, key: buildKey) else {
+                meshLedger.finish(ticket: ticket)
+                meshWorkBudget.finish(ticket)
+                continue
+            }
+            latestMeshTransforms[id] = build.transform
+            pendingMeshCaptures[id] = PendingMeshCapture(
+                ticket: ticket, token: token, capture: StreetscapeMeshCapture(source: source))
+            meshCaptureOrder.append(id)
+        }
+        var vertexAllowance = meshLimits.verticesPerUpdate
+        var triangleAllowance = meshLimits.trianglesPerUpdate
+        for id in meshCaptureOrder {
+            guard vertexAllowance > 0 || triangleAllowance > 0 else { break }
+            guard let pending = pendingMeshCaptures[id] else { continue }
+            pending.capture.advance(vertices: &vertexAllowance, triangles: &triangleAllowance)
+            guard let snapshot = pending.capture.snapshot() else { continue }
+            pendingMeshCaptures[id] = nil // releases the SDK object on this actor
+            let ticket = pending.ticket
+            let token = pending.token
+            let relevance = seenGeometry
+            meshQueue.async { [weak self, relevance] in
+                // Obsolete queued work is retired before its linear validation.
+                let invalid = relevance.contains(id, token: token)
+                    ? snapshot.validate() : nil
+                let relevant = relevance.contains(id, token: token)
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.meshBuildsInFlight.remove(id)
-                    guard let mesh else {
-                        self.log.error("Streetscape mesh generate failed for \(id) — occluder skipped")
-                        return
-                    }
-                    guard self.occluders[id] == nil,
-                          self.seenGeometry.contains(id),
-                          let arView = self.arView else { return }
-                    let entity = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
-                    self.ensureOccluderRoot(in: arView).addChild(entity)
-                    entity.setTransformMatrix(geometry.meshTransform, relativeTo: nil)
-                    self.occluders[id] = entity
-                    self.occluderCount = self.occluders.count
+                    self?.meshValidationFinished(snapshot: relevant ? snapshot : nil,
+                                                 invalid: invalid, ticket: ticket,
+                                                 id: id, token: token)
                 }
             }
         }
-        for (id, entity) in occluders where !seen.contains(id) {
-            entity.removeFromParent()
-            occluders[id] = nil
-        }
+        meshCaptureOrder.removeAll { pendingMeshCaptures[$0] == nil }
         occluderCount = occluders.count
+    }
+
+    private func meshValidationFinished(snapshot: StreetscapeMeshSnapshot?,
+                                        invalid: StreetscapeMeshSnapshot.Invalid?,
+                                        ticket: UUID, id: UUID,
+                                        token: PerceptionWorkAdmission.Token) {
+        let key = StreetscapeBuildRegistry.Key(token: token, ticket: ticket)
+        guard workAdmission.accepts(token), meshBuildsInFlight.accepts(id: id, key: key),
+              seenGeometry.contains(id, token: token), latestMeshTransforms[id] != nil else {
+            retireMeshTicket(ticket, id: id, token: token)
+            return
+        }
+        guard let snapshot else {
+            retireMeshTicket(ticket, id: id, token: token)
+            return
+        }
+        guard invalid == nil else {
+            meshRetryGate.reject(id, at: ProcessInfo.processInfo.systemUptime)
+            recordMeshFailure("invalid=\(String(describing: invalid))")
+            retireMeshTicket(ticket, id: id, token: token)
+            return
+        }
+        // The installed RealityKit API marks descriptor construction and mesh
+        // generation MainActor. generateAsync performs the expensive generation
+        // asynchronously; its request keeps this ticket until completion.
+        var descriptor = MeshDescriptor(name: "streetscape-building")
+        descriptor.positions = MeshBuffer(snapshot.positions)
+        descriptor.primitives = .triangles(snapshot.indices)
+        let request = StreetscapeMeshGenerationDeadline.applying(
+            to: MeshResource.generateAsync(from: [descriptor]))
+        Task { @MainActor [weak self] in
+            do {
+                for try await mesh in request.values {
+                    self?.meshGenerationFinished(mesh, ticket: ticket, id: id, token: token)
+                    return
+                }
+                self?.meshGenerationFinished(nil, ticket: ticket, id: id, token: token)
+            } catch {
+                self?.recordMeshFailure("RealityKit generation failed: \(error.localizedDescription)")
+                self?.meshGenerationFinished(nil, ticket: ticket, id: id, token: token)
+            }
+        }
+    }
+
+    private func meshGenerationFinished(_ mesh: MeshResource?, ticket: UUID, id: UUID,
+                                        token: PerceptionWorkAdmission.Token) {
+        defer { retireMeshTicket(ticket, id: id, token: token) }
+        let key = StreetscapeBuildRegistry.Key(token: token, ticket: ticket)
+        guard let mesh, workAdmission.accepts(token),
+              meshBuildsInFlight.accepts(id: id, key: key),
+              seenGeometry.contains(id, token: token), occluders[id] == nil,
+              let transform = latestMeshTransforms[id], let arView else { return }
+        guard meshLedger.install(ticket: ticket, id: id) else { return }
+        let entity = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
+        ensureOccluderRoot(in: arView).addChild(entity)
+        entity.setTransformMatrix(transform, relativeTo: nil)
+        occluders[id] = entity
+        let t = transform.columns.3
+        installedMeshDistances[id] = simd_length(SIMD3(t.x, t.y, t.z)
+            - arView.cameraTransform.translation)
+        occluderCount = occluders.count
+    }
+
+    private func retireMeshTicket(_ ticket: UUID, id: UUID,
+                                  token: PerceptionWorkAdmission.Token) {
+        meshWorkBudget.finish(ticket)
+        meshLedger.finish(ticket: ticket)
+        let key = StreetscapeBuildRegistry.Key(token: token, ticket: ticket)
+        if meshBuildsInFlight.retire(id: id, key: key) {
+            latestMeshTransforms[id] = nil
+        }
+    }
+
+    private func cancelPendingMeshCaptures() {
+        for (id, pending) in pendingMeshCaptures {
+            retireMeshTicket(pending.ticket, id: id, token: pending.token)
+        }
+        pendingMeshCaptures.removeAll()
+        meshCaptureOrder.removeAll()
+    }
+
+    private func removeOccluder(_ id: UUID) {
+        occluders.removeValue(forKey: id)?.removeFromParent()
+        installedMeshDistances[id] = nil
+        meshLedger.remove(id: id)
+        occluderCount = occluders.count
+    }
+
+    private func removeAllOccluders() {
+        for entity in occluders.values { entity.removeFromParent() }
+        occluders.removeAll()
+        installedMeshDistances.removeAll()
+        meshLedger.removeAllInstalled()
+        occluderCount = 0
+    }
+
+    private func releaseMeshesForMemoryPressure() {
+        // The cooldown prevents the next GAR frame from immediately repopulating
+        // the released meshes. Old validation/generation tickets retire normally.
+        meshShedUntil = ProcessInfo.processInfo.systemUptime + 30
+        cancelPendingMeshCaptures()
+        meshBuildsInFlight.clear()
+        latestMeshTransforms.removeAll()
+        seenGeometry.replace([], token: workAdmission.token)
+        removeAllOccluders()
+        ARBaselineMetrics.shared.event("Streetscape meshes shed for memory pressure")
+    }
+
+    private func transformIsFinite(_ transform: simd_float4x4) -> Bool {
+        for column in 0..<4 {
+            let value = transform[column]
+            guard value.x.isFinite, value.y.isFinite, value.z.isFinite, value.w.isFinite else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func recordMeshFailure(_ reason: String) {
+        meshFailureCount &+= 1
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastMeshFailureLog >= 10 else { return }
+        lastMeshFailureLog = now
+        log.error("Streetscape mesh skipped: \(reason, privacy: .public); total=\(self.meshFailureCount)")
+        ARBaselineMetrics.shared.event("Streetscape mesh skipped", details: reason)
     }
 
     /// Transit Mode (§6.3): streetscape occluders live in the VIO frame, which is
@@ -555,30 +816,4 @@ final class GeospatialEngine {
         return root
     }
 
-    /// Pure extraction — runs on `meshQueue`, never the main actor (ARP-7).
-    private nonisolated static func makeMeshDescriptor(from mesh: GARMesh) -> MeshDescriptor? {
-        let vertexCount = Int(mesh.vertexCount)
-        guard vertexCount > 0 else { return nil }
-        var positions = [SIMD3<Float>]()
-        positions.reserveCapacity(vertexCount)
-        for index in 0..<vertexCount {
-            let vertex = mesh.vertices[index]
-            positions.append(SIMD3(vertex.x, vertex.y, vertex.z))
-        }
-
-        let triangleCount = Int(mesh.triangleCount)
-        var indices = [UInt32]()
-        indices.reserveCapacity(triangleCount * 3)
-        for index in 0..<triangleCount {
-            let triangle = mesh.triangles[index]
-            indices.append(triangle.indices.0)
-            indices.append(triangle.indices.1)
-            indices.append(triangle.indices.2)
-        }
-
-        var descriptor = MeshDescriptor(name: "streetscape-building")
-        descriptor.positions = MeshBuffer(positions)
-        descriptor.primitives = .triangles(indices)
-        return descriptor
-    }
 }

@@ -1,0 +1,15 @@
+{
+  "sourceCommit": "6ba0b44178478298970e7834f986ac6b1e0d6f26",
+  "sourceHash": "07ecef1e2d58cbd0aa38737baf7665b76a5c5454132b7339dd51968fbbd1ffa1",
+  "sourceDirty": true,
+  "testResult": "passed",
+  "testCount": 215,
+  "failedTests": 0,
+  "excludedSuites": [
+    "FirebaseIntegrationTests (live configured project)"
+  ],
+  "serviceConfigurationBundled": false,
+  "emulatorProject": "demo-amr-native-sdk",
+  "resultBundle": "/Users/captiveon/Documents/AR-Baselines/issue-4-2026-09-11/checks/native-contract-tests.xcresult",
+  "sourceCommitNote": "Tests ran before the implementation commit; source hash identifies tested files."
+}

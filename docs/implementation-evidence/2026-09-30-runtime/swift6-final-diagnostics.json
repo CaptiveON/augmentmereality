@@ -1,0 +1,156 @@
+{
+  "boundaryDiagnostics": [],
+  "buildSucceeded": false,
+  "byFile": {
+    "Services/DropStore.swift": 19
+  },
+  "diagnostics": [
+    {
+      "column": 46,
+      "line": 804,
+      "message": "sending 'self.local' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 51,
+      "line": 812,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 55,
+      "line": 822,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 50,
+      "line": 828,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 50,
+      "line": 831,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 54,
+      "line": 834,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 50,
+      "line": 869,
+      "message": "sending 'provenanced' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 48,
+      "line": 876,
+      "message": "sending 'cloud' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 52,
+      "line": 1023,
+      "message": "sending 'absence' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 46,
+      "line": 1032,
+      "message": "sending 'absence' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 43,
+      "line": 1062,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 56,
+      "line": 1064,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 33,
+      "line": 1156,
+      "message": "sending 'self.local' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 29,
+      "line": 1186,
+      "message": "sending 'self.local' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 29,
+      "line": 1212,
+      "message": "sending 'self.local' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 29,
+      "line": 1229,
+      "message": "sending 'self.local' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 42,
+      "line": 1340,
+      "message": "sending 'cloud' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 37,
+      "line": 1366,
+      "message": "sending 'self.local' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    },
+    {
+      "column": 29,
+      "line": 1424,
+      "message": "sending 'cloud' risks causing data races [#SendingRisksDataRace]",
+      "path": "Services/DropStore.swift",
+      "severity": "error"
+    }
+  ],
+  "logSHA256": "2d00a43cdd800b20f27ee5e4d1bf5e6dc5e1ac44903f5e5a7521a2d96d376746",
+  "uncompiledBoundaries": [
+    "AR/DropEffects.swift",
+    "AR/DropEntityFactory.swift",
+    "AR/GeoARSessionManager.swift",
+    "AR/GeospatialEngine.swift",
+    "AR/MidFieldDepthEstimator.swift",
+    "AR/SceneUpdateAdmission.swift",
+    "AR/SemanticOcclusionPass.swift",
+    "Services/AssetPreparationQueue.swift",
+    "Services/LocationService.swift",
+    "Services/PersonSentinel.swift"
+  ],
+  "uniqueAppDiagnostics": 19
+}

@@ -1,11 +1,7 @@
 import Foundation
 
-/// ADR-033: the power governor — the reason well-engineered AR apps stay cool
-/// for hours. Heat is not managed by reacting to thermal warnings; it is managed
-/// by never producing it: every expensive subsystem (VPS/semantics inference,
-/// person segmentation, LiDAR meshing, neural depth) runs only in the moments
-/// the scene actually needs it. This type is pure decision logic — inputs in,
-/// tier out — so the policy is unit-testable with an injectable clock.
+/// Workload tier policy. Device traces, rather than this policy alone, establish
+/// its effect on sustained cost and thermal behavior.
 struct PowerGovernor {
     /// Ordered by power draw. Comparable so thermal caps can clamp.
     enum Tier: Int, Comparable, CustomStringConvertible {
@@ -35,7 +31,8 @@ struct PowerGovernor {
         var cameraVisible: Bool
         var hasRenderedContent: Bool
         var contentInView: Bool
-        /// Meters to the nearest rendered drop; nil when none.
+        /// Meters to the nearest relevant projected or actively edited drop;
+        /// never combine an offscreen object's distance with another's visibility.
         var nearestRenderedDistance: Float?
         /// VPS enabled and still working toward an accurate localization.
         var vpsConverging: Bool
@@ -49,13 +46,42 @@ struct PowerGovernor {
     /// Downgrades wait out this window so tier flapping can't cause visible
     /// quality oscillation; upgrades are immediate (quality first).
     let downgradeDelay: TimeInterval
+    let criticalRecoveryDelay: TimeInterval
     private var downgradeCandidateSince: Date?
+    private var criticalRecoverySince: Date?
+    private(set) var isRecoveringFromCritical = false
 
-    init(downgradeDelay: TimeInterval = 6) {
+    init(downgradeDelay: TimeInterval = 6, criticalRecoveryDelay: TimeInterval = 6) {
         self.downgradeDelay = downgradeDelay
+        self.criticalRecoveryDelay = criticalRecoveryDelay
     }
 
     mutating func evaluate(_ inputs: Inputs, at now: Date = Date()) -> Tier {
+        // Safety edges bypass every ordinary downgrade candidate. A cool
+        // interval must follow critical before expensive work can return.
+        if inputs.thermalCritical {
+            tier = .idle
+            downgradeCandidateSince = nil
+            criticalRecoverySince = nil
+            isRecoveringFromCritical = true
+            return tier
+        }
+        if isRecoveringFromCritical {
+            if criticalRecoverySince == nil { criticalRecoverySince = now }
+            if now.timeIntervalSince(criticalRecoverySince!) < criticalRecoveryDelay {
+                tier = .idle
+                downgradeCandidateSince = nil
+                return tier
+            }
+            isRecoveringFromCritical = false
+            criticalRecoverySince = nil
+        }
+        if !inputs.cameraVisible {
+            tier = .idle
+            downgradeCandidateSince = nil
+            return tier
+        }
+
         var desired: Tier
         if !inputs.cameraVisible || !inputs.hasRenderedContent {
             desired = .idle
@@ -71,10 +97,6 @@ struct PowerGovernor {
         // manager sheds by subsystem priority instead (GAR cadence, neural depth,
         // semantic matte) so person occlusion and mesh stay while the user is in
         // the moment. Only `.critical` forces the idle diet to save the session.
-        if inputs.thermalCritical {
-            desired = min(desired, .idle)
-        }
-
         if desired > tier {
             tier = desired
             downgradeCandidateSince = nil

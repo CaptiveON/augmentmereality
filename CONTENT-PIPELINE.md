@@ -7,6 +7,19 @@ tiers 1–3; marketplaces are filler only.
 
 ## Object spec (hard budgets)
 
+Runtime update, September 29: physical content keeps authored dimensions at every
+viewing distance. The independent discovery marker carries distance readability.
+Selected/current content prepares on demand; there is no whole-catalog preload.
+One decoder, eight queued identifiers, and a three-template / 24 MiB source-cost
+cache bound preparation. The September 30 runtime adds one shared geographic
+and Room Test limit: normally 8 full models plus 24 cues, with a 64 MiB aggregate
+compressed-source proxy and reduced thermal/memory-pressure limits. Generated
+AR text is capped at 160 Unicode scalars without changing the saved message.
+Source cost is not decoded RAM, and these runtime compatibility caps do not
+relax the authoring targets below. Asset geometry optimization, rights and
+explicit grounded/animated behavior still need the #15/#20 gates. See ADR-056
+and the [scene budget](Scene-Content-Budget-2026-09-30.md).
+
 | Property | Budget | Why |
 |---|---|---|
 | File size | ≤ 5 MB (hero ≤ 10 MB) | app size, load time |

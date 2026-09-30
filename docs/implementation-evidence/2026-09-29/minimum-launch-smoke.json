@@ -1,0 +1,21 @@
+{
+  "app": "/tmp/amr-sep29/DerivedData/Build/Products/Debug-iphonesimulator/AugmentMeReality.app",
+  "bundleID": "com.adnan.augmentmereality",
+  "checks": [
+    {
+      "pid": 38315,
+      "reached": true,
+      "screenshot": "non-ar-root.png",
+      "surface": "non-ar-root"
+    },
+    {
+      "pid": 38453,
+      "reached": true,
+      "screenshot": "camera-unavailable.png",
+      "surface": "camera-unavailable"
+    }
+  ],
+  "simulatorUDID": "BFFE4491-8DF9-4C89-9E95-7D43CE4D95CC",
+  "locationPermissionSetup": "simctl revocation requested; pending system dialog remained in original screenshots",
+  "scope": "View-appearance markers passed; system prompts were subsequently declined through Simulator UI"
+}

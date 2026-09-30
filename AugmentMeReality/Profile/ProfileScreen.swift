@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Wave 6.1 profile v1 — the trophy shelf's skeleton (PRODUCT-ROUTE §3A).
-/// Identity + editable name/handle + headline stats. The Moments grid and the
-/// full visual language arrive with Wave 6.2's design implementation.
+/// Profile identity, editable name/handle, local library status and sync health.
+/// Delivery/reaction totals stay hidden until an authoritative producer exists.
 struct ProfileScreen: View {
     @EnvironmentObject private var account: AccountService
     @EnvironmentObject private var library: DropLibrary
@@ -48,17 +47,7 @@ struct ProfileScreen: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("Moments") {
-                    statRow(
-                        icon: "gift.fill", tint: .pink,
-                        title: "Moments delivered",
-                        value: account.profile?.momentsDelivered ?? 0
-                    )
-                    statRow(
-                        icon: "heart.fill", tint: .red,
-                        title: "Reactions received",
-                        value: account.profile?.reactionsReceived ?? 0
-                    )
+                Section("Your library") {
                     statRow(
                         icon: "mappin.and.ellipse", tint: .mint,
                         title: "Active drops",
@@ -67,7 +56,8 @@ struct ProfileScreen: View {
                 }
 
                 Section {
-                    if AppConfig.firebaseConfigured {
+                    if AppConfig.firebaseConfigured || library.storageLedgerError != nil
+                        || library.localReadWarning != nil || library.storageProblemText != nil {
                         // Wave C (counsel PBS-4): "Synced" means the SERVER
                         // acknowledged every write — never "we have a config
                         // file". Round 8 (counsel B4): the good state needs
@@ -99,21 +89,39 @@ struct ProfileScreen: View {
                             )
                             .foregroundStyle(.orange)
                             .font(.footnote)
-                        } else if library.localReadWarning != nil {
+                        } else if let error = library.storageLedgerError {
+                            HStack {
+                                Label(error, systemImage: "externaldrive.badge.exclamationmark")
+                                    .foregroundStyle(.orange)
+                                    .font(.footnote)
+                                if library.storageProblemText != nil {
+                                    Spacer()
+                                    Button("Retry Clear") { library.acknowledgeLosses() }
+                                        .font(.footnote.bold())
+                                }
+                            }
+                        } else if let warning = library.localReadWarning {
                             // Round 8 (counsel flows-6): while the library
                             // can't read its own truth, no positive claim.
                             // Round 12 (counsel SURF-lens-5): and no FALSE
                             // claim either — sync of readable drops proceeds.
-                            Label(
-                                "Some saved drops couldn't be read",
-                                systemImage: "exclamationmark.icloud"
-                            )
-                            .foregroundStyle(.orange)
-                            .font(.footnote)
-                        } else if account.uid == nil {
-                            Label("Connecting…", systemImage: "icloud.slash")
-                                .foregroundStyle(.secondary)
-                                .font(.footnote)
+                            HStack {
+                                Label(warning, systemImage: "exclamationmark.icloud")
+                                    .foregroundStyle(.orange)
+                                    .font(.footnote)
+                                Spacer()
+                                Button("Dismiss") { library.acknowledgeReadIncident() }
+                                    .font(.footnote.bold())
+                            }
+                        } else if let problem = library.storageProblemText {
+                            HStack {
+                                Label(problem, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                                    .font(.footnote)
+                                Spacer()
+                                Button("Clear") { library.acknowledgeLosses() }
+                                    .font(.footnote.bold())
+                            }
                         } else if library.hasCompletedCleanRefresh,
                                   library.unpushablePendingCount > 0 {
                             // Round 8 (counsel ux-4): pending writes whose row
@@ -133,6 +141,10 @@ struct ProfileScreen: View {
                             Label("Sync issue — \(error)", systemImage: "exclamationmark.icloud")
                                 .foregroundStyle(.orange)
                                 .font(.footnote)
+                        } else if account.uid == nil {
+                            Label("Connecting…", systemImage: "icloud.slash")
+                                .foregroundStyle(.secondary)
+                                .font(.footnote)
                         } else if library.uploadingCount > 0 {
                             // Round 6: counts only drops that can actually be
                             // pushed (counsel flows-5) — and deletions are OUT
@@ -145,23 +157,6 @@ struct ProfileScreen: View {
                             )
                             .foregroundStyle(.secondary)
                             .font(.footnote)
-                        } else if !library.lostRowIDs.isEmpty {
-                            // Round 14 (counsel surf-lens-2/own-1): the
-                            // permanent loss record — OUTRANKS "Synced". A
-                            // destroyed drop must leave a trace the reap,
-                            // the banner dismissal and the evidence latch
-                            // cannot erase; only the user clears it.
-                            HStack {
-                                Label(
-                                    "\(library.lostRowIDs.count) drop\(library.lostRowIDs.count == 1 ? " was" : "s were") lost to a storage problem",
-                                    systemImage: "exclamationmark.triangle"
-                                )
-                                .foregroundStyle(.orange)
-                                .font(.footnote)
-                                Spacer()
-                                Button("Clear") { library.acknowledgeLosses() }
-                                    .font(.footnote.bold())
-                            }
                         } else if !library.hasCompletedCleanRefresh {
                             // Round 8 (counsel B4): the honest cold-start state.
                             // Before a refresh has completed cleanly the app

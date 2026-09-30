@@ -1,75 +1,103 @@
+import RealityKit
 import XCTest
 @testable import AugmentMeReality
 
-/// ADR-049: the perceptual size-compensation law. These are the invariants that
-/// separate "compensation" from the two banned failure modes (constant apparent
-/// size, billboard stickers) — if any of them breaks, distance perception breaks.
-final class PerceptualSizeTests: XCTestCase {
-
-    /// Inside d₀ (and for any degenerate distance) the law is exactly identity:
-    /// near-field content, room/Playground drops, and the reveal walk-up render
-    /// pure true-scale.
-    func testIdentityNearAndDegenerate() {
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: 0.5), 1)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: AppConfig.perceptualD0), 1)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: 0), 1)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: -3), 1)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: .nan), 1)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: .infinity), 1)
-    }
-
-    /// The factor itself grows monotonically and never exceeds the cap —
-    /// multi-km drops stay sane (a scale-3 text at 2 km renders ≈12–21 m tall,
-    /// about a building, not a mountain).
-    func testMonotonicAndCapped() {
-        var previous: Float = 0
-        for distance in stride(from: Float(1), through: 5_000, by: 7) {
-            let factor = GeoARSessionManager.perceptualFactor(atDistance: distance)
-            XCTAssertGreaterThanOrEqual(factor, previous, "factor regressed at \(distance) m")
-            XCTAssertGreaterThanOrEqual(factor, 1)
-            XCTAssertLessThanOrEqual(factor, AppConfig.perceptualCap)
-            previous = factor
-        }
-        XCTAssertEqual(
-            GeoARSessionManager.perceptualFactor(atDistance: 1_000_000),
-            AppConfig.perceptualCap
-        )
-    }
-
-    /// ADR-049 worked values — the numbers the decision was made on. If tuning
-    /// moves d₀/β/cap, this test failing is the prompt to re-run FT-33 and
-    /// update the ADR, not to delete the assertion.
-    func testWorkedValuesMatchADR() {
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: 50), 1.9, accuracy: 0.1)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: 200), 3.1, accuracy: 0.2)
-        XCTAssertEqual(GeoARSessionManager.perceptualFactor(atDistance: 2_000), 6.9, accuracy: 0.4)
-    }
-
-    /// THE invariant: apparent angular size θ(d) = 2·atan(h·C(d) / 2d) must be
-    /// strictly decreasing — farther always looks smaller, approaching always
-    /// grows. This is what β < 1 guarantees and what constant-apparent-size
-    /// (the old sticker failure) violates.
-    func testApparentAngleStillShrinksWithDistance() {
-        let height: Float = 1.8 // scale-3 birthday text
-        var previousAngle = Float.greatestFiniteMagnitude
-        for distance in stride(from: Float(1), through: 5_000, by: 3) {
-            let factor = GeoARSessionManager.perceptualFactor(atDistance: distance)
-            let angle = 2 * atan(height * factor / (2 * distance))
-            XCTAssertLessThan(
-                angle, previousAngle,
-                "apparent size failed to shrink between \(distance - 3) and \(distance) m"
+/// Physical content has one authored world size. The separately scaled waypoint
+/// marker remains free to help the viewer find a distant drop.
+final class PhysicalSizeTests: XCTestCase {
+    func testWalkingAcrossFormerCompensationThresholdKeepsWorldBoundsAndProjection() async {
+        await MainActor.run {
+            let holder = Entity()
+            let content = ModelEntity(
+                mesh: .generateBox(size: SIMD3<Float>(1, 2, 0.5)),
+                materials: [UnlitMaterial(color: .white)]
             )
-            previousAngle = angle
+            let marker = Entity()
+            let disc = Entity()
+            holder.addChild(content)
+            holder.addChild(marker)
+            holder.addChild(disc)
+            GeoARSessionManager.applyPhysicalSize(
+                1.75, to: content, in: holder, marker: marker, disc: disc
+            )
+            let physical = content.visualBounds(relativeTo: holder).extents
+            let footprint = disc.scale
+            var projectedHeights: [Float] = []
+            for distance in [Float(5), 7.9, 8, 8.1, 25, 60, 25, 5] {
+                holder.position = [0, 0, -distance]
+                let bounds = content.visualBounds(relativeTo: holder).extents
+                XCTAssertEqual(bounds.x, physical.x, accuracy: 0.0001)
+                XCTAssertEqual(bounds.y, physical.y, accuracy: 0.0001)
+                XCTAssertEqual(bounds.z, physical.z, accuracy: 0.0001)
+                XCTAssertEqual(disc.scale.x, footprint.x, accuracy: 0.0001)
+                // Pinhole projection using the active camera's focal length
+                // would apply this same 1/d relationship to the fixed bounds.
+                projectedHeights.append(1_400 * bounds.y / distance)
+            }
+            XCTAssertEqual(projectedHeights.first!, projectedHeights.last!, accuracy: 0.0001)
+            XCTAssertGreaterThan(projectedHeights[0], projectedHeights[5])
+            XCTAssertEqual(projectedHeights[0] / projectedHeights[5], 12, accuracy: 0.0001)
+
+            marker.scale = SIMD3<Float>(repeating: 8)
+            XCTAssertEqual(content.visualBounds(relativeTo: holder).extents.y,
+                           physical.y, accuracy: 0.0001)
+            XCTAssertEqual(disc.scale.x, footprint.x, accuracy: 0.0001)
         }
     }
 
-    /// Sanity on the tuning itself: β stays in the size-constancy band the ADR
-    /// derived (0 < β < 1 keeps perspective dominant; β ≥ 1 would freeze or
-    /// invert apparent size and re-create the sticker).
-    func testTuningStaysInSafeBand() {
-        XCTAssertGreaterThan(AppConfig.perceptualBeta, 0)
-        XCTAssertLessThan(AppConfig.perceptualBeta, 1)
-        XCTAssertGreaterThan(AppConfig.perceptualD0, 0)
-        XCTAssertGreaterThanOrEqual(AppConfig.perceptualCap, 1)
+    func testScaleEditThenAssetReplacementAppliesAuthoredScaleOnce() async {
+        await MainActor.run {
+            let holder = Entity()
+            let marker = Entity()
+            let disc = Entity()
+            let placeholder = ModelEntity(
+                mesh: .generateSphere(radius: 0.2),
+                materials: [UnlitMaterial(color: .white)]
+            )
+            holder.addChild(placeholder)
+            holder.addChild(marker)
+            holder.addChild(disc)
+            GeoARSessionManager.applyPhysicalSize(
+                2.5, to: placeholder, in: holder, marker: marker, disc: disc
+            )
+            placeholder.removeFromParent()
+
+            let loaded = ModelEntity(
+                mesh: .generateBox(size: SIMD3<Float>(1, 2, 0.5)),
+                materials: [UnlitMaterial(color: .white)]
+            )
+            holder.addChild(loaded)
+            GeoARSessionManager.applyPhysicalSize(
+                2.5, to: loaded, in: holder, marker: marker, disc: disc, force: true
+            )
+            XCTAssertEqual(loaded.scale.x, 2.5, accuracy: 0.0001)
+            XCTAssertEqual(loaded.visualBounds(relativeTo: holder).extents.y,
+                           5, accuracy: 0.0001)
+            XCTAssertEqual(disc.scale.x, 0.55 * 2.5, accuracy: 0.0001)
+
+            GeoARSessionManager.applyPhysicalSize(
+                3, to: loaded, in: holder, marker: marker, disc: disc
+            )
+            XCTAssertEqual(loaded.scale.x, 3, accuracy: 0.0001)
+            XCTAssertEqual(loaded.visualBounds(relativeTo: holder).extents.y,
+                           6, accuracy: 0.0001)
+            XCTAssertEqual(disc.scale.x, 0.55 * 3, accuracy: 0.0001)
+        }
+    }
+
+    func testSavedScaleBuildsAtSameSizeOnAnotherSession() async throws {
+        let drop = GeoDrop(content: .gift, message: "", latitude: 0, longitude: 0,
+                           heightAboveGround: 0, scale: 2.25, colorHex: "#FFFFFF",
+                           createdBy: "Author")
+        let decoded = try JSONDecoder().decode(GeoDrop.self, from: JSONEncoder().encode(drop))
+        await MainActor.run {
+            let first = DropEntityFactory.makeEntity(for: drop, fullBright: false)
+            let reopened = DropEntityFactory.makeEntity(for: decoded, fullBright: false)
+            XCTAssertEqual(first.scale.x, 2.25, accuracy: 0.0001)
+            XCTAssertEqual(reopened.scale.x, first.scale.x, accuracy: 0.0001)
+            XCTAssertEqual(reopened.visualBounds(relativeTo: nil).extents.y,
+                           first.visualBounds(relativeTo: nil).extents.y,
+                           accuracy: 0.0001)
+        }
     }
 }

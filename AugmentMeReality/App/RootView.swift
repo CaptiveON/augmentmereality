@@ -1,5 +1,24 @@
 import SwiftUI
 
+#if DEBUG
+/// A launch token lets simulator smoke checks distinguish this UI presentation
+/// from preferences left by an earlier process. This code is absent in Release.
+enum LaunchSmoke {
+    private static let arguments = ProcessInfo.processInfo.arguments
+
+    static var opensUnavailableCamera: Bool {
+        arguments.contains("-AMRSmokeUnavailableCamera")
+    }
+
+    static func reached(_ surface: String) {
+        guard let flag = arguments.firstIndex(of: "-AMRSmokeToken"),
+              arguments.indices.contains(flag + 1) else { return }
+        UserDefaults.standard.set(arguments[flag + 1], forKey: "AMRSmoke_\(surface)")
+        UserDefaults.standard.synchronize()
+    }
+}
+#endif
+
 /// UI revamp (ADR-048) — "The Gift, not the Map".
 /// Tabs: Home · Explore · [orb +] · Sent · You. The camera is a presented
 /// moment (fullScreenCover), not a tab. The Wave-6.2 loop wiring
@@ -146,7 +165,16 @@ struct RootView: View {
         .environmentObject(router)
         .environmentObject(reactionSession)
         .environmentObject(reactionService)
-        .onAppear { router.startOnboardingIfNeeded() }
+        .onAppear {
+            #if DEBUG
+            LaunchSmoke.reached("root")
+            if LaunchSmoke.opensUnavailableCamera {
+                router.destination = .camera
+                return
+            }
+            #endif
+            router.startOnboardingIfNeeded()
+        }
         // ---- Wave D (counsel SWE-7): ONE full-screen destination ----
         // Camera, create, onboarding and memory were four stacked covers on
         // this view; flows that dismissed one and presented another in the

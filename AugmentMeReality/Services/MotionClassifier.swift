@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 /// ADR-014: still / walking / vehicular from GNSS speed, with hysteresis so the mode
@@ -10,15 +11,32 @@ import Foundation
 /// for 10 s (sticky through brief stops).
 final class MotionClassifier {
     enum MotionState: String {
-        case still, walking, vehicular
+        case unknown, still, walking, vehicular
     }
 
     private(set) var state: MotionState = .still
     private var candidate: MotionState = .still
     private var candidateSince = Date()
+    private var lastValidSpeedAt: Date?
+    private var lastFixTimestamp: Date?
+
+    /// Ingest each GNSS fix once. Re-rendering the same fix supplies no new
+    /// speed evidence; a negative speed is unknown rather than a stop.
+    @discardableResult
+    func update(location: CLLocation?, at now: Date = Date()) -> MotionState {
+        guard let location,
+              LocationFixPolicy.accepts(location, at: now, newerThan: lastFixTimestamp)
+        else { return markEvidenceMissing(at: now) }
+        lastFixTimestamp = location.timestamp
+        return update(speed: location.speed, at: location.timestamp)
+    }
 
     @discardableResult
-    func update(speed: Double, at now: Date = Date()) -> MotionState {
+    func update(speed: Double?, at now: Date = Date()) -> MotionState {
+        guard let speed, speed.isFinite, speed >= 0 else {
+            return markEvidenceMissing(at: now)
+        }
+        lastValidSpeedAt = now
         let instantaneous: MotionState
         if speed > 7 {
             instantaneous = .vehicular
@@ -46,6 +64,17 @@ final class MotionClassifier {
         if dwell >= required {
             state = candidate
         }
+        return state
+    }
+
+    private func markEvidenceMissing(at now: Date) -> MotionState {
+        if let lastValidSpeedAt,
+           now.timeIntervalSince(lastValidSpeedAt) < 10 {
+            return state // retain a warm transit mode through a brief fix gap
+        }
+        state = .unknown
+        candidate = .unknown
+        candidateSince = now
         return state
     }
 }

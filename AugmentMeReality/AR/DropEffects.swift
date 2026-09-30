@@ -5,6 +5,7 @@ import UIKit
 /// This is how lightweight (even static) models read as premium animated
 /// content at ZERO file-size cost: a sparkle aura, a reveal burst when you get
 /// close, and gentle idle motion. All effects are code, tinted per drop.
+@MainActor
 enum DropEffects {
     // MARK: Particles (iOS 18+; older devices simply skip them)
 

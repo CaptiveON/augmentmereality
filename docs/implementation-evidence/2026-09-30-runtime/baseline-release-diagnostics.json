@@ -1,0 +1,1484 @@
+{
+  "boundaryDiagnostics": [
+    {
+      "column": 22,
+      "line": 14,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 15,
+      "message": "main actor-isolated property 'name' can not be mutated from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 34,
+      "message": "main actor-isolated property 'components' can not be referenced from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 34,
+      "message": "call to main actor-isolated instance method 'set' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 42,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 43,
+      "message": "main actor-isolated property 'name' can not be mutated from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 64,
+      "message": "main actor-isolated property 'components' can not be referenced from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 64,
+      "message": "call to main actor-isolated instance method 'set' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 81,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 82,
+      "message": "main actor-isolated property 'name' can not be mutated from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 123,
+      "message": "main actor-isolated property 'components' can not be referenced from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 123,
+      "message": "call to main actor-isolated instance method 'set' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 155,
+      "message": "call to main actor-isolated static method 'generate(with:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 54,
+      "line": 166,
+      "message": "call to main actor-isolated static method 'generate(with:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 171,
+      "message": "call to main actor-isolated instance method 'playAnimation(_:transitionDuration:blendLayerOffset:separateAnimatedValue:startsPaused:clock:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 44,
+      "line": 171,
+      "message": "call to main actor-isolated instance method 'repeat(duration:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 57,
+      "line": 54,
+      "message": "converting function value of type '@MainActor (String) -> Int' to '(String) -> Int' loses global actor 'MainActor'; this is an error in the Swift 6 language mode",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 26,
+      "line": 264,
+      "message": "call to main actor-isolated static method 'generateText(_:extrusionDepth:font:containerFrame:alignment:lineBreakMode:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 274,
+      "message": "main actor-isolated property 'bounds' can not be referenced from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 280,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 281,
+      "message": "main actor-isolated property 'bounds' can not be referenced from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 15,
+      "line": 282,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 283,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 14,
+      "line": 284,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 303,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 40,
+      "line": 311,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 39,
+      "line": 313,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 317,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 318,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 319,
+      "message": "main actor-isolated property 'scale' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 26,
+      "line": 320,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 321,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 322,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 323,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 329,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 335,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 336,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 13,
+      "line": 339,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 28,
+      "line": 341,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 342,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 345,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 347,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 348,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 351,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 353,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 42,
+      "line": 353,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 354,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 24,
+      "line": 355,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 43,
+      "line": 355,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 356,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 76,
+      "line": 358,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 364,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 367,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 368,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 371,
+      "message": "main actor-isolated property 'orientation' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 372,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 37,
+      "line": 374,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 24,
+      "line": 375,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 376,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 377,
+      "message": "main actor-isolated property 'scale' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 25,
+      "line": 378,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 379,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 380,
+      "message": "main actor-isolated property 'scale' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 55,
+      "line": 382,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 416,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 419,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 420,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 423,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 425,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 38,
+      "line": 425,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 13,
+      "line": 426,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 38,
+      "line": 428,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 1800,
+      "message": "immutable value 'arView' was never used; consider replacing with '_' or removing it",
+      "path": "AR/GeoARSessionManager.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 1,
+      "line": 1,
+      "message": "add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'ARCoreGeospatial'",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 64,
+      "line": 584,
+      "message": "capture of 'geometry' with non-Sendable type 'GARStreetscapeGeometry' in a '@Sendable' closure",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 46,
+      "line": 589,
+      "message": "call to main actor-isolated static method 'generate(from:)' in a synchronous nonisolated context",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 56,
+      "line": 606,
+      "message": "sending 'geometry' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 1,
+      "line": 5,
+      "message": "add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'Vision'",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 150,
+      "message": "capture of 'self' with non-Sendable type 'MidFieldDepthEstimator?' in a '@Sendable' closure",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 213,
+      "message": "capture of 'self' with non-Sendable type 'MidFieldDepthEstimator?' in a '@Sendable' closure",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 235,
+      "message": "capture of 'model' with non-Sendable type 'VNCoreMLModel' in a '@Sendable' closure",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 31,
+      "line": 192,
+      "message": "main actor-isolated property 'session' can not be referenced from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 245,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 248,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 262,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 263,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 527,
+      "message": "capture of 'retained' with non-Sendable type '[Any]' in a '@Sendable' closure",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 46,
+      "line": 339,
+      "message": "capture of 'self' with non-Sendable type 'LocationService' in a '@Sendable' closure",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 59,
+      "line": 339,
+      "message": "sending 'self' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 13,
+      "line": 362,
+      "message": "sending 'self' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 31,
+      "line": 362,
+      "message": "capture of 'self' with non-Sendable type 'LocationService' in a '@Sendable' closure",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 36,
+      "line": 373,
+      "message": "capture of 'self' with non-Sendable type 'LocationService' in a '@Sendable' closure",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 55,
+      "line": 373,
+      "message": "sending 'self' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 70,
+      "message": "capture of 'self' with non-Sendable type 'PersonSentinel?' in a '@Sendable' closure",
+      "path": "Services/PersonSentinel.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 32,
+      "line": 105,
+      "message": "capture of 'pixelBuffer' with non-Sendable type 'CVPixelBuffer' (aka 'CVBuffer') in a '@Sendable' closure",
+      "path": "Services/PersonSentinel.swift",
+      "severity": "warning"
+    }
+  ],
+  "buildSucceeded": true,
+  "byFile": {
+    "AR/DropEffects.swift": 16,
+    "AR/DropEntityFactory.swift": 56,
+    "AR/GeoARSessionManager.swift": 1,
+    "AR/GeospatialEngine.swift": 4,
+    "AR/MidFieldDepthEstimator.swift": 4,
+    "AR/SemanticOcclusionPass.swift": 6,
+    "Services/DropStore.swift": 19,
+    "Services/LocationService.swift": 6,
+    "Services/PersonSentinel.swift": 2
+  },
+  "diagnostics": [
+    {
+      "column": 22,
+      "line": 14,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 15,
+      "message": "main actor-isolated property 'name' can not be mutated from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 34,
+      "message": "main actor-isolated property 'components' can not be referenced from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 34,
+      "message": "call to main actor-isolated instance method 'set' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 42,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 43,
+      "message": "main actor-isolated property 'name' can not be mutated from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 64,
+      "message": "main actor-isolated property 'components' can not be referenced from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 64,
+      "message": "call to main actor-isolated instance method 'set' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 81,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 82,
+      "message": "main actor-isolated property 'name' can not be mutated from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 123,
+      "message": "main actor-isolated property 'components' can not be referenced from a nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 123,
+      "message": "call to main actor-isolated instance method 'set' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 155,
+      "message": "call to main actor-isolated static method 'generate(with:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 54,
+      "line": 166,
+      "message": "call to main actor-isolated static method 'generate(with:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 171,
+      "message": "call to main actor-isolated instance method 'playAnimation(_:transitionDuration:blendLayerOffset:separateAnimatedValue:startsPaused:clock:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 44,
+      "line": 171,
+      "message": "call to main actor-isolated instance method 'repeat(duration:)' in a synchronous nonisolated context",
+      "path": "AR/DropEffects.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 57,
+      "line": 54,
+      "message": "converting function value of type '@MainActor (String) -> Int' to '(String) -> Int' loses global actor 'MainActor'; this is an error in the Swift 6 language mode",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 26,
+      "line": 264,
+      "message": "call to main actor-isolated static method 'generateText(_:extrusionDepth:font:containerFrame:alignment:lineBreakMode:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 274,
+      "message": "main actor-isolated property 'bounds' can not be referenced from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 280,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 281,
+      "message": "main actor-isolated property 'bounds' can not be referenced from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 15,
+      "line": 282,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 283,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 14,
+      "line": 284,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 303,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 40,
+      "line": 311,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 39,
+      "line": 313,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 317,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 318,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 319,
+      "message": "main actor-isolated property 'scale' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 26,
+      "line": 320,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 321,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 322,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 323,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 329,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 335,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 336,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 13,
+      "line": 339,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 28,
+      "line": 341,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 342,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 345,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 27,
+      "line": 347,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 348,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 21,
+      "line": 351,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 353,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 42,
+      "line": 353,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 354,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 24,
+      "line": 355,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 43,
+      "line": 355,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 356,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 76,
+      "line": 358,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 364,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 367,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 368,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 371,
+      "message": "main actor-isolated property 'orientation' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 372,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 37,
+      "line": 374,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 24,
+      "line": 375,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 376,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 18,
+      "line": 377,
+      "message": "main actor-isolated property 'scale' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 25,
+      "line": 378,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 379,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 380,
+      "message": "main actor-isolated property 'scale' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 55,
+      "line": 382,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 416,
+      "message": "call to main actor-isolated initializer 'init()' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 22,
+      "line": 419,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 420,
+      "message": "call to main actor-isolated static method 'generateBox(size:cornerRadius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 16,
+      "line": 423,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 425,
+      "message": "call to main actor-isolated initializer 'init(mesh:materials:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 38,
+      "line": 425,
+      "message": "call to main actor-isolated static method 'generateSphere(radius:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 13,
+      "line": 426,
+      "message": "main actor-isolated property 'position' can not be mutated from a nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 38,
+      "line": 428,
+      "message": "call to main actor-isolated instance method 'addChild(_:preservingWorldTransform:)' in a synchronous nonisolated context",
+      "path": "AR/DropEntityFactory.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 19,
+      "line": 1800,
+      "message": "immutable value 'arView' was never used; consider replacing with '_' or removing it",
+      "path": "AR/GeoARSessionManager.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 1,
+      "line": 1,
+      "message": "add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'ARCoreGeospatial'",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 64,
+      "line": 584,
+      "message": "capture of 'geometry' with non-Sendable type 'GARStreetscapeGeometry' in a '@Sendable' closure",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 46,
+      "line": 589,
+      "message": "call to main actor-isolated static method 'generate(from:)' in a synchronous nonisolated context",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 56,
+      "line": 606,
+      "message": "sending 'geometry' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "AR/GeospatialEngine.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 1,
+      "line": 5,
+      "message": "add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'Vision'",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 150,
+      "message": "capture of 'self' with non-Sendable type 'MidFieldDepthEstimator?' in a '@Sendable' closure",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 213,
+      "message": "capture of 'self' with non-Sendable type 'MidFieldDepthEstimator?' in a '@Sendable' closure",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 235,
+      "message": "capture of 'model' with non-Sendable type 'VNCoreMLModel' in a '@Sendable' closure",
+      "path": "AR/MidFieldDepthEstimator.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 31,
+      "line": 192,
+      "message": "main actor-isolated property 'session' can not be referenced from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 245,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 248,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 262,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 20,
+      "line": 263,
+      "message": "main actor-isolated property 'renderCallbacks' can not be mutated from a nonisolated context",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 17,
+      "line": 527,
+      "message": "capture of 'retained' with non-Sendable type '[Any]' in a '@Sendable' closure",
+      "path": "AR/SemanticOcclusionPass.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 46,
+      "line": 804,
+      "message": "sending 'self.local' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 51,
+      "line": 812,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 55,
+      "line": 822,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 828,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 831,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 54,
+      "line": 834,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 50,
+      "line": 869,
+      "message": "sending 'provenanced' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 48,
+      "line": 876,
+      "message": "sending 'cloud' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 52,
+      "line": 1023,
+      "message": "sending 'absence' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 46,
+      "line": 1032,
+      "message": "sending 'absence' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 43,
+      "line": 1062,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 56,
+      "line": 1064,
+      "message": "sending value of non-Sendable type 'any LocalStoreDiagnostics' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 33,
+      "line": 1156,
+      "message": "sending 'self.local' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 29,
+      "line": 1186,
+      "message": "sending 'self.local' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 29,
+      "line": 1212,
+      "message": "sending 'self.local' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 29,
+      "line": 1229,
+      "message": "sending 'self.local' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 42,
+      "line": 1340,
+      "message": "sending 'cloud' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 37,
+      "line": 1366,
+      "message": "sending 'self.local' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 29,
+      "line": 1424,
+      "message": "sending 'cloud' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/DropStore.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 46,
+      "line": 339,
+      "message": "capture of 'self' with non-Sendable type 'LocationService' in a '@Sendable' closure",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 59,
+      "line": 339,
+      "message": "sending 'self' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 13,
+      "line": 362,
+      "message": "sending 'self' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 31,
+      "line": 362,
+      "message": "capture of 'self' with non-Sendable type 'LocationService' in a '@Sendable' closure",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 36,
+      "line": 373,
+      "message": "capture of 'self' with non-Sendable type 'LocationService' in a '@Sendable' closure",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 55,
+      "line": 373,
+      "message": "sending 'self' risks causing data races; this is an error in the Swift 6 language mode",
+      "path": "Services/LocationService.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 23,
+      "line": 70,
+      "message": "capture of 'self' with non-Sendable type 'PersonSentinel?' in a '@Sendable' closure",
+      "path": "Services/PersonSentinel.swift",
+      "severity": "warning"
+    },
+    {
+      "column": 32,
+      "line": 105,
+      "message": "capture of 'pixelBuffer' with non-Sendable type 'CVPixelBuffer' (aka 'CVBuffer') in a '@Sendable' closure",
+      "path": "Services/PersonSentinel.swift",
+      "severity": "warning"
+    }
+  ],
+  "logSHA256": "1a979ac1a457faedbb524924055307369a710ee26b96a890c306034807a77828",
+  "uncompiledBoundaries": [],
+  "uniqueAppDiagnostics": 114
+}

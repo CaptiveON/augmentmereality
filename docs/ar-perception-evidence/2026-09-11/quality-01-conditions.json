@@ -1,0 +1,11 @@
+{
+  "purpose": "USB-connected visual/lifecycle validation; not thermal acceptance",
+  "operatorReadyAtUTC": "2026-09-10T23:50:30.956563+00:00",
+  "operatorReply": "unlocked and ready",
+  "sourceCommit": "82ae3f5273e2b9330e49ef620be1d17eabc55004",
+  "screen_recording": true,
+  "initially_cool": null,
+  "observed_warmth": "unmeasured",
+  "charging": "USB connected",
+  "heroSelection": "roomDrop fixture; workloads unmodified"
+}

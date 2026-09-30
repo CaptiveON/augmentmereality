@@ -10,31 +10,50 @@ import os
 /// Thread-safe hand-off of the latest Scene Semantics buffers from the GARSession
 /// update (main actor) to the RealityKit render thread.
 final class SemanticFeed: @unchecked Sendable {
+    struct Sample {
+        let labels: CVPixelBuffer
+        let confidence: CVPixelBuffer
+        let sessionGeneration: UInt64
+    }
+
     private let lock = NSLock()
     private var labels: CVPixelBuffer?
     private var confidence: CVPixelBuffer?
     private var enabled = false
+    private var workAdmission = PerceptionWorkAdmission()
 
-    func update(labels: CVPixelBuffer?, confidence: CVPixelBuffer?) {
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
         lock.lock()
+        if workAdmission.setAllowed(allowed, generation: generation) {
+            labels = nil
+            confidence = nil
+            enabled = false
+        }
+        lock.unlock()
+    }
+
+    func update(labels: CVPixelBuffer?, confidence: CVPixelBuffer?, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard workAdmission.allowed, workAdmission.sessionGeneration == generation else { return }
         self.labels = labels
         self.confidence = confidence
-        lock.unlock()
     }
 
     /// Far-mode gate, set by the session manager (ADR-011: the matte only applies
     /// when every rendered drop is beyond the far threshold).
     func setEnabled(_ value: Bool) {
         lock.lock()
-        enabled = value
+        enabled = value && workAdmission.allowed
         lock.unlock()
     }
 
-    func snapshot() -> (labels: CVPixelBuffer, confidence: CVPixelBuffer)? {
+    func snapshot(generation: UInt64) -> Sample? {
         lock.lock()
         defer { lock.unlock() }
-        guard enabled, let labels, let confidence else { return nil }
-        return (labels, confidence)
+        guard workAdmission.allowed, workAdmission.sessionGeneration == generation,
+              enabled, let labels, let confidence else { return nil }
+        return Sample(labels: labels, confidence: confidence, sessionGeneration: generation)
     }
 
     /// Round 2 (counsel RSCH-2): shedding the matte RELEASES the producer's
@@ -56,37 +75,37 @@ final class SemanticFeed: @unchecked Sendable {
 /// "never draw content over a surface it's geometrically behind" where no
 /// Streetscape/LiDAR geometry exists. Confidence-feathered, temporally EMA-smoothed.
 ///
-/// Wave D (counsel ARP-11/SWE-4): `@unchecked Sendable` with ONE lock guarding
-/// every piece of mutable render state — the same house style as `SemanticFeed`
-/// above. `encode`/`prepare(device:)` run on RealityKit's render thread while
-/// `setCallbacksActive`/`uninstall` run on the main actor; before this lock, a
-/// teardown mid-encode could nil the pipeline or empty `matteTextures` between
-/// the render thread's guard and its use (the ADR-045 P0-3 crash class,
-/// reintroduced). The lock is held for the whole CPU-side encode (typically
-/// sub-ms; texture-cache creates on a resize frame can reach a few ms —
-/// `prepare` builds its expensive Metal state OUTSIDE the lock, round 2
-/// RENDER-4). Lock ordering invariant: `stateLock` may be held while
-/// acquiring a feed lock (SemanticFeed/MidFieldDepthFeed), NEVER the reverse.
+/// RealityKit invokes prepare/postProcess outside the main actor, while its
+/// callback slots and ARView.session are main-actor isolated. `stateLock`
+/// protects CPU render state and serializes teardown against encode. The
+/// separate lifecycle gate rejects callbacks from a prior installation; a
+/// successful encode transfers GPU resources to a completion lease before
+/// releasing `stateLock`. Lock order: stateLock -> lifecycle/feed locks only.
 final class SemanticOcclusionPass: @unchecked Sendable {
     private let feed: SemanticFeed
     private let personOcclusionEnabled: Bool
     /// ADR-031: LiDAR-aligned Depth Anything output for the 4–60 m band; nil when
     /// the feature is off or the device lacks LiDAR (no alignment source).
     private let midDepthFeed: MidFieldDepthFeed?
-    private weak var arView: ARView?
+    @MainActor private weak var arView: ARView?
     private weak var session: ARSession?
 
     /// Guards EVERY mutable field below (counsel ARP-11/SWE-4). Ordering:
     /// may be held while taking a feed lock; a feed lock is never held while
     /// taking this one.
     private let stateLock = NSLock()
+    private let lifecycle = RenderCallbackLifecycle()
+    private var workAdmission = PerceptionWorkAdmission()
+    private var admittedSince: TimeInterval = .infinity
+    private var personAdmitted = false
+    private var depthAdmitted = false
     private var device: MTLDevice?
     private var pipeline: MTLComputePipelineState?
-    private var textureCache: CVMetalTextureCache?
+    private var textureCache: RenderTextureCache?
     /// AUDIT P0: CVMetalTextures must outlive the GPU work that samples them —
     /// releasing the wrapper early is the classic cause of intermittent texture
     /// corruption. Collected per frame, released on command-buffer completion.
-    private var inFlightTextures: [Any] = []
+    private var inFlightTextures: [CVMetalTexture] = []
     private var matteTextures: [MTLTexture] = []
     private var matteIndex = 0
     // 1×1 placeholders so every kernel texture slot is always bound even when a
@@ -164,16 +183,39 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// Remembers the view; callbacks attach on demand (ADR-035: a pass with no
     /// work still forces RealityKit through an offscreen render + full-screen
     /// copy every frame — real bandwidth, real heat).
-    func prepare(on arView: ARView) {
+    @MainActor func prepare(on arView: ARView) {
+        guard !lifecycle.snapshot.uninstalled else { return }
         self.arView = arView
+        stateLock.lock()
         self.session = arView.session
+        stateLock.unlock()
     }
 
-    private var callbacksActiveStorage = false
     var callbacksActive: Bool {
+        lifecycle.snapshot.active
+    }
+
+    /// Callback attachment may dwell; source consumption must still stop at
+    /// the policy edge. A retained pre-pause ARFrame cannot satisfy a new run.
+    func setWorkAdmission(_ allowed: Bool, generation: UInt64, person: Bool, depth: Bool) {
         stateLock.lock()
-        defer { stateLock.unlock() }
-        return callbacksActiveStorage
+        let changed = workAdmission.setAllowed(allowed, generation: generation)
+        let sourcesChanged = personAdmitted != (allowed && person)
+            || depthAdmitted != (allowed && depth)
+        personAdmitted = allowed && person
+        depthAdmitted = allowed && depth
+        if changed {
+            admittedSince = allowed ? ProcessInfo.processInfo.systemUptime : .infinity
+            releaseCaptureResources()
+        }
+        if changed || sourcesChanged { matteHistoryValid = false }
+        let metrics = ARBaselineMetrics.shared
+        if !allowed || feed.snapshot(generation: generation) == nil {
+            metrics.setWorkload("Semantic matte consuming", enabled: false)
+        }
+        if !personAdmitted { metrics.setWorkload("Person matte consuming", enabled: false) }
+        if !depthAdmitted { metrics.setWorkload("Depth matte consuming", enabled: false) }
+        stateLock.unlock()
     }
 
     /// Attach/detach the render callbacks. Pipeline and matte history are kept
@@ -181,25 +223,30 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// (ADR-035: an attached pass with no work still forces RealityKit through
     /// an offscreen render + full-screen copy — detaching IS the heat fix, so
     /// install-once was not an option; the lock makes detach safe instead.)
-    func setCallbacksActive(_ requested: Bool) {
+    @MainActor func setCallbacksActive(_ requested: Bool) {
         let active = requested && ARBaselineExperiment.current.allows(.postprocess)
+        // The view is owned by the manager and may be gone after detach. Never
+        // mark an installation active if there is no slot to install it into.
+        if active && arView == nil { return }
         stateLock.lock()
-        let changed = active != callbacksActiveStorage
-        callbacksActiveStorage = active
+        let epoch = active ? lifecycle.attach() : nil
+        let changed = active ? epoch != nil : lifecycle.detach()
         if changed, !active {
             // Round 2 (counsel RENDER-3): detaching releases this frame's
             // wrappers and flushes — the detached steady state must not pin
             // IOSurfaces in the capture pool.
             releaseCaptureResources()
+            recordConsumption()
         }
         stateLock.unlock()
         guard changed, let arView else { return }
         if active {
-            arView.renderCallbacks.prepareWithDevice = { [weak self] device in
-                self?.prepare(device: device)
+            guard let epoch else { return }
+            arView.renderCallbacks.prepareWithDevice = { device in
+                self.prepare(device: device, epoch: epoch)
             }
-            arView.renderCallbacks.postProcess = { [weak self] context in
-                self?.encode(context: context)
+            arView.renderCallbacks.postProcess = { context in
+                self.encode(context: context, epoch: epoch)
             }
             // Round 5 (counsel F-D4-DETACH): the RSCH-4 instrument lives at
             // THIS choke point — the one place that covers all six
@@ -220,29 +267,40 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         }
     }
 
-    func uninstall() {
+    @MainActor func uninstall() {
         setCallbacksActive(false)
         // Counsel ARP-11/SWE-4: an encode may be mid-flight on the render
         // thread — the teardown takes the same lock, so the pipeline/matte
         // clears can never land between a guard and its use.
         stateLock.lock()
+        lifecycle.uninstall()
+        releaseCaptureResources()
         pipeline = nil
+        device = nil
+        textureCache = nil
+        dummyUint = nil
+        dummyUnorm = nil
+        dummyFloat = nil
+        session = nil
         matteTextures = []
         matteHistoryValid = false
-        releaseCaptureResources()
         stateLock.unlock()
+        arView = nil
     }
 
-    private func prepare(device: MTLDevice) {
+    private func prepare(device: MTLDevice, epoch: UInt64) {
         // Round 2 (counsel RENDER-4): PUBLISH, don't build, under the lock —
         // the Metal library load + pipeline compile can take tens of ms, and
         // the main actor takes this same lock at 2.5 Hz. Build into locals
         // first; commit only if still needed (a losing second builder just
         // discards its locals).
         stateLock.lock()
+        let current = lifecycle.accepts(epoch)
         let alreadyBuilt = pipeline != nil && self.device === device
+            && textureCache != nil && dummyUint != nil
+            && dummyUnorm != nil && dummyFloat != nil
         stateLock.unlock()
-        if alreadyBuilt { return }
+        if !current || alreadyBuilt { return }
 
         let metrics = ARBaselineMetrics.shared
         let trace = metrics.measure("Semantic pipeline prepare")
@@ -263,10 +321,20 @@ final class SemanticOcclusionPass: @unchecked Sendable {
 
         stateLock.lock()
         defer { stateLock.unlock() }
-        if pipeline != nil, self.device === device { return } // lost the race
+        guard lifecycle.accepts(epoch) else { return }
+        if pipeline != nil, self.device === device,
+           textureCache != nil, dummyUint != nil, dummyUnorm != nil,
+           dummyFloat != nil { return } // lost the race
+        if let oldDevice = self.device, oldDevice !== device {
+            // A new Metal device cannot use history allocated on the old one.
+            // Earlier command buffers retain those textures in their leases.
+            releaseCaptureResources()
+            matteTextures = []
+            matteHistoryValid = false
+        }
         self.device = device
         self.pipeline = builtPipeline
-        self.textureCache = builtCache
+        self.textureCache = builtCache.map(RenderTextureCache.init)
         dummyUint = builtUint
         dummyUnorm = builtUnorm
         dummyFloat = builtFloat
@@ -285,7 +353,9 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         return device.makeTexture(descriptor: descriptor)
     }
 
-    private func encode(context: ARView.PostProcessContext) {
+    private func encode(context: ARView.PostProcessContext, epoch: UInt64) {
+        let admittedCallback = lifecycle.beginCPU(epoch: epoch)
+        defer { lifecycle.finishCPU() }
         let metrics = ARBaselineMetrics.shared
         // RealityKit callback cadence is an explicit presentation proxy. It is
         // absent while detached and does not establish drawable presentation.
@@ -309,15 +379,24 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         // mutating pipeline/mattes under the render thread's feet.
         stateLock.lock()
         defer { stateLock.unlock() }
+        // A queued callback can arrive after detach and even after a later
+        // reattach. It must satisfy RealityKit's target-write contract, but
+        // must never consume the new session's frame, feeds or Metal state.
+        guard admittedCallback, lifecycle.accepts(epoch) else {
+            blit(context: context)
+            return
+        }
         // Fresh frame: anything left from a bailed-out frame is safe to drop.
         inFlightTextures.removeAll()
         // The contract with RealityKit: once postProcess is set, EVERY frame must
         // write target. Fall back to a plain blit when nothing to composite.
         guard
+            workAdmission.allowed,
             let pipeline,
             let textureCache,
             let dummyUint, let dummyUnorm, let dummyFloat,
             let frame = session?.currentFrame,
+            frame.timestamp > admittedSince,
             let yTexture = makeTexture(frame.capturedImage, format: .r8Unorm, plane: 0, cache: textureCache),
             let cbcrTexture = makeTexture(frame.capturedImage, format: .rg8Unorm, plane: 1, cache: textureCache)
         else {
@@ -329,7 +408,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         }
 
         // Semantic (building/tree) matte — only when VPS armed it (far mode).
-        let semantic = feed.snapshot()
+        let semantic = feed.snapshot(generation: workAdmission.sessionGeneration)
         let labelsTexture = semantic.flatMap {
             makeTexture($0.labels, format: .r8Uint, cache: textureCache)
         }
@@ -341,7 +420,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         // Person occlusion — stencil (high-res) + LiDAR scene depth (metric).
         var stencilTexture: MTLTexture?
         var sceneDepthTexture: MTLTexture?
-        if personOcclusionEnabled,
+        if personAdmitted, personOcclusionEnabled,
            let stencil = frame.segmentationBuffer,
            let depthMap = frame.sceneDepth?.depthMap {
             stencilTexture = makeTexture(stencil, format: .r8Unorm, cache: textureCache)
@@ -354,8 +433,9 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         var midA: Float = 0, midB: Float = 0
         var midRelMin: Float = 0, midRelMax: Float = 0
         var midMaxDepth = AppConfig.midDepthMaxDistance
-        if let midSample = midDepthFeed?.snapshot(
-            forFrameAt: frame.timestamp, maxAge: AppConfig.midDepthMaxSampleAge
+        if depthAdmitted, let midSample = midDepthFeed?.snapshot(
+            forFrameAt: frame.timestamp, maxAge: AppConfig.midDepthMaxSampleAge,
+            generation: workAdmission.sessionGeneration
         ) {
             metrics.sample(
                 "Depth sample age", milliseconds:
@@ -466,17 +546,33 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         )
         encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadgroup)
         encoder.endEncoding()
-        // Keep the CV wrappers alive until the GPU is done sampling them.
-        let retained = inFlightTextures
-        inFlightTextures = []
-        context.commandBuffer.addCompletedHandler { _ in
-            _ = retained
+        recordConsumption(semantic: semanticEnabled, person: personEnabled, depth: midEnabled)
+        if semanticEnabled { metrics.observe("Semantic sample used") }
+        if personEnabled { metrics.observe("Person sample used") }
+        if midEnabled { metrics.observe("Depth sample used") }
+        // RealityKit owns the command buffer and does not expose its
+        // retainedReferences policy. Keep every bound input/history texture,
+        // the pipeline and all CV wrappers until Metal reports completion.
+        let retained = RenderGPUResourceLease(
+            wrappers: inFlightTextures,
+            textures: [context.sourceColorTexture, context.sourceDepthTexture, target,
+                       yTexture, cbcrTexture, labelsTexture ?? dummyUint,
+                       confidenceTexture ?? dummyUnorm, previousMatte, nextMatte,
+                       stencilTexture ?? dummyUnorm, sceneDepthTexture ?? dummyFloat,
+                       midTexture ?? dummyFloat],
+            pipeline: pipeline, cache: textureCache
+        )
+        inFlightTextures.removeAll()
+        let tracked = lifecycle.submitGPU(epoch: epoch)
+        assert(tracked, "stateLock must exclude detach while submitting GPU work")
+        context.commandBuffer.addCompletedHandler { [lifecycle] _ in
+            if retained.complete(), tracked { lifecycle.finishGPU() }
         }
         // Counsel ARP-12: flush ONCE PER FRAME after encoding — a non-zero
         // CVMetalTexture use count keeps the IOSurface out of ARKit's small
         // capture pool, and sustained pressure there drops camera frames in a
         // sawtooth that reads as thermal throttling but isn't.
-        CVMetalTextureCacheFlush(textureCache, 0)
+        textureCache.flush()
         // Round 2 (counsel RENDER-2): the history is defined from here on —
         // this dispatch wrote nextMatte, and the next frame may read it.
         matteHistoryValid = true
@@ -487,11 +583,21 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// Caller holds `stateLock`.
     private func bailOut(context: ARView.PostProcessContext) {
         ARBaselineMetrics.shared.observe("Postprocess blit fallback")
+        recordConsumption()
         inFlightTextures.removeAll()
         if let textureCache {
-            CVMetalTextureCacheFlush(textureCache, 0)
+            textureCache.flush()
         }
         blit(context: context)
+    }
+
+    /// Textures accepted by the most recent compute encode, not presentation
+    /// or proof of GPU completion. Caller holds `stateLock`.
+    private func recordConsumption(semantic: Bool = false, person: Bool = false, depth: Bool = false) {
+        let metrics = ARBaselineMetrics.shared
+        metrics.setWorkload("Semantic matte consuming", enabled: semantic)
+        metrics.setWorkload("Person matte consuming", enabled: person)
+        metrics.setWorkload("Depth matte consuming", enabled: depth)
     }
 
     /// Round 2 (counsel RENDER-3): detach releases capture resources — the
@@ -501,7 +607,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     private func releaseCaptureResources() {
         inFlightTextures.removeAll()
         if let textureCache {
-            CVMetalTextureCacheFlush(textureCache, 0)
+            textureCache.flushAfterGPU()
         }
     }
 
@@ -575,15 +681,13 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         _ pixelBuffer: CVPixelBuffer,
         format: MTLPixelFormat,
         plane: Int = 0,
-        cache: CVMetalTextureCache
+        cache: RenderTextureCache
     ) -> MTLTexture? {
         let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
         let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
-        var cvTexture: CVMetalTexture?
-        let status = CVMetalTextureCacheCreateTextureFromImage(
-            nil, cache, pixelBuffer, nil, format, width, height, plane, &cvTexture
-        )
-        guard status == kCVReturnSuccess, let cvTexture else { return nil }
+        guard let cvTexture = cache.makeTexture(
+            pixelBuffer, format: format, width: width, height: height, plane: plane
+        ) else { return nil }
         inFlightTextures.append(cvTexture)
         return CVMetalTextureGetTexture(cvTexture)
     }

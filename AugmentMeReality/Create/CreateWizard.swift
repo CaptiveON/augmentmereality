@@ -390,10 +390,11 @@ struct CreateWizard: View {
 
     private func nudgeButton(_ icon: String, bearing: Double) -> some View {
         Button {
-            guard let current = pin else { return }
-            pin = GeoMath.coordinate(
-                from: current, bearingDegrees: bearing, distanceMeters: nudgeStep
-            )
+            guard let current = pin,
+                  let nudged = GeoMath.checkedCoordinate(
+                    from: current, bearingDegrees: bearing, distanceMeters: nudgeStep
+                  ) else { return }
+            pin = nudged
         } label: {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .semibold))

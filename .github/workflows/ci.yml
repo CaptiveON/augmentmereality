@@ -22,6 +22,8 @@ jobs:
       - run: node web/rules-tests/drift-check.mjs
       - run: node --test scripts/verify-firestore-release.test.mjs
       - run: python3 scripts/ar-baseline.test.py
+      - run: python3 scripts/ios-simulator-matrix.test.py
+      - run: python3 scripts/swift-diagnostics.test.py
 
   # The Firestore rules suite (candidate + historical-v2 fixture) against the
   # emulator — the gate that must be green before any rules deploy.
@@ -49,12 +51,27 @@ jobs:
           --project demo-amr-release-checks emulators:exec --only firestore
           'node scripts/firestore-release-smoke.mjs --emulator --output "$RUNNER_TEMP/amr-release-smoke"'
 
-  # Local simulator tests plus the actual Firebase iOS SDK regression against
-  # a loopback demo emulator. The wrapper verifies that real service plists
-  # are absent and skips only the separate live FirebaseIntegrationTests.
+  # Both supported-runtime lanes use the same Xcode 26.6 / iOS 26.5 SDK.
+  # The iOS 17.0 runtime is installed explicitly if absent from the image;
+  # failure to obtain it fails this lane rather than selecting the newest OS.
+  # The native Firebase SDK regression still runs against a demo emulator.
   ios-tests:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: minimum-17_0
+            ios: '17.0'
+            preferred_device: 'iPhone 15'
+            download: true
+          - lane: current-26_5
+            ios: '26.5'
+            preferred_device: 'iPhone 17'
+            download: false
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -65,32 +82,69 @@ jobs:
           distribution: temurin
           java-version: 21
       - run: npm install -g firebase-tools@15.23.0
-      - name: Pick a simulator
+      - name: Verify fixed toolchain and exact simulator runtime
         id: sim
+        env:
+          AMR_IOS_VERSION: ${{ matrix.ios }}
+          AMR_PREFERRED_DEVICE: ${{ matrix.preferred_device }}
+          AMR_DOWNLOAD_MISSING: ${{ matrix.download }}
         run: |
-          UDID=$(xcrun simctl list devices available -j | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)['devices']
-          for runtime in sorted(data, reverse=True):
-              for device in data[runtime]:
-                  if 'iPhone' in device['name']:
-                      print(device['udid'])
-                      sys.exit()
-          ")
-          test -n "$UDID"
-          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-          xcrun simctl list devices available | grep iPhone | head -3
+          amr_download=()
+          if [[ "$AMR_DOWNLOAD_MISSING" == true ]]; then
+            amr_download=(--download-if-missing)
+          fi
+          python3 scripts/ios-simulator-matrix.py \
+            --ios "$AMR_IOS_VERSION" \
+            --preferred-device "$AMR_PREFERRED_DEVICE" \
+            --evidence "$RUNNER_TEMP/amr-native-sdk" \
+            --github-output "$GITHUB_OUTPUT" \
+            "${amr_download[@]}"
       - name: Build and run all local tests with native Firestore emulator regression
         env:
           AMR_ALL_LOCAL_TESTS: '1'
           AMR_TEST_OUTPUT_DIR: ${{ runner.temp }}/amr-native-sdk
         run: bash web/rules-tests/run-native-sdk-tests.sh '${{ steps.sim.outputs.udid }}'
+      - name: Check migrated AR ownership diagnostics
+        run: >-
+          python3 scripts/swift-diagnostics.py
+          "$RUNNER_TEMP/amr-native-sdk/build.log"
+          --output "$RUNNER_TEMP/amr-native-sdk/swift-diagnostics.json"
+          --check-ar
+      - name: Exercise AR ownership under Thread Sanitizer
+        if: matrix.lane == 'current-26_5'
+        run: |
+          xcodebuild -project AugmentMeReality.xcodeproj -scheme AugmentMeReality \
+            -configuration Debug -destination 'id=${{ steps.sim.outputs.udid }}' \
+            -derivedDataPath "$RUNNER_TEMP/amr-native-sdk/TSanData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/amr-native-sdk/DerivedData/SourcePackages" \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackageUpdates -enableThreadSanitizer YES -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/amr-native-sdk/tsan-tests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            'EXCLUDED_SOURCE_FILE_NAMES=GoogleService-Info.plist Secrets.plist' \
+            -only-testing:AugmentMeRealityTests/RenderLifecycleTests \
+            -only-testing:AugmentMeRealityTests/SceneUpdateAdmissionTests \
+            -only-testing:AugmentMeRealityTests/SemanticPassCrossThreadTests \
+            -only-testing:AugmentMeRealityTests/PersonSentinelCrossQueueTests \
+            -only-testing:AugmentMeRealityTests/PerceptionWorkAdmissionTests \
+            -only-testing:AugmentMeRealityTests/PerceptionFeedGenerationTests \
+            -only-testing:AugmentMeRealityTests/MidFieldDepthTests \
+            -only-testing:AugmentMeRealityTests/StreetscapeMeshPipelineTests \
+            test > "$RUNNER_TEMP/amr-native-sdk/tsan-tests.log" 2>&1
+      - name: Launch no-secrets app and unsupported-camera UI
+        run: >-
+          python3 scripts/ios-launch-smoke.py
+          --udid '${{ steps.sim.outputs.udid }}'
+          --app "$RUNNER_TEMP/amr-native-sdk/DerivedData/Build/Products/Debug-iphonesimulator/AugmentMeReality.app"
+          --evidence "$RUNNER_TEMP/amr-native-sdk"
       - name: Retain simulator test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-contract-tests
+          name: ios-${{ matrix.lane }}-contracts
+          if-no-files-found: error
           path: |
             ${{ runner.temp }}/amr-native-sdk/*.log
             ${{ runner.temp }}/amr-native-sdk/*.json
             ${{ runner.temp }}/amr-native-sdk/*.xcresult
+            ${{ runner.temp }}/amr-native-sdk/*.png

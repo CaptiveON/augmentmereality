@@ -1,3 +1,4 @@
+import CoreLocation
 import XCTest
 @testable import AugmentMeReality
 
@@ -44,5 +45,37 @@ final class MotionClassifierTests: XCTestCase {
         // One noisy 8 m/s GPS sample then back to walking: no vehicular.
         classifier.update(speed: 8, at: t0.addingTimeInterval(5))
         XCTAssertEqual(classifier.update(speed: 1.5, at: t0.addingTimeInterval(6)), .walking)
+    }
+
+    func testInvalidSpeedDoesNotPretendToBeAStop() {
+        let classifier = MotionClassifier()
+        classifier.update(speed: 12, at: t0)
+        classifier.update(speed: 12, at: t0.addingTimeInterval(6))
+        XCTAssertEqual(classifier.state, .vehicular)
+        XCTAssertEqual(classifier.update(speed: -1, at: t0.addingTimeInterval(8)), .vehicular)
+        XCTAssertEqual(classifier.update(speed: .nan, at: t0.addingTimeInterval(17)), .unknown)
+    }
+
+    func testDuplicateFixDoesNotCreateSustainedMotionEvidence() {
+        let classifier = MotionClassifier()
+        let origin = CLLocationCoordinate2D(latitude: 37, longitude: -122)
+        func fix(at second: TimeInterval) -> CLLocation {
+            CLLocation(
+                coordinate: origin, altitude: 0,
+                horizontalAccuracy: 5, verticalAccuracy: 5,
+                course: 90, speed: 12,
+                timestamp: t0.addingTimeInterval(second)
+            )
+        }
+        let first = fix(at: 0)
+        XCTAssertEqual(classifier.update(location: first, at: t0), .still)
+        for second in 1...5 {
+            XCTAssertEqual(classifier.update(
+                location: first, at: t0.addingTimeInterval(Double(second))
+            ), .still)
+        }
+        XCTAssertEqual(classifier.update(
+            location: fix(at: 6), at: t0.addingTimeInterval(6)
+        ), .vehicular)
     }
 }

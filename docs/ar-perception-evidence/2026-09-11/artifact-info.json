@@ -1,0 +1,16 @@
+{
+  "sourceCommit": "82ae3f5273e2b9330e49ef620be1d17eabc55004",
+  "sourceHash": "07ecef1e2d58cbd0aa38737baf7665b76a5c5454132b7339dd51968fbbd1ffa1",
+  "executableSHA256": "a8a241c1da254bd20c28f369c014f042616ac0ad106257f084a72d1394be95e4",
+  "archivedApp": "/Users/captiveon/Documents/AR-Baselines/issue-4-2026-09-11/builds/P/AugmentMeReality.app",
+  "archivedDSYM": "/Users/captiveon/Documents/AR-Baselines/issue-4-2026-09-11/builds/P/AugmentMeReality.app.dSYM",
+  "matchingUUIDs": [
+    "E7FE7966-92EE-370B-A296-88CDA1911D91"
+  ],
+  "bundleVersion": "1",
+  "version": "0.9.0",
+  "sdk": "iphoneos26.5",
+  "minimumOS": "17.0",
+  "installation": "success; see durable local install.json",
+  "physicalValidation": "pending; installation is not a field result"
+}
