@@ -159,6 +159,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var sessionRunning = false
     private var workGeneration: UInt64 { perceptionCoordinator.generation }
     private var workFramesAfter: TimeInterval = 0
+    /// Distinguishes every ARSession.run, including thermal format reconfiguration.
+    private var captureStreamRevision: UInt64 = 0
     private var lastBatteryLogAt = Date.distantPast
     /// ADR-037: 2 Hz human-presence probe — the 14–29 ms/frame segmentation
     /// stream is requested only while someone is actually in frame.
@@ -439,6 +441,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 midDepthFeed: wantsMidDepth ? midDepth.feed : nil
             )
             pass.prepare(on: arView)
+            pass.setCaptureStream(revision: captureStreamRevision, framesAfter: sessionRunSince)
             semanticPass = pass
         }
     }
@@ -3422,9 +3425,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
         let trace = ARBaselineMetrics.shared.measure("Session configuration")
         defer { ARBaselineMetrics.shared.end(trace) }
+        captureStreamRevision &+= 1
+        geospatial.semanticFeed.setStreamRevision(captureStreamRevision)
+        midDepth.setStreamRevision(captureStreamRevision)
+        semanticPass?.setCaptureStream(revision: captureStreamRevision, framesAfter: .infinity)
         arView.session.run(configuration, options: options)
         sessionRunning = true
         sessionRunSince = ProcessInfo.processInfo.systemUptime
+        semanticPass?.setCaptureStream(revision: captureStreamRevision, framesAfter: sessionRunSince)
         hasRunSession = true
         let metrics = ARBaselineMetrics.shared
         metrics.setWorkload("cameraSessionRunning", enabled: true)
@@ -3669,6 +3677,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         let trace = ARBaselineMetrics.shared.measure("Scene update elapsed")
         defer { ARBaselineMetrics.shared.end(trace) }
         if let arView {
+            semanticPass?.updateViewport(
+                size: arView.bounds.size,
+                orientation: arView.window?.windowScene?.interfaceOrientation ?? .unknown)
             observeFreshCamera(arView: arView)
         }
         // RealityKit keeps rendering (and firing SceneEvents) on a frozen or
@@ -3703,9 +3714,11 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
            frame.timestamp > max(workFramesAfter, sessionRunSince),
            ProcessInfo.processInfo.systemUptime - frame.timestamp >= 0,
            ProcessInfo.processInfo.systemUptime - frame.timestamp < 0.25 {
+            let capture = OcclusionCapture(frame: frame, generation: workGeneration,
+                                           streamRevision: captureStreamRevision)
             if currentPerceptionPlan.localization,
                now.timeIntervalSince(lastGARFeedAt) >= garFeedInterval {
-                geospatial.update(with: frame)
+                geospatial.update(with: frame, capture: capture)
                 lastGARFeedAt = now
             }
             if currentPerceptionPlan.sentinel {
@@ -3713,7 +3726,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
             if currentPerceptionPlan.midField {
                 midDepth.loadIfNeeded()
-                midDepth.update(frame: frame, hz: AppConfig.midDepthHz)
+                midDepth.update(frame: frame, capture: capture, hz: AppConfig.midDepthHz)
             }
         }
 

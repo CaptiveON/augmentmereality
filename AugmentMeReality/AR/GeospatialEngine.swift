@@ -340,7 +340,7 @@ final class GeospatialEngine {
 
     /// Feed every ARKit frame. Results surface via `state`, `onDropTransform`,
     /// and the occluder entities this engine maintains in the scene.
-    func update(with frame: ARFrame) {
+    func update(with frame: ARFrame, capture: OcclusionCapture) {
         guard canUpdate, let token = workAdmission.token, let garSession else { return }
         guard captureSubmission.admit(frame.timestamp) else { return }
         let metrics = ARBaselineMetrics.shared
@@ -378,12 +378,18 @@ final class GeospatialEngine {
             syncOccluders(geometries)
         }
 
-        if semanticActive {
+        if semanticActive, capture.isValid,
+           capture.sessionGeneration == token.sessionGeneration,
+           capture.timestamp == frame.timestamp,
+           abs(garFrame.timestamp - capture.timestamp) < 0.000001 {
             semanticFeed.update(
                 labels: garFrame.semanticImage,
                 confidence: garFrame.semanticConfidenceImage,
-                generation: token.sessionGeneration
+                capture: capture
             )
+        } else if semanticActive {
+            semanticFeed.clear()
+            metrics.event("Semantic capture association rejected")
         }
     }
 

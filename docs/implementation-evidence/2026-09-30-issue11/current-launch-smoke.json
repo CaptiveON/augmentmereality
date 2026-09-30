@@ -1,0 +1,24 @@
+{
+  "app": "/tmp/amr-issue11-sep30/DerivedData/Build/Products/Debug-iphonesimulator/AugmentMeReality.app",
+  "bundleID": "com.adnan.augmentmereality",
+  "checks": [
+    {
+      "pid": 51798,
+      "reached": true,
+      "screenshot": "non-ar-root.png",
+      "surface": "non-ar-root",
+      "screenshotSHA256": "c54c0aefddab0e1e0ab22ab4870b4ed43d42d28e22d7082a9c79a7bcf1336753"
+    },
+    {
+      "pid": 52156,
+      "reached": true,
+      "screenshot": "camera-unavailable.png",
+      "surface": "camera-unavailable",
+      "screenshotSHA256": "324f3a64985304bb507e46c64c4259eface0f5569569624528c22ad203fe0418"
+    }
+  ],
+  "locationPermissionSetup": "revocation requested; authorization not asserted",
+  "scope": "Root and unsupported-camera appearance only; no physical AR acceptance",
+  "simulatorUDID": "A203C7B2-7DBA-494E-9E34-E1FED217D83B",
+  "allScreenshotsVisuallyInspected": true
+}

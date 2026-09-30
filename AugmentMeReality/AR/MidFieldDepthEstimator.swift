@@ -2,6 +2,7 @@ import ARKit
 import CoreML
 import CoreVideo
 import Foundation
+import ImageIO
 import Vision
 import os
 import os.lock
@@ -24,26 +25,70 @@ final class MidFieldDepthFeed: @unchecked Sendable {
         /// Output ceiling: depths beyond this exceed the reference band (plus
         /// margin) and are extrapolation, not measurement.
         let maxTrustedDepth: Float
-        /// ARFrame.timestamp the inference ran on — stale samples are unusable
-        /// (the camera has rotated away from the pixels they describe).
-        let frameTimestamp: TimeInterval
-        /// Lifecycle identity only; issue #11 owns the full synchronized pose,
-        /// calibration and render-frame association contract.
-        let sessionGeneration: UInt64
+        /// Vision `.up`/`.scaleFill` output with its source capture, calibration,
+        /// normalized image mapping, units and app-owned buffer semantics.
+        let raster: OcclusionRaster
+
+        var capture: OcclusionCapture { raster.capture }
+        var frameTimestamp: TimeInterval { capture.timestamp }
+        var sessionGeneration: UInt64 { capture.sessionGeneration }
+        var streamRevision: UInt64 { capture.streamRevision }
+
+        var isValid: Bool {
+            guard a.isFinite, b.isFinite, a != 0,
+                  relMin.isFinite, relMax.isFinite, relMin < relMax,
+                  maxTrustedDepth.isFinite,
+                  maxTrustedDepth >= Float.leastNormalMagnitude,
+                  raster.encoding == .relativeInverseDepthFloat16,
+                  raster.confidence == .none,
+                  raster.provenance == .visionScaleFill,
+                  raster.bufferOwnership == .appOwnedCopy,
+                  raster.matches(relativeDepth) else { return false }
+            // The source handler is explicitly `.up` and Vision uses
+            // `.scaleFill`; both axes retain their full normalized image UVs.
+            let mapping = raster.captureToSample
+            for column in 0..<3 {
+                for row in 0..<3 {
+                    let expected: Float = column == row ? 1 : 0
+                    if abs(mapping[column][row] - expected) > 0.0001 { return false }
+                }
+            }
+            return OcclusionInverseDepthFit(
+                a: a, b: b, relativeRange: relMin...relMax,
+                metricRange: Float.leastNormalMagnitude...maxTrustedDepth
+            ).isValid
+        }
     }
 
     private let lock = NSLock()
     private var sample: Sample?
     private var publishedAt = Date.distantPast
     private var workAdmission = PerceptionWorkAdmission()
+    private var requiredStreamRevision: UInt64 = 0
 
     @discardableResult
     func setWorkAdmission(_ allowed: Bool, generation: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let changed = workAdmission.setAllowed(allowed, generation: generation)
-        if changed { sample = nil }
+        if changed {
+            sample = nil
+            publishedAt = .distantPast
+        }
         return changed
+    }
+
+    /// ARSession.run may restart the capture stream without changing the
+    /// perception generation. Pending work from the old stream cannot publish.
+    @discardableResult
+    func setStreamRevision(_ revision: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard requiredStreamRevision != revision else { return false }
+        requiredStreamRevision = revision
+        sample = nil
+        publishedAt = .distantPast
+        return true
     }
 
     func admissionToken() -> PerceptionWorkAdmission.Token? {
@@ -58,11 +103,25 @@ final class MidFieldDepthFeed: @unchecked Sendable {
         return workAdmission.accepts(token)
     }
 
+    func accepts(_ token: PerceptionWorkAdmission.Token,
+                 capture: OcclusionCapture) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return workAdmission.accepts(token) && capture.isValid &&
+            capture.trackingNormal &&
+            capture.sessionGeneration == token.sessionGeneration &&
+            capture.streamRevision == requiredStreamRevision
+    }
+
     @discardableResult
     func publish(_ new: Sample, token: PerceptionWorkAdmission.Token) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard workAdmission.accepts(token), new.sessionGeneration == token.sessionGeneration else {
+        guard workAdmission.accepts(token), new.isValid,
+              new.capture.trackingNormal,
+              new.sessionGeneration == token.sessionGeneration,
+              new.streamRevision == requiredStreamRevision,
+              sample.map({ new.frameTimestamp > $0.frameTimestamp }) ?? true else {
             return false
         }
         sample = new
@@ -73,6 +132,7 @@ final class MidFieldDepthFeed: @unchecked Sendable {
     func invalidate() {
         lock.lock()
         sample = nil
+        publishedAt = .distantPast
         lock.unlock()
     }
 
@@ -90,15 +150,26 @@ final class MidFieldDepthFeed: @unchecked Sendable {
         }
     }
 
-    func snapshot(
-        forFrameAt timestamp: TimeInterval, maxAge: TimeInterval, generation: UInt64
-    ) -> Sample? {
+    func snapshot(for capture: OcclusionCapture, framesAfter: TimeInterval,
+                  maxAge: TimeInterval) -> Sample? {
         lock.lock()
         defer { lock.unlock() }
-        guard workAdmission.allowed, workAdmission.sessionGeneration == generation,
-              let sample, sample.sessionGeneration == generation,
-              timestamp >= sample.frameTimestamp,
-              timestamp - sample.frameTimestamp <= maxAge else { return nil }
+        guard workAdmission.allowed, let sample else { return nil }
+        guard workAdmission.sessionGeneration == capture.sessionGeneration else {
+            ARBaselineMetrics.shared.observe("Depth rejected generation")
+            return nil
+        }
+        guard requiredStreamRevision == capture.streamRevision else {
+            ARBaselineMetrics.shared.observe("Depth rejected stream")
+            return nil
+        }
+        if let reason = RenderFrameAssociation.sampleRejection(
+            sample.capture, relativeTo: capture, framesAfter: framesAfter,
+            maxAge: maxAge
+        ) {
+            ARBaselineMetrics.shared.observe("Depth rejected " + reason.rawValue)
+            return nil
+        }
         return sample
     }
 
@@ -109,14 +180,12 @@ final class MidFieldDepthFeed: @unchecked Sendable {
     }
 }
 
-/// ADR-031 mid-field depth: Depth Anything V2 Small (CoreML, Neural Engine,
-/// ~17 ms/frame on iPhone 15 Pro Max) fills the depth hole between LiDAR (~5 m)
-/// and the far semantic matte — dense per-pixel depth for trees, cars, poles,
-/// fences at 4–60 m, so occlusion there is real depth ordering, not class
-/// heuristics. The model outputs RELATIVE depth; each run is aligned to metric
-/// against the LiDAR depth map (the 0.4–4 m band where both are valid) with a
-/// least-squares fit in inverse-depth space. No usable fit ⇒ no occlusion from
-/// this source (fails toward draw-over, never toward eating content).
+/// LiDAR-aligned Depth Anything output. Each run fits relative output in
+/// inverse-depth space against same-capture LiDAR samples from 0.4–4 m. The
+/// usable metric domain is only that measured reference band plus its existing
+/// 1.25 support margin (below 5 m with current settings), not the configured
+/// 60 m ceiling. No usable fit means no occlusion from this source. Broader
+/// robust fit/coverage work remains #12–#14 and must not extrapolate evidence.
 final class MidFieldDepthEstimator: Sendable {
     let feed = MidFieldDepthFeed()
 
@@ -135,6 +204,12 @@ final class MidFieldDepthEstimator: Sendable {
 
     func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
         if feed.setWorkAdmission(allowed, generation: generation) {
+            state.withLock { $0.lastRunAt = .distantPast }
+        }
+    }
+
+    func setStreamRevision(_ revision: UInt64) {
+        if feed.setStreamRevision(revision) {
             state.withLock { $0.lastRunAt = .distantPast }
         }
     }
@@ -185,10 +260,21 @@ final class MidFieldDepthEstimator: Sendable {
 
     /// Feed a frame; runs at most every `1/hz` seconds and never overlaps itself.
     /// Requires LiDAR scene depth in the frame for the metric alignment.
-    func update(frame: ARFrame, hz: Double) {
-        guard let token = feed.admissionToken() else { return }
+    func update(frame: ARFrame, capture: OcclusionCapture, hz: Double) {
+        guard let token = feed.admissionToken(),
+              feed.accepts(token, capture: capture),
+              capture.timestamp == frame.timestamp,
+              capture.matchesCameraBuffer(frame.capturedImage),
+              let lidarSource = frame.sceneDepth?.depthMap else { return }
+        let lidarRaster = OcclusionRaster.captureAligned(
+            lidarSource, capture: capture, encoding: .opticalAxisMetersFloat32,
+            provenance: .arkitFrame, ownership: .frameworkPoolRetained
+        )
+        guard lidarRaster.matches(lidarSource),
+              Self.compatibleAspect(lidarRaster.resolution,
+                                    with: capture.imageResolution) else { return }
         let admitted = state.withLock { state in
-            guard state.modelReady, hz > 0, !state.busy,
+            guard state.modelReady, hz.isFinite, hz > 0, !state.busy,
                   Date().timeIntervalSince(state.lastRunAt) > 1.0 / hz else { return false }
             state.busy = true
             state.lastRunAt = Date()
@@ -196,11 +282,7 @@ final class MidFieldDepthEstimator: Sendable {
         }
         guard admitted else { return }
 
-        guard let lidarSource = frame.sceneDepth?.depthMap else {
-            state.withLock { $0.busy = false }
-            return
-        }
-        let timestamp = frame.timestamp
+        let timestamp = capture.timestamp
         // Wave D (counsel ARP-12) round 2 (counsel RENDER-5): the copy runs
         // OFF the main actor, into POOLED app-owned buffers. ARKit's
         // pool-managed buffers are held only for the memcpy itself (a few ms,
@@ -214,30 +296,31 @@ final class MidFieldDepthEstimator: Sendable {
             defer {
                 self.state.withLock { $0.busy = false }
             }
-            guard self.feed.accepts(token) else {
+            guard self.feed.accepts(token, capture: capture) else {
                 sources.empty()
                 return
             }
             let image = sources.image.flatMap { self.worker.pooledCopy($0) }
             let lidar = sources.lidar.flatMap { self.worker.pooledCopy($0) }
             sources.empty() // ARKit's buffers release HERE, pre-inference
-            guard let image, let lidar else {
+            guard let image, let lidar,
+                  capture.matchesCameraBuffer(image), lidarRaster.matches(lidar) else {
                 ARBaselineMetrics.shared.event("Depth input copy failed")
                 return
             }
-            guard self.feed.accepts(token) else { return }
+            guard self.feed.accepts(token, capture: capture) else { return }
             let request: VNCoreMLRequest
             if let existing = self.worker.request {
                 request = existing
             } else {
                 guard let model = self.worker.model else { return }
                 request = VNCoreMLRequest(model: model)
-                request.imageCropAndScaleOption = .scaleFill
                 self.worker.request = request
             }
+            request.imageCropAndScaleOption = .scaleFill
             let metrics = ARBaselineMetrics.shared
             metrics.sample("Depth input age", milliseconds: (ProcessInfo.processInfo.systemUptime - timestamp) * 1000)
-            let handler = VNImageRequestHandler(cvPixelBuffer: image)
+            let handler = VNImageRequestHandler(cvPixelBuffer: image, orientation: .up)
             let inferenceSucceeded: Bool = {
                 let trace = metrics.measure("Depth inference")
                 defer { metrics.end(trace) }
@@ -251,7 +334,7 @@ final class MidFieldDepthEstimator: Sendable {
                 }
             }()
             guard inferenceSucceeded else { return }
-            guard self.feed.accepts(token) else {
+            guard self.feed.accepts(token, capture: capture) else {
                 metrics.event("Depth stale completion rejected")
                 return
             }
@@ -259,7 +342,17 @@ final class MidFieldDepthEstimator: Sendable {
                 metrics.event("Depth inference missing output")
                 return
             }
-            let relative = observation.pixelBuffer
+            let visionOutput = observation.pixelBuffer
+            let outputRaster = OcclusionRaster.captureAligned(
+                visionOutput, capture: capture, encoding: .relativeInverseDepthFloat16,
+                provenance: .visionScaleFill, ownership: .appOwnedCopy
+            )
+            guard outputRaster.matches(visionOutput),
+                  let relative = self.worker.pooledCopy(visionOutput),
+                  outputRaster.matches(relative) else {
+                metrics.event("Depth output copy or format rejected")
+                return
+            }
 
             if let fit = Self.fitInverseDepth(relative: relative, lidar: lidar) {
                 let published = self.feed.publish(.init(
@@ -269,8 +362,7 @@ final class MidFieldDepthEstimator: Sendable {
                     relMin: fit.relMin,
                     relMax: fit.relMax,
                     maxTrustedDepth: fit.maxTrustedDepth,
-                    frameTimestamp: timestamp,
-                    sessionGeneration: token.sessionGeneration
+                    raster: outputRaster
                 ), token: token)
                 guard published else {
                     metrics.event("Depth stale completion rejected")
@@ -283,6 +375,15 @@ final class MidFieldDepthEstimator: Sendable {
                 self.feed.invalidateIfStale(maxAge: AppConfig.midDepthMaxSampleAge, token: token)
             }
         }
+    }
+
+    private static func compatibleAspect(_ raster: OcclusionRasterSize,
+                                         with image: OcclusionRasterSize) -> Bool {
+        guard raster.isValid, image.isValid else { return false }
+        let horizontalScale = Double(raster.width) / Double(image.width)
+        let verticalScale = Double(raster.height) / Double(image.height)
+        return abs(horizontalScale - verticalScale) <=
+            0.02 * max(horizontalScale, verticalScale)
     }
 
     // MARK: - Buffer ownership (Wave D, counsel ARP-12 + round 2 RENDER-5)
@@ -319,27 +420,35 @@ final class MidFieldDepthEstimator: Sendable {
     /// Round 2 (counsel RENDER-5): copies land in POOLED buffers — no per-call
     /// IOSurface allocation at 5 Hz. Falls back to a plain create if the pool fails.
     func pooledCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        guard MidFieldDepthEstimator.copyLayout(for: source) != nil else { return nil }
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
         let format = CVPixelBufferGetPixelFormatType(source)
         let key = "\(width)x\(height)-\(format)"
         if bufferPools[key] == nil {
+            // Format changes must not accumulate retired camera/model pools.
+            // Live buffers retain their own storage after a pool is released.
+            if bufferPools.count >= 6 { bufferPools.removeAll() }
             var newPool: CVPixelBufferPool?
             let attributes: [CFString: Any] = [
                 kCVPixelBufferWidthKey: width,
                 kCVPixelBufferHeightKey: height,
                 kCVPixelBufferPixelFormatTypeKey: format,
                 kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+                kCVPixelBufferMetalCompatibilityKey: true,
             ]
             CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &newPool)
             bufferPools[key] = newPool
         }
         if let pool = bufferPools[key] {
             var out: CVPixelBuffer?
-            if CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out) == kCVReturnSuccess,
+            let limits = [kCVPixelBufferPoolAllocationThresholdKey: 4] as CFDictionary
+            if CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(nil, pool, limits, &out) == kCVReturnSuccess,
                let copy = out, MidFieldDepthEstimator.copyContents(of: source, into: copy) {
                 return copy
             }
+            // Saturation is a skipped sample, not an unbounded allocation path.
+            return nil
         }
         return MidFieldDepthEstimator.copyPixelBuffer(source)
     }
@@ -351,12 +460,14 @@ final class MidFieldDepthEstimator: Sendable {
     /// direction (retaining frames is the documented CAUSE of pool
     /// exhaustion, not the cure).
     static func copyPixelBuffer(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        guard copyLayout(for: source) != nil else { return nil }
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
         let format = CVPixelBufferGetPixelFormatType(source)
         var copyOut: CVPixelBuffer?
         let attributes: [CFString: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+            kCVPixelBufferMetalCompatibilityKey: true
         ]
         guard CVPixelBufferCreate(
             nil, width, height, format, attributes as CFDictionary, &copyOut
@@ -364,43 +475,110 @@ final class MidFieldDepthEstimator: Sendable {
         return copyContents(of: source, into: copy) ? copy : nil
     }
 
-    /// The plane-aware memcpy shared by the pooled and unpooled paths.
+    private struct CopyPlane {
+        let rows: Int
+        let activeBytes: Int
+        let stride: Int
+    }
+
+    /// Only formats whose active bytes and plane geometry are known may enter
+    /// the copy path. CoreVideo may choose different row padding for each copy.
+    private static func copyLayout(for buffer: CVPixelBuffer) -> [CopyPlane]? {
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        guard width > 0, height > 0 else { return nil }
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        switch format {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+            guard CVPixelBufferIsPlanar(buffer),
+                  CVPixelBufferGetPlaneCount(buffer) == 2 else { return nil }
+            let chromaWidth = width / 2 + width % 2
+            let chromaHeight = height / 2 + height % 2
+            guard chromaWidth <= Int.max / 2,
+                  CVPixelBufferGetWidthOfPlane(buffer, 0) == width,
+                  CVPixelBufferGetHeightOfPlane(buffer, 0) == height,
+                  CVPixelBufferGetWidthOfPlane(buffer, 1) == chromaWidth,
+                  CVPixelBufferGetHeightOfPlane(buffer, 1) == chromaHeight else {
+                return nil
+            }
+            let rowBytes = [width, chromaWidth * 2]
+            let rows = [height, chromaHeight]
+            var planes: [CopyPlane] = []
+            for plane in 0..<2 {
+                let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+                guard stride >= rowBytes[plane],
+                      stride <= Int.max / rows[plane] else { return nil }
+                planes.append(CopyPlane(rows: rows[plane],
+                                        activeBytes: rowBytes[plane], stride: stride))
+            }
+            return planes
+        case kCVPixelFormatType_OneComponent8,
+             kCVPixelFormatType_OneComponent16Half,
+             kCVPixelFormatType_DepthFloat32,
+             kCVPixelFormatType_OneComponent32Float,
+             kCVPixelFormatType_32BGRA:
+            guard !CVPixelBufferIsPlanar(buffer),
+                  CVPixelBufferGetPlaneCount(buffer) == 0 else { return nil }
+            let bytesPerPixel: Int
+            switch format {
+            case kCVPixelFormatType_OneComponent8: bytesPerPixel = 1
+            case kCVPixelFormatType_OneComponent16Half: bytesPerPixel = 2
+            default: bytesPerPixel = 4
+            }
+            guard width <= Int.max / bytesPerPixel else { return nil }
+            let rowBytes = width * bytesPerPixel
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            guard stride >= rowBytes, stride <= Int.max / height else { return nil }
+            return [CopyPlane(rows: height, activeBytes: rowBytes, stride: stride)]
+        default:
+            return nil
+        }
+    }
+
+    /// The plane-aware memcpy shared by the pooled and unpooled paths. Reject
+    /// mismatched buffers before locking and copy only active bytes in each row.
     static func copyContents(of source: CVPixelBuffer, into copy: CVPixelBuffer) -> Bool {
-        let height = CVPixelBufferGetHeight(source)
-        CVPixelBufferLockBaseAddress(source, .readOnly)
-        CVPixelBufferLockBaseAddress(copy, [])
+        guard CVPixelBufferGetPixelFormatType(source) == CVPixelBufferGetPixelFormatType(copy),
+              CVPixelBufferGetWidth(source) == CVPixelBufferGetWidth(copy),
+              CVPixelBufferGetHeight(source) == CVPixelBufferGetHeight(copy),
+              let sourceLayout = copyLayout(for: source),
+              let destinationLayout = copyLayout(for: copy),
+              sourceLayout.count == destinationLayout.count else { return false }
+        for plane in sourceLayout.indices {
+            guard sourceLayout[plane].rows == destinationLayout[plane].rows,
+                  sourceLayout[plane].activeBytes == destinationLayout[plane].activeBytes else {
+                return false
+            }
+        }
+        guard CVPixelBufferLockBaseAddress(source, .readOnly) == kCVReturnSuccess else {
+            return false
+        }
+        guard CVPixelBufferLockBaseAddress(copy, []) == kCVReturnSuccess else {
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+            return false
+        }
         defer {
             CVPixelBufferUnlockBaseAddress(copy, [])
             CVPixelBufferUnlockBaseAddress(source, .readOnly)
         }
-        if CVPixelBufferIsPlanar(source) {
-            for plane in 0..<CVPixelBufferGetPlaneCount(source) {
-                guard let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
-                      let dst = CVPixelBufferGetBaseAddressOfPlane(copy, plane) else { return false }
-                let srcStride = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
-                let dstStride = CVPixelBufferGetBytesPerRowOfPlane(copy, plane)
-                let rows = CVPixelBufferGetHeightOfPlane(source, plane)
-                if srcStride == dstStride {
-                    memcpy(dst, src, srcStride * rows)
-                } else {
-                    let rowBytes = min(srcStride, dstStride)
-                    for row in 0..<rows {
-                        memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
-                    }
-                }
-            }
-        } else {
-            guard let src = CVPixelBufferGetBaseAddress(source),
-                  let dst = CVPixelBufferGetBaseAddress(copy) else { return false }
-            let srcStride = CVPixelBufferGetBytesPerRow(source)
-            let dstStride = CVPixelBufferGetBytesPerRow(copy)
-            if srcStride == dstStride {
-                memcpy(dst, src, srcStride * height)
+        for plane in sourceLayout.indices {
+            let src: UnsafeMutableRawPointer?
+            let dst: UnsafeMutableRawPointer?
+            if sourceLayout.count == 1 {
+                src = CVPixelBufferGetBaseAddress(source)
+                dst = CVPixelBufferGetBaseAddress(copy)
             } else {
-                let rowBytes = min(srcStride, dstStride)
-                for row in 0..<height {
-                    memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
-                }
+                src = CVPixelBufferGetBaseAddressOfPlane(source, plane)
+                dst = CVPixelBufferGetBaseAddressOfPlane(copy, plane)
+            }
+            guard let src, let dst else { return false }
+            let sourcePlane = sourceLayout[plane]
+            let copyPlane = destinationLayout[plane]
+            for row in 0..<sourcePlane.rows {
+                memcpy(dst.advanced(by: row * copyPlane.stride),
+                       src.advanced(by: row * sourcePlane.stride),
+                       sourcePlane.activeBytes)
             }
         }
         return true

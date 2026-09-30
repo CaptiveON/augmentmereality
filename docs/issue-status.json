@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "reviewedOn": "2026-09-30",
-  "sourceAppCommit": "0210d6ab7d3cbadb087c75766515999f03bd8a19",
+  "sourceAppCommit": "dbe04cf37cc6888d245ebd72430c52141da9ad6a",
   "openCount": 27,
   "closedCount": 5,
   "additionalClosuresThisReview": 0,
-  "nextImplementationIssue": 11,
+  "nextImplementationIssue": 12,
   "issues": [
     {
       "number": 1,
@@ -13,8 +13,8 @@
       "url": "https://github.com/CaptiveON/augmentmereality/issues/1",
       "githubState": "OPEN",
       "status": "Umbrella",
-      "implemented": "Five issues closed; validated work and evidence indexed below.",
-      "remainingWithoutPhone": "Coordinate the remaining implementation and update this ledger after every verified build.",
+      "implemented": "Five issues closed; six verified app candidates indexed. Issue 11 phone-free implementation verified; physical acceptance remains open.",
+      "remainingWithoutPhone": "Implement #12 next using the capture contract; coordinate dependent #13/#14 and #18 work and preserve build/acceptance evidence.",
       "remainingAcceptance": "All release and physical gates on child issues; umbrella remains open.",
       "implementationCommits": []
     },
@@ -99,12 +99,13 @@
       "url": "https://github.com/CaptiveON/augmentmereality/issues/8",
       "githubState": "OPEN",
       "status": "Mixed: compiler work verified; field/migration open",
-      "implemented": "AR/SDK/render ownership, bounded GPU leases, checked storage isolation; full Swift 6 SIL compile passes.",
-      "remainingWithoutPhone": "Review remaining migration scope, render-history ordering and production/test-target language-mode rollout. Production remains Swift 5.",
+      "implemented": "AR/SDK/render ownership, bounded GPU leases, checked storage isolation; full Swift 6 SIL compile passes. Issue 11 adds explicit source-buffer leases and single-command matte history ordering.",
+      "remainingWithoutPhone": "Review remaining migration scope and production/test-target language-mode rollout. Production remains Swift 5; single-command GPU history ordering is implemented.",
       "remainingAcceptance": "Physical callback/Metal teardown under overlapping work, memory/frame pacing and thermal validation.",
       "implementationCommits": [
         "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
-        "684f6b40b5da18d44b600e8db88396c85ab81a96"
+        "684f6b40b5da18d44b600e8db88396c85ab81a96",
+        "dbe04cf37cc6888d245ebd72430c52141da9ad6a"
       ]
     },
     {
@@ -113,12 +114,13 @@
       "url": "https://github.com/CaptiveON/augmentmereality/issues/9",
       "githubState": "OPEN",
       "status": "Implemented policies; profiling open",
-      "implemented": "Bounded decoder/cache, scene content admission, owned mesh snapshots and localization submission limits.",
+      "implemented": "Bounded decoder/cache, scene content admission, owned mesh snapshots and localization submission limits; bounded inference copy pools with saturation fallback.",
       "remainingWithoutPhone": "Tune only from measured decoded/GPU costs; current source-file/work budgets are proxies.",
       "remainingAcceptance": "Heavy assets/dense scenes, decoded RAM/GPU residency, memory pressure, startup and sustained heat/frame pacing.",
       "implementationCommits": [
         "243eed43fa2b9facd9b9dd3f289d36da2f0d4751",
-        "eb63a99325a34ff453c320748d8c31d6aaf80ea4"
+        "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+        "dbe04cf37cc6888d245ebd72430c52141da9ad6a"
       ]
     },
     {
@@ -139,20 +141,22 @@
       "title": "Give every occlusion sample an explicit synchronized frame and depth contract",
       "url": "https://github.com/CaptiveON/augmentmereality/issues/11",
       "githubState": "OPEN",
-      "status": "Next phone-free implementation",
-      "implemented": "Not implemented as a complete synchronized sample contract; existing ownership seams can be reused.",
-      "remainingWithoutPhone": "Build immutable capture/session/calibration envelopes, unit adapters, association/rejection policy and asymmetric synthetic mapping/lifetime tests.",
-      "remainingAcceptance": "Physical capture/render alignment during pans, viewport changes, resume, thermal changes and delayed inference. Keep open until these pass.",
-      "implementationCommits": []
+      "status": "Implemented; field acceptance open",
+      "implemented": "Immutable capture/session/stream/calibration and raster contracts, explicit units/confidence/ownership, bounded approximate render association and rejection, owned inference copies, GPU completion leases and 26 synthetic regressions.",
+      "remainingWithoutPhone": "Maintain contract and real Metal regression coverage; dependent #12/#13/#14 and #18 implementation can consume the new contract.",
+      "remainingAcceptance": "Target-phone capture/render/semantic/depth alignment during pans, viewport/orientation changes, resume and thermal changes; delayed moving foreground; real buffer pressure/Metal scheduling and sustained heat/frame pacing. Exact render provenance and GAR internal semantic timing remain unavailable.",
+      "implementationCommits": [
+        "dbe04cf37cc6888d245ebd72430c52141da9ad6a"
+      ]
     },
     {
       "number": 12,
       "title": "Occlude with general live foreground depth and reconcile every static mesh stage",
       "url": "https://github.com/CaptiveON/augmentmereality/issues/12",
       "githubState": "OPEN",
-      "status": "Implementation pending",
+      "status": "Next phone-free implementation",
       "implemented": "Foreground/static-mesh arbitration remains open.",
-      "remainingWithoutPhone": "After #11, implement live foreground depth and reconcile every static mesh stage; synthetic ordering and fallback tests.",
+      "remainingWithoutPhone": "Use the implemented #11 contract for general live foreground depth and arbitration with every static occlusion stage; add synthetic ordering and fallback tests. Physical dependency acceptance remains separate.",
       "remainingAcceptance": "Real hands/people/vehicles and moving/static edge occlusion on the final device build.",
       "implementationCommits": []
     },
@@ -162,10 +166,12 @@
       "url": "https://github.com/CaptiveON/augmentmereality/issues/13",
       "githubState": "OPEN",
       "status": "Implementation pending",
-      "implemented": "Motion-aware temporal history and confidence/coverage separation remain open.",
+      "implemented": "Capture contract distinguishes confidence meanings from foreground coverage and resets rejected/failed history; full motion-aware history/reprojection and confidence-versus-coverage fusion remain open.",
       "remainingWithoutPhone": "Use #11 capture contract and dependent occlusion work to implement reset/reprojection/history and distinct confidence versus edge coverage.",
       "remainingAcceptance": "Fast pans, moving foreground, disocclusion, ghosting and thermal/lifecycle transitions.",
-      "implementationCommits": []
+      "implementationCommits": [
+        "dbe04cf37cc6888d245ebd72430c52141da9ad6a"
+      ]
     },
     {
       "number": 14,
@@ -174,7 +180,7 @@
       "githubState": "OPEN",
       "status": "Implementation pending",
       "implemented": "Robust relative-to-metric fit remains open.",
-      "remainingWithoutPhone": "Implement confidence-qualified robust positive-disparity fitting and deterministic outlier/degenerate fixtures after its sample dependencies.",
+      "remainingWithoutPhone": "Use the implemented #11 sample contract to build confidence-qualified robust positive-disparity fitting and deterministic outlier/degenerate fixtures. Current metric support remains below 5 m.",
       "remainingAcceptance": "Real metric-depth agreement, failure behavior and edge ordering across supported ranges.",
       "implementationCommits": []
     },
@@ -220,7 +226,7 @@
       "githubState": "OPEN",
       "status": "Draft only; integration pending",
       "implemented": "Registry/lifecycle draft archived outside app/test targets; parser check only, no Xcode build or integration.",
-      "remainingWithoutPhone": "Complete after #11 contract is established; migrate all seven maps together and test actual manager/holder transitions. Fix idempotent cleanup and stale completions.",
+      "remainingWithoutPhone": "The #11 code dependency is available. Integrate the archived draft by migrating all seven maps together and testing actual manager/holder transitions; fix idempotent cleanup and stale completions. Coordinate ownership if #12 touches the manager.",
       "remainingAcceptance": "Ground snap, two-finger edit, late VPS correction and return-to-camera field cases.",
       "implementationCommits": []
     },

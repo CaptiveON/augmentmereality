@@ -1404,3 +1404,31 @@ a row from a page never proves deletion. Account changes reset the sweep and
 hide the former account's cloud-only rows; durable work belonging to another
 UID cannot block the new account's cursor. See the [paging contract](docs/OWNER-LIBRARY-PAGINATION-2026-09-30.md)
 and [phase-four validation](docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE4.md).
+
+## ADR-060 — Explicit capture contracts and bounded render association (2026-09-30)
+
+Occlusion samples carry immutable capture identity, session generation and stream
+revision, camera pose/intrinsics, raster mapping/coverage, explicit depth units,
+confidence interpretation and buffer ownership. Every ARSession run retires the
+previous stream. Stale, future, incompatible or unsupported inputs produce an
+observable fallback. Neural inference owns copies of both inputs and output;
+pooled allocation is bounded and saturation drops work.
+
+RealityKit supplies no rendered capture identity or camera pose. Its scene clock
+is distinct from ARFrame uptime. Render admission is explicitly approximate:
+fresh capture and viewport, recent low-motion capture history, stable calibration
+and compatible projection. GAR semantic provenance remains SDK-opaque because
+its result has no independently exposed semantic timestamp. Low camera motion
+does not prove a static foreground or physical pixel correspondence.
+
+Each raster has a separate shader mapping; uncovered pixels are unknown rather
+than clamped to a border sample. Metal leases retain source buffers and Core Video
+wrappers until completion. At most one matte command is in flight, so temporal
+textures cannot be reused before completion; busy callbacks blit without blocking.
+Failed commands invalidate history before admission reopens. Motion-aware history
+and robust depth fitting remain separate issues.
+
+See the [sample contract](docs/FRAME-DEPTH-CONTRACT-2026-09-30.md) and
+[issue 11 validation](docs/IMPLEMENTATION-STATUS-2026-09-30-ISSUE11.md). The local
+392 current-iOS, 390 minimum-iOS and 200 TSan passes support the implementation;
+physical alignment, buffer pressure and sustained thermal acceptance remain open.

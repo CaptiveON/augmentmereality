@@ -123,6 +123,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             'EXCLUDED_SOURCE_FILE_NAMES=GoogleService-Info.plist Secrets.plist' \
             -only-testing:AugmentMeRealityTests/RenderLifecycleTests \
+            -only-testing:AugmentMeRealityTests/OcclusionSampleContractTests \
+            -only-testing:AugmentMeRealityTests/RenderFrameAssociationTests \
+            -only-testing:AugmentMeRealityTests/OcclusionTextureBindingTests \
+            -only-testing:AugmentMeRealityTests/SemanticShaderContractTests \
+            -only-testing:AugmentMeRealityTests/MidFieldCaptureContractTests \
             -only-testing:AugmentMeRealityTests/SceneUpdateAdmissionTests \
             -only-testing:AugmentMeRealityTests/SemanticPassCrossThreadTests \
             -only-testing:AugmentMeRealityTests/PersonSentinelCrossQueueTests \

@@ -1,5 +1,16 @@
 # Render and perception ownership, 2026-09-30
 
+**Later issue 11 update:** the inventory below preserves the earlier runtime-batch
+review and test counts. The [capture contract](FRAME-DEPTH-CONTRACT-2026-09-30.md)
+and [new validation](IMPLEMENTATION-STATUS-2026-09-30-ISSUE11.md) supersede its
+unfenced-history limitation: only one matte GPU command can now be in flight;
+completion invalidates failed history before reopening admission. Completion
+enters the pass lock before lifecycle/cache cleanup, never in reverse order.
+Leases explicitly retain source pixel buffers as well as their wrappers. Neural
+output is now copied to bounded app-owned Metal-compatible buffers and feed
+publication checks capture-stream revision in addition to generation. The later
+whole-app Swift 6 compile has zero diagnostics. Physical acceptance is still open.
+
 This inventory covers the issue #8 render boundary at the September 30 source
 state. It is a code and SDK review, not evidence of physical render-thread or
 thermal behavior.

@@ -16,6 +16,8 @@ BOUNDARIES = (
     "AR/DropEffects.swift", "AR/DropEntityFactory.swift",
     "AR/GeoARSessionManager.swift", "AR/GeospatialEngine.swift",
     "AR/MidFieldDepthEstimator.swift", "AR/SemanticOcclusionPass.swift",
+    "AR/OcclusionSampleContract.swift", "AR/OcclusionCapture+ARKit.swift",
+    "AR/RenderFrameAssociation.swift", "AR/RenderCallbackLifecycle.swift",
     "AR/SceneUpdateAdmission.swift",
     "AR/VPSCorrectionAdmission.swift",
     "AR/AuthoredDropOverlay.swift",

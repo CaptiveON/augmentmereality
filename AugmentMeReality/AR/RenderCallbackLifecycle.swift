@@ -123,6 +123,38 @@ final class RenderTextureCache: @unchecked Sendable {
         self.cache = cache
     }
 
+    /// Plane accessors are invalid for non-planar images. Every source is
+    /// validated before wrapping so an unsupported representation cannot be
+    /// silently reinterpreted as another depth or confidence convention.
+    func makeTexture(_ pixelBuffer: CVPixelBuffer, format: MTLPixelFormat,
+                     plane: Int = 0) -> CVMetalTexture? {
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let planes = CVPixelBufferGetPlaneCount(pixelBuffer)
+        let width: Int, height: Int
+        if planes > 0 {
+            guard pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                  planes == 2, plane == 0 || plane == 1,
+                  format == (plane == 0 ? .r8Unorm : .rg8Unorm) else { return nil }
+            width = CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
+            height = CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
+        } else {
+            guard plane == 0 else { return nil }
+            switch pixelFormat {
+            case kCVPixelFormatType_OneComponent8:
+                guard format == .r8Uint || format == .r8Unorm else { return nil }
+            case kCVPixelFormatType_DepthFloat32:
+                guard format == .r32Float else { return nil }
+            case kCVPixelFormatType_OneComponent16Half:
+                guard format == .r16Float else { return nil }
+            default: return nil
+            }
+            width = CVPixelBufferGetWidth(pixelBuffer)
+            height = CVPixelBufferGetHeight(pixelBuffer)
+        }
+        guard width > 0, height > 0 else { return nil }
+        return makeTexture(pixelBuffer, format: format, width: width, height: height, plane: plane)
+    }
+
     func makeTexture(_ pixelBuffer: CVPixelBuffer, format: MTLPixelFormat,
                      width: Int, height: Int, plane: Int) -> CVMetalTexture? {
         lock.lock()
@@ -178,12 +210,14 @@ final class RenderGPUResourceLease: Sendable {
     struct Snapshot: Equatable, Sendable {
         let wrappers: Int
         let textures: Int
+        let pixelBuffers: Int
         let completed: Bool
     }
 
     private struct Resources: @unchecked Sendable {
         var wrappers: [CVMetalTexture]
         var textures: [MTLTexture]
+        var pixelBuffers: [CVPixelBuffer]
         var pipeline: MTLComputePipelineState?
         var cache: RenderTextureCache?
         var completed = false
@@ -192,10 +226,12 @@ final class RenderGPUResourceLease: Sendable {
     private let resources: OSAllocatedUnfairLock<Resources>
 
     init(wrappers: [CVMetalTexture], textures: [MTLTexture],
-         pipeline: MTLComputePipelineState?, cache: RenderTextureCache?) {
+         pipeline: MTLComputePipelineState?, cache: RenderTextureCache?,
+         pixelBuffers: [CVPixelBuffer] = []) {
         cache?.beginGPU()
         resources = OSAllocatedUnfairLock(initialState: Resources(
-            wrappers: wrappers, textures: textures, pipeline: pipeline, cache: cache
+            wrappers: wrappers, textures: textures, pixelBuffers: pixelBuffers,
+            pipeline: pipeline, cache: cache
         ))
     }
 
@@ -208,6 +244,7 @@ final class RenderGPUResourceLease: Sendable {
             resources.completed = true
             resources.wrappers.removeAll()
             resources.textures.removeAll()
+            resources.pixelBuffers.removeAll()
             resources.pipeline = nil
             let cache = resources.cache
             resources.cache = nil
@@ -221,6 +258,7 @@ final class RenderGPUResourceLease: Sendable {
         resources.withLock { resources in
             Snapshot(wrappers: resources.wrappers.count,
                      textures: resources.textures.count,
+                     pixelBuffers: resources.pixelBuffers.count,
                      completed: resources.completed)
         }
     }

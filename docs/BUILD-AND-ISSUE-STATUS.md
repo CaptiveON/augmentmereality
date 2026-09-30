@@ -6,9 +6,9 @@ the next-step lists in earlier phase reports; their results remain historical ev
 ## Current state
 
 - **32 issues: 27 open, 5 closed** — #3, #21, #25, #26 and #28. This review found no additional issue whose full acceptance is complete.
-- **Latest validated app:** source `0210d6a`, merged into main as `49dbaf4` in [PR #39](https://github.com/CaptiveON/augmentmereality/pull/39). Subsequent documentation commits do not constitute another app build.
-- **Last recorded phone installation:** signed Release `1b433e7` (phase 3). Phase 4 was not installed. These are archived receipts, not a fresh query of the phone.
-- **Next implementation: #11**, synchronized capture/frame/depth contracts. Its code and synthetic tests can be built without the phone; physical alignment and buffer lifetime acceptance remain open afterward.
+- **Latest validated app:** source `dbe04cf`, [PR #41](https://github.com/CaptiveON/augmentmereality/pull/41), whose merge record resolves the exact main merge commit. Subsequent ledger documentation does not constitute another app build.
+- **Last recorded phone installation:** signed Release `1b433e7` (phase 3). Phase 4 and issue 11 were not installed. These are archived receipts, not a fresh query of the phone.
+- **#11 phone-free implementation is complete; next implementation: #12**, general live foreground depth and arbitration with static occlusion. Its code and synthetic ordering tests can be built without the phone. #11 remains open for physical alignment, buffer pressure and thermal acceptance.
 - **Hosted CI is deferred** at the owner’s request because Actions credits are exhausted. Keep workflow/check definitions intact and use local validation. No hosted CI pass is claimed.
 - Physical thermal and visual acceptance stays last. Simulator tests and successful installation do not establish that overheating is solved.
 
@@ -22,7 +22,7 @@ This ledger covers every verified repair candidate since September 29. Earlier b
 and release builds are indexed below. It does not invent a delivered build for each failed
 compiler attempt; intermediate failures and limitations remain in the phase evidence.
 
-All five candidates passed local Debug and unsigned Release compilation using Xcode 26.6
+All six candidates passed local Debug and unsigned Release compilation using Xcode 26.6
 (17F113), SDK 26.5. The columns below are test **passes**; minimum-lane skips are explicit.
 Opt-in native Firebase emulator tests skipped on minimum iOS passed in the current lane.
 TSan counts cover selected suites and do not prove every physical renderer interleaving.
@@ -34,6 +34,7 @@ TSan counts cover selected suites and do not prove every physical renderer inter
 | [`684f6b4`](IMPLEMENTATION-STATUS-2026-09-30-PHASE2.md) / [#37](https://github.com/CaptiveON/augmentmereality/pull/37) | Latest-wins VPS corrections and checked storage ownership | 283 / 282 (1 skipped) | 105 | [Installed](implementation-evidence/build-deliveries/684f6b4.json) |
 | [`1b433e7`](IMPLEMENTATION-STATUS-2026-09-30-PHASE3.md) / [#38](https://github.com/CaptiveON/augmentmereality/pull/38) | Placement provenance and owner/recipient permissions | 318 / 317 (1 skipped) | 128 | [Installed](implementation-evidence/build-deliveries/1b433e7.json) |
 | [`0210d6a`](IMPLEMENTATION-STATUS-2026-09-30-PHASE4.md) / [#39](https://github.com/CaptiveON/augmentmereality/pull/39) | Vertical support, camera readiness and bounded owner-library paging | 366 / 364 (2 skipped) | 174 | Not installed |
+| [`dbe04cf`](IMPLEMENTATION-STATUS-2026-09-30-ISSUE11.md) / [#41](https://github.com/CaptiveON/augmentmereality/pull/41) | Capture/depth contracts, bounded render association, owned inference copies and GPU matte lifetime | 392 / 390 (2 skipped) | 200 | Not installed |
 
 `eb63a99` retained 19 Release storage warnings and 19 Swift 6 SIL errors.
 `684f6b4` resolved those; phase 2 onward records zero app diagnostics in the complete
@@ -45,6 +46,14 @@ Phase 4 additionally passed 8 rules drift, 60 current-rules and 6 historical-rul
 and root/unsupported-camera launch checks on iOS 26.5 and 17.0.1. Its native paging
 test verifies that a pending local deletion cannot falsely complete an owner sweep.
 See the [phase 4 evidence](implementation-evidence/2026-09-30-phase4/verification.json).
+
+Issue 11 adds 26 contract/real-Metal regressions. Both simulator root and
+unsupported-camera smoke checks passed, with all four screenshots inspected.
+Release compiled all 20 required ownership boundaries; whole-app Swift 6 SIL
+had zero diagnostics. TSan runtime linkage was confirmed with no reported races.
+The [issue 11 evidence](implementation-evidence/2026-09-30-issue11/verification.json)
+records the exact 120-file source fingerprint, checks and remaining phone gates.
+RealityKit association remains approximate and GAR semantic timing remains opaque.
 
 All four recorded phone deliveries use app version `0.9.0`, bundle build `1`; those
 values alone do not identify a revision. The sanitized receipts preserve source commit,
@@ -68,24 +77,24 @@ implemented contracts while their independent field-acceptance gate remains open
 
 | Issue / state | Built so far | Work possible without phone | Remaining acceptance / reason to keep open |
 | --- | --- | --- | --- |
-| [#1](https://github.com/CaptiveON/augmentmereality/issues/1) — Umbrella | Five issues closed; validated work and evidence indexed below. | Coordinate the remaining implementation and update this ledger after every verified build. | All release and physical gates on child issues; umbrella remains open. |
+| [#1](https://github.com/CaptiveON/augmentmereality/issues/1) — Umbrella | Five issues closed; six verified app candidates indexed. Issue 11 phone-free implementation verified; physical acceptance remains open. | Implement #12 next using the capture contract; coordinate dependent #13/#14 and #18 work and preserve build/acceptance evidence. | All release and physical gates on child issues; umbrella remains open. |
 | [#2](https://github.com/CaptiveON/augmentmereality/issues/2) — Service/client acceptance | Reviewed v3 rules deployed September 8; September 29 read-only export matched the reviewed source. | Complete next-day live rules/access checks and reconcile the release runbook; local emulator/client regressions can support but cannot replace the physical offline trial. | Repeat true-offline receive and deletion/relaunch on a physical phone after cellular fallback invalidated the prior result; controlled live service acceptance also remains open. |
 | [#3](https://github.com/CaptiveON/augmentmereality/issues/3) — Closed | Baseline instrumentation and measured baseline recorded. | None within this issue. | Later fixes still need fresh final physical acceptance under #32. |
 | [#4](https://github.com/CaptiveON/augmentmereality/issues/4) — Implemented; field acceptance open | Unified perception demand, prompt critical/hidden admission controls and room recovery after lost relocalization. | Maintain the existing policy and recovery regressions; react to field failures. | Repeat background/recovery, hidden/critical producer traces and sustained Release thermal/frame pacing. Prior stopped/warmth run is not a pass. |
 | [#5](https://github.com/CaptiveON/augmentmereality/issues/5) — Implemented; field acceptance open | Fixed authored world scale and grounding footprint; asset replacement preserves physical size. | Existing scale/edit/projection regressions are available. | Measured 5–60 m approach/retreat/orbit, scale edit/reopen and second-device size/contact. |
 | [#6](https://github.com/CaptiveON/augmentmereality/issues/6) — Implemented; field acceptance open | Independent WGS84 fixtures, checked conversion/write-back and common-frame drift comparison. | Keep geodesic and rotated-basis regressions passing. | Heading walks, actual tracking displacement and reopened geographic placement checks. |
 | [#7](https://github.com/CaptiveON/augmentmereality/issues/7) — Implemented; field acceptance open | Latest-wins versioned corrections, edit/anchor invalidation, placement provenance and uncertainty-gated geographic save. | Maintain stale-result, edit and provenance coverage. | Physical correction/glide behavior, degraded localization and second-device/reopen placement comparison. |
-| [#8](https://github.com/CaptiveON/augmentmereality/issues/8) — Mixed: compiler work verified; field/migration open | AR/SDK/render ownership, bounded GPU leases, checked storage isolation; full Swift 6 SIL compile passes. | Review remaining migration scope, render-history ordering and production/test-target language-mode rollout. Production remains Swift 5. | Physical callback/Metal teardown under overlapping work, memory/frame pacing and thermal validation. |
-| [#9](https://github.com/CaptiveON/augmentmereality/issues/9) — Implemented policies; profiling open | Bounded decoder/cache, scene content admission, owned mesh snapshots and localization submission limits. | Tune only from measured decoded/GPU costs; current source-file/work budgets are proxies. | Heavy assets/dense scenes, decoded RAM/GPU residency, memory pressure, startup and sustained heat/frame pacing. |
+| [#8](https://github.com/CaptiveON/augmentmereality/issues/8) — Mixed: compiler work verified; field/migration open | AR/SDK/render ownership, bounded GPU leases, checked storage isolation; full Swift 6 SIL compile passes. Issue 11 adds explicit source-buffer leases and single-command matte history ordering. | Review remaining migration scope and production/test-target language-mode rollout. Production remains Swift 5; single-command GPU history ordering is implemented. | Physical callback/Metal teardown under overlapping work, memory/frame pacing and thermal validation. |
+| [#9](https://github.com/CaptiveON/augmentmereality/issues/9) — Implemented policies; profiling open | Bounded decoder/cache, scene content admission, owned mesh snapshots and localization submission limits; bounded inference copy pools with saturation fallback. | Tune only from measured decoded/GPU costs; current source-file/work budgets are proxies. | Heavy assets/dense scenes, decoded RAM/GPU residency, memory pressure, startup and sustained heat/frame pacing. |
 | [#10](https://github.com/CaptiveON/augmentmereality/issues/10) — Implemented; field acceptance open | Persisted vertical reference, WGS84 datum gates, measured bounded support, atomic pose/contact-cue updates and unresolved fallback. | Keep codec, invalid-metadata, support and anchor-intent regressions passing. | Slopes, steps, multiple floors/roofs and second-device/reopen heights. |
-| [#11](https://github.com/CaptiveON/augmentmereality/issues/11) — Next phone-free implementation | Not implemented as a complete synchronized sample contract; existing ownership seams can be reused. | Build immutable capture/session/calibration envelopes, unit adapters, association/rejection policy and asymmetric synthetic mapping/lifetime tests. | Physical capture/render alignment during pans, viewport changes, resume, thermal changes and delayed inference. Keep open until these pass. |
-| [#12](https://github.com/CaptiveON/augmentmereality/issues/12) — Implementation pending | Foreground/static-mesh arbitration remains open. | After #11, implement live foreground depth and reconcile every static mesh stage; synthetic ordering and fallback tests. | Real hands/people/vehicles and moving/static edge occlusion on the final device build. |
-| [#13](https://github.com/CaptiveON/augmentmereality/issues/13) — Implementation pending | Motion-aware temporal history and confidence/coverage separation remain open. | Use #11 capture contract and dependent occlusion work to implement reset/reprojection/history and distinct confidence versus edge coverage. | Fast pans, moving foreground, disocclusion, ghosting and thermal/lifecycle transitions. |
-| [#14](https://github.com/CaptiveON/augmentmereality/issues/14) — Implementation pending | Robust relative-to-metric fit remains open. | Implement confidence-qualified robust positive-disparity fitting and deterministic outlier/degenerate fixtures after its sample dependencies. | Real metric-depth agreement, failure behavior and edge ordering across supported ranges. |
+| [#11](https://github.com/CaptiveON/augmentmereality/issues/11) — Implemented; field acceptance open | Immutable capture/session/stream/calibration and raster contracts, explicit units/confidence/ownership, bounded approximate render association and rejection, owned inference copies, GPU completion leases and 26 synthetic regressions. | Maintain contract and real Metal regression coverage; dependent #12/#13/#14 and #18 implementation can consume the new contract. | Target-phone capture/render/semantic/depth alignment during pans, viewport/orientation changes, resume and thermal changes; delayed moving foreground; real buffer pressure/Metal scheduling and sustained heat/frame pacing. Exact render provenance and GAR internal semantic timing remain unavailable. |
+| [#12](https://github.com/CaptiveON/augmentmereality/issues/12) — Next phone-free implementation | Foreground/static-mesh arbitration remains open. | Use the implemented #11 contract for general live foreground depth and arbitration with every static occlusion stage; add synthetic ordering and fallback tests. Physical dependency acceptance remains separate. | Real hands/people/vehicles and moving/static edge occlusion on the final device build. |
+| [#13](https://github.com/CaptiveON/augmentmereality/issues/13) — Implementation pending | Capture contract distinguishes confidence meanings from foreground coverage and resets rejected/failed history; full motion-aware history/reprojection and confidence-versus-coverage fusion remain open. | Use #11 capture contract and dependent occlusion work to implement reset/reprojection/history and distinct confidence versus edge coverage. | Fast pans, moving foreground, disocclusion, ghosting and thermal/lifecycle transitions. |
+| [#14](https://github.com/CaptiveON/augmentmereality/issues/14) — Implementation pending | Robust relative-to-metric fit remains open. | Use the implemented #11 sample contract to build confidence-qualified robust positive-disparity fitting and deterministic outlier/degenerate fixtures. Current metric support remains below 5 m. | Real metric-depth agreement, failure behavior and edge ordering across supported ranges. |
 | [#15](https://github.com/CaptiveON/augmentmereality/issues/15) — Implementation and asset work pending | Preparation budgets exist; representative asset optimization/physical behavior not complete. | Audit/optimize representative assets and define behavior/geometry/animation budgets with automated checks. | Device appearance, animation behavior, decoded residency and sustained performance comparison. |
 | [#16](https://github.com/CaptiveON/augmentmereality/issues/16) — Implementation and appearance work pending | Contact-cue relocation fixes are present; full lighting/color/shadow work remains. | Implement lighting/reflection/contact-shadow/color policies and bounded asset behavior. | Compare real lighting/materials, camera color and contact across representative scenes. |
 | [#17](https://github.com/CaptiveON/augmentmereality/issues/17) — Implemented; field acceptance open | Epoch/selection readiness with distinct capture, asset and hero scene-update proxy; honest wait/retry/recovery and stale liveness revocation. | Maintain readiness, failure, epoch and bounds-sampling regressions. | Actually presented hero on cold/cached opens, interruption/resume, return-to-camera and usable controls. A scene-update proxy is not presented pixels. |
-| [#18](https://github.com/CaptiveON/augmentmereality/issues/18) — Draft only; integration pending | Registry/lifecycle draft archived outside app/test targets; parser check only, no Xcode build or integration. | Complete after #11 contract is established; migrate all seven maps together and test actual manager/holder transitions. Fix idempotent cleanup and stale completions. | Ground snap, two-finger edit, late VPS correction and return-to-camera field cases. |
+| [#18](https://github.com/CaptiveON/augmentmereality/issues/18) — Draft only; integration pending | Registry/lifecycle draft archived outside app/test targets; parser check only, no Xcode build or integration. | The #11 code dependency is available. Integrate the archived draft by migrating all seven maps together and testing actual manager/holder transitions; fix idempotent cleanup and stale completions. Coordinate ownership if #12 touches the manager. | Ground snap, two-finger edit, late VPS correction and return-to-camera field cases. |
 | [#19](https://github.com/CaptiveON/augmentmereality/issues/19) — Local repair verified; CI/device gates open | Minimum-iOS loader repair and minimum/current lanes; both simulator roots and unsupported-camera launches pass. | Retain local minimum/current checks; resume hosted matrix when credits return. No hosted pass is claimed. | Physical minimum-supported OS, clean first launch and signed Release launch acceptance. |
 | [#20](https://github.com/CaptiveON/augmentmereality/issues/20) — Release implementation pending | Asset rights/catalog release gate remains open. | Verify rights for each shipping asset, remove unverified assets, record licenses and implement local/CI catalog checks. | Rights evidence and final shipping catalog; no phone required for the rights/gate implementation. |
 | [#21](https://github.com/CaptiveON/augmentmereality/issues/21) — Closed | Owned/received UI and direct-command/storage authorization, filtered deletion and legacy ownership covered. | None within the resolved ownership scope. | Separate live rollout/account lifecycle issues remain open. |
@@ -101,18 +110,26 @@ implemented contracts while their independent field-acceptance gate remains open
 | [#31](https://github.com/CaptiveON/augmentmereality/issues/31) — Experiment deferred | Prepared-site localization not evaluated. | Prepare candidate/site comparison after baseline placement work. | Site capture/provider access and repeatable real-world placement comparisons; phone/site work required. |
 | [#32](https://github.com/CaptiveON/augmentmereality/issues/32) — Final release gate open | Local builds/tests and older physical baselines exist; final app acceptance is incomplete. | Assemble final artifact/evidence checklist after implementation and service gates. | Final signed iPhone build: thermal/frame pacing, startup, placement, occlusion, interactions and release gates. Overheating is not certified solved. |
 
-## Next batch: #11 without phone participation
+## Next batch: #12 without phone participation
 
-The earlier phase 4 plan listed #18 first. The dependency review corrects that ordering:
-#18 explicitly depends on #11’s sample contract, as well as the implemented seams in
-#4, #7 and #8. Its bounded registry draft can be reviewed independently, but complete
-manager/lifecycle integration must consume the new sample/session contract.
+The #11 capture/sample contract is implemented and locally verified. Its physical
+acceptance remains open; dependent code work can use the contract without claiming
+those field gates passed. #12 is the next engine implementation, followed by its
+#13 history work; #14's robust fit can use the same sample contract independently
+where file ownership allows.
 
-1. Trace current camera, LiDAR, semantic, neural and render acquisition/ownership; document where exact capture matching is and is not available.
-2. Define immutable sample identity, capture time, session generation, pose, intrinsics/reference resolution, orientation/crop/viewport mapping, depth units/range, confidence meaning and bounded resource ownership.
-3. Wire producers and consumers through explicit conversion and render-association policies. Reject future/expired/reset-session/incompatible samples with observable fallback; do not assume `session.currentFrame` matches the render frame.
-4. Add asymmetric synthetic fixtures for transforms, crop/intrinsics, units/disparity, buffer strides, stale/late results and lease lifetime. Run the applicable minimum/current, Release, ownership and sanitizer checks.
-5. Record the exact source/build/evidence on #11, keeping physical alignment during pans, resizing, resume and delayed inference unchecked. Continue #12–#14 and #18 according to their dependencies.
+1. Trace every static occlusion stage, including RealityKit mesh materials before
+   postprocessing, and define how fresh live depth takes precedence or falls back.
+2. Admit general foreground depth independently of person semantics and virtual
+   object range, within actual sensor/confidence support and bounded demand policy.
+3. Test asymmetric foreground/virtual depth ordering, stale meshes, missing or
+   rejected live depth, source transitions and unsupported coverage using production
+   policies and real shader fixtures where applicable.
+4. Run the applicable local minimum/current, Release, ownership and sanitizer gates;
+   preserve the exact source and evidence. Keep real hands, people, vehicles,
+   foliage/glass edges, frame pacing and heat acceptance for the phone.
+5. #18 integration can now consume #11's code contract. Avoid overlapping manager
+   edits with #12 unless explicit file ownership isolates the work.
 
 The [#18 draft handoff](drafts/placed-object-state/HANDOFF.md) and source text are archived
 outside the app/test source trees. They have not been integrated or Xcode-built/tested.
