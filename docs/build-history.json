@@ -2,8 +2,7 @@
   "schemaVersion": 1,
   "updatedOn": "2026-09-30",
   "scope": "Verified implementation candidates since September 29; earlier baseline and release records are linked in BUILD-AND-ISSUE-STATUS.md. Failed/intermediate attempts remain in each phase record, not counted as delivered builds.",
-  "latestValidatedAppCommit": "0210d6ab7d3cbadb087c75766515999f03bd8a19",
-  "latestValidatedAppMainMerge": "49dbaf48078b5dc474ac524ad41ec7584659a2fe",
+  "latestValidatedAppCommit": "dbe04cf37cc6888d245ebd72430c52141da9ad6a",
   "lastRecordedPhoneInstallCommit": "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10",
   "hostedCI": "deferred at owner request; no hosted pass claimed; workflows intact",
   "builds": [
@@ -210,6 +209,51 @@
       },
       "physicalAcceptance": "not established by these local checks",
       "phoneInstallation": "not installed in phase 4; last recorded installation is 1b433e7"
+    },
+    {
+      "sourceCommit": "dbe04cf37cc6888d245ebd72430c52141da9ad6a",
+      "pullRequest": 41,
+      "mergeRecord": "https://github.com/CaptiveON/augmentmereality/pull/41",
+      "summary": "Capture/session/depth contracts, bounded render association, owned inference buffers and ordered GPU matte lifetime",
+      "issues": [
+        8,
+        9,
+        11
+      ],
+      "verifiedAt": "2026-09-30T02:21:39.488540+00:00",
+      "statusRecord": "docs/IMPLEMENTATION-STATUS-2026-09-30-ISSUE11.md",
+      "verificationRecord": "docs/implementation-evidence/2026-09-30-issue11/verification.json",
+      "testedSourceRecord": "docs/implementation-evidence/2026-09-30-issue11/tested-source.json",
+      "appTestSourceAggregateSHA256": "1042543e313b1f8c191ea572b2201b9b3e004c999bb12a7b94eeb3e53435a1d3",
+      "sourceFileCount": 120,
+      "tests": {
+        "current": {
+          "totalTestCount": 392,
+          "passedTests": 392,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        },
+        "minimum": {
+          "totalTestCount": 392,
+          "passedTests": 390,
+          "failedTests": 0,
+          "skippedTests": 2,
+          "result": "Passed"
+        },
+        "tsan": {
+          "totalTestCount": 200,
+          "passedTests": 200,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        }
+      },
+      "compile": "Incremental Debug, complete unsigned Release with 20 ownership boundaries, and whole-app Swift 6 SIL passed with zero app diagnostics; production remains Swift 5",
+      "physicalAcceptance": "Not established by local checks; issue 11 alignment, moving foreground, buffer pressure and thermal acceptance remain open",
+      "phoneInstallation": "Not installed; last recorded installation is 1b433e7"
     }
-  ]
+  ],
+  "latestValidatedAppPullRequest": 41,
+  "mergeIdentityNote": "Issue 11 source is identified by its immutable source commit and fingerprint. Resolve its main merge SHA from PR #41; ledger documentation is in the same PR and is not another app build."
 }

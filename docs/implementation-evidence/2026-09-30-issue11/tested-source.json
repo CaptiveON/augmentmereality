@@ -125,5 +125,6 @@
   },
   "aggregateSHA256": "1042543e313b1f8c191ea572b2201b9b3e004c999bb12a7b94eeb3e53435a1d3",
   "fileCount": 120,
-  "aggregateAlgorithm": "SHA256 of sorted path + colon + file SHA256 + newline"
+  "aggregateAlgorithm": "SHA256 of sorted path + colon + file SHA256 + newline",
+  "committedAfterValidation": "dbe04cf37cc6888d245ebd72430c52141da9ad6a"
 }

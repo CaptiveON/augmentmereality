@@ -140,5 +140,6 @@
     "#12 general foreground/static-mesh arbitration, #13 temporal history and #14 robust depth fitting",
     "#18 production object-state and lifecycle integration",
     "Other service, privacy, assets and physical release gates remain open"
-  ]
+  ],
+  "committedAfterValidation": "dbe04cf37cc6888d245ebd72430c52141da9ad6a"
 }
