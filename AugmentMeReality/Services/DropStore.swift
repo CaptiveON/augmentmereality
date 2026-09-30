@@ -1,5 +1,6 @@
 import CoreLocation
 import CryptoKit
+import FirebaseAuth
 import Foundation
 import os
 
@@ -662,6 +663,9 @@ final class DropLibrary: ObservableObject {
     private let local: DropStore
     private let cloud: DropStore?
     private let defaults: UserDefaults
+    /// Read on every command, including when a sheet has been open through an
+    /// account change. Tests inject an identity without touching Firebase Auth.
+    private let currentUID: @MainActor () -> String?
     private let incidentLedger: StorageIncidentLedger?
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "library")
     private var syncTasks: [UUID: Task<Void, Never>] = [:]
@@ -716,17 +720,30 @@ final class DropLibrary: ObservableObject {
     /// only when this actually changes, never on every launch.
     private var evidenceUid: String?
     private static let pendingDefaultsKey = "pendingSyncDropIDs"
+    private static let pendingSyncOwnerDefaultsKey = "pendingSyncOwnerUIDs"
     private static let pendingDeleteDefaultsKey = "pendingDeleteDropIDs"
+    private static let pendingDeleteOwnerDefaultsKey = "pendingDeleteOwnerUIDs"
     private static let terminalDefaultsKey = "terminalSyncDropIDs"
     private static let unresolvedDeleteDefaultsKey = "unresolvedDeleteDropIDs"
     private static let ackedDefaultsKey = "ackedCloudDropIDs"
     private static let cloudProvenDefaultsKey = "cloudProvenDropIDs"
+    private static let provisionalOwnerDefaultsKey = "provisionalOwnerDropIDs"
     private static let lostRowsDefaultsKey = "lostRowIDs"
     /// Round 12 (counsel own-B): a destructive local-read outcome, remembered
     /// durably and INDEPENDENTLY of the journal file — a failed journal write
     /// (or an acknowledged one) must not let an absent store file present as
     /// a brand-new install and earn "Synced" over a destroyed library.
     private static let incidentMemoryKey = "hadLocalReadIncident"
+    /// A remote delete is replayable only under the identity which requested
+    /// it. The old ID-only tombstones cannot prove that identity after a
+    /// relaunch and remain unresolved until server absence can be verified.
+    private var pendingDeleteOwners: [UUID: String] = [:]
+    /// Ownerless legacy edits are bound to the UID under which the edit began.
+    /// A later account cannot silently claim their pending cloud write.
+    private var pendingSyncOwners: [UUID: String] = [:]
+    /// A locally stamped owner on a brand-new row is an authorship claim, not
+    /// evidence that the server has ever accepted the document.
+    private var provisionalOwnerIDs: Set<UUID> = []
     private var localDiagnostics: LocalStoreDiagnostics? {
         local as? LocalStoreDiagnostics
     }
@@ -741,11 +758,15 @@ final class DropLibrary: ObservableObject {
             : (AppConfig.cloudKitEnabled ? CloudKitDropStore() : nil),
         defaults: UserDefaults = .standard,
         incidentLedgerURL: URL? = nil,
-        absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        currentUID: @escaping @MainActor () -> String? = {
+            AppConfig.firebaseConfigured ? Auth.auth().currentUser?.uid : nil
+        }
     ) {
         self.local = localStore
         self.cloud = cloudStore
         self.defaults = defaults
+        self.currentUID = currentUID
         self.absenceProbeTime = absenceProbeTime
         let ledgerURL = incidentLedgerURL ?? (localStore as? LocalDropStore)?.lossLedgerURL
         if let ledgerURL {
@@ -760,8 +781,18 @@ final class DropLibrary: ObservableObject {
         }
         let pending = defaults.stringArray(forKey: Self.pendingDefaultsKey) ?? []
         pendingSyncIDs = Set(pending.compactMap(UUID.init(uuidString:)))
+        let syncOwners = defaults.dictionary(forKey: Self.pendingSyncOwnerDefaultsKey) as? [String: String] ?? [:]
+        pendingSyncOwners = Dictionary(uniqueKeysWithValues: syncOwners.compactMap { key, uid in
+            guard let id = UUID(uuidString: key), !uid.isEmpty else { return nil }
+            return (id, uid)
+        })
         let deletes = defaults.stringArray(forKey: Self.pendingDeleteDefaultsKey) ?? []
         pendingDeleteIDs = Set(deletes.compactMap(UUID.init(uuidString:)))
+        let owners = defaults.dictionary(forKey: Self.pendingDeleteOwnerDefaultsKey) as? [String: String] ?? [:]
+        pendingDeleteOwners = Dictionary(uniqueKeysWithValues: owners.compactMap { key, uid in
+            guard let id = UUID(uuidString: key), !uid.isEmpty else { return nil }
+            return (id, uid)
+        })
         let terminal = defaults.stringArray(forKey: Self.terminalDefaultsKey) ?? []
         terminalSyncFailureIDs = Set(terminal.compactMap(UUID.init(uuidString:)))
         let unresolved = defaults.stringArray(forKey: Self.unresolvedDeleteDefaultsKey) ?? []
@@ -770,6 +801,8 @@ final class DropLibrary: ObservableObject {
         ackedCloudIDs = Set(acked.compactMap(UUID.init(uuidString:)))
         let proven = defaults.stringArray(forKey: Self.cloudProvenDefaultsKey) ?? []
         cloudProvenIDs = Set(proven.compactMap(UUID.init(uuidString:)))
+        let provisional = defaults.stringArray(forKey: Self.provisionalOwnerDefaultsKey) ?? []
+        provisionalOwnerIDs = Set(provisional.compactMap(UUID.init(uuidString:)))
         let lost = defaults.stringArray(forKey: Self.lostRowsDefaultsKey) ?? []
         let legacyIDs = Set(lost.compactMap(UUID.init(uuidString:)))
         if let incidentLedger {
@@ -790,7 +823,12 @@ final class DropLibrary: ObservableObject {
     /// be pushed — a pending id with no loadable row is a problem, never
     /// progress (counsel flows-5).
     var uploadingCount: Int {
-        pendingSyncIDs.filter { id in drops.contains { $0.id == id } }.count
+        pendingSyncIDs.filter { id in
+            guard let drop = drops.first(where: { $0.id == id }) else { return false }
+            let role = DropOwnershipRole(drop: drop, currentUID: activeUID)
+            return (role == .owned || role == .legacyLocal)
+                && !terminalSyncFailureIDs.contains(id)
+        }.count
     }
 
     /// Round 8 (counsel ux-4): pending writes whose row cannot be loaded.
@@ -902,6 +940,7 @@ final class DropLibrary: ObservableObject {
                     // acknowledged; only pending-write-free rows testify.
                     if cloudReadServerServed, read.serverConfirmedIDs.contains(drop.id) {
                         markAcked(drop.id)
+                        clearProvisionalOwner(drop.id)
                     }
                     // A pending local edit is newer than the server copy —
                     // never let a stale cloud read roll it back.
@@ -1084,6 +1123,69 @@ final class DropLibrary: ObservableObject {
         }
     }
 
+    private var activeUID: String? {
+        guard let uid = currentUID(), !uid.isEmpty,
+              uid == uid.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return uid
+    }
+
+    /// Resolve the current row, never a value captured when a sheet or menu
+    /// opened. A changed account is reflected on the next view update and on
+    /// every command invocation.
+    func ownershipRole(id: UUID) -> DropOwnershipRole? {
+        guard let drop = drops.first(where: { $0.id == id }) else { return nil }
+        let role = DropOwnershipRole(drop: drop, currentUID: activeUID)
+        if role == .legacyLocal, let originUID = pendingSyncOwners[id],
+           originUID != activeUID { return .unresolved }
+        return role
+    }
+
+    func canEditLocally(id: UUID) -> Bool {
+        ownershipRole(id: id)?.canEditLocally == true
+    }
+
+    func canShare(id: UUID) -> Bool {
+        activeUID != nil && ownershipRole(id: id)?.canShareAsOwner == true
+    }
+
+    func canRemoveLocalCopy(id: UUID) -> Bool {
+        switch ownershipRole(id: id) {
+        case .received: return true
+        case .legacyLocal: return cloud == nil
+        default: return false
+        }
+    }
+
+    /// Ownerless local rows may be edited, but they need an acknowledged cloud
+    /// save to establish ownerUid before an authored link can be sent.
+    func requestLegacyOwnershipClaim(id: UUID) throws {
+        guard let uid = activeUID, cloud != nil,
+              ownershipRole(id: id) == .legacyLocal,
+              let drop = drops.first(where: { $0.id == id }) else {
+            throw DropPermissionError.cannotShare
+        }
+        bindPendingSyncOwner(id, uid: uid)
+        enqueueCloudSync(drop)
+    }
+
+    /// The share command takes an identifier so a caller cannot replace
+    /// ownership markers in a copied GeoDrop. The live row and current identity
+    /// are checked again after local persistence before the link is returned.
+    func share(id: UUID, recipientName: String?) async throws -> GeoDrop {
+        guard canShare(id: id), let live = drops.first(where: { $0.id == id }) else {
+            throw DropPermissionError.cannotShare
+        }
+        var updated = live
+        updated.visibility = "link"
+        let recipient = recipientName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        updated.recipientName = recipient.isEmpty ? nil : recipient
+        try await update(updated)
+        guard canShare(id: id), let saved = drops.first(where: { $0.id == id }) else {
+            throw DropPermissionError.ownershipChanged
+        }
+        return saved
+    }
+
     /// Round 6 (counsel sync-4): the account connection changed — every
     /// terminal verdict was issued against the OLD uid and must be revalidated
     /// against the new one. Re-attempt each; the outcomes decide (an ack
@@ -1132,6 +1234,9 @@ final class DropLibrary: ObservableObject {
     /// mutated `sharedDrop` was one) can never be republished.
     func retrySync(id: UUID) {
         guard let drop = drops.first(where: { $0.id == id }) else { return }
+        guard activeUID != nil,
+              [.owned, .legacyLocal].contains(DropOwnershipRole(drop: drop, currentUID: activeUID))
+        else { return }
         enqueueCloudSync(drop)
     }
 
@@ -1151,6 +1256,9 @@ final class DropLibrary: ObservableObject {
         rowGenerations[drop.id] = rowGeneration
         let hadTombstone = pendingDeleteIDs.contains(drop.id)
             || unresolvedDeleteIDs.contains(drop.id)
+        let recallUID: String? = hadTombstone
+            && DropOwnershipRole(drop: drop, currentUID: activeUID) == .owned
+            ? activeUID : nil
         deleteGenerations[drop.id] = (deleteGenerations[drop.id] ?? 0) &+ 1
         deleteTasks[drop.id]?.cancel()
         deleteTasks[drop.id] = nil
@@ -1166,9 +1274,34 @@ final class DropLibrary: ObservableObject {
             do {
                 try await local.save(drop)
                 guard rowGenerations[drop.id] == rowGeneration else { return }
+                refreshGeneration &+= 1
                 lastPersistError = nil
                 drops.insert(drop, at: 0)
                 clearLost(drop.id) // a restored row is no longer a recorded loss
+            } catch {
+                guard rowGenerations[drop.id] == rowGeneration else { return }
+                lastPersistError = "Couldn't save the drop: \(error.localizedDescription)"
+                persistError = error
+            }
+        } else if DropOwnershipRole(drop: drop, currentUID: activeUID) == .owned,
+                  let existing = drops.first(where: { $0.id == drop.id }),
+                  existing.receivedViaLink == true,
+                  (existing.ownerUid == nil || existing.ownerUid == drop.ownerUid) {
+            // A copy received under another account may become the owner's
+            // own link after account switching. Keep its local placement edits
+            // and promote only ownership metadata proved by the fetched
+            // envelope; do not preserve a stale viewer marker forever.
+            var promoted = existing
+            promoted.ownerUid = drop.ownerUid
+            promoted.receivedViaLink = nil
+            do {
+                try await local.save(promoted)
+                guard rowGenerations[drop.id] == rowGeneration else { return }
+                refreshGeneration &+= 1
+                if let index = drops.firstIndex(where: { $0.id == drop.id }) {
+                    drops[index] = promoted
+                }
+                lastPersistError = nil
             } catch {
                 guard rowGenerations[drop.id] == rowGeneration else { return }
                 lastPersistError = "Couldn't save the drop: \(error.localizedDescription)"
@@ -1181,7 +1314,15 @@ final class DropLibrary: ObservableObject {
         // later serialized save can recreate the document behind it. For the
         // user's OWN drop, enqueue the re-upload; pendingSyncIDs covers the
         // window honestly.
-        if hadTombstone, drop.receivedViaLink != true {
+        if let recallUID, cloud != nil {
+            if let persistError, activeUID != recallUID {
+                // The reopen failed while the account switched. Restore the
+                // original delete intent; the user did not get a local row.
+                markPendingDelete(drop.id, ownerUID: recallUID)
+                throw persistError
+            }
+            bindPendingSyncOwner(drop.id, uid: recallUID)
+            markPending(drop.id)
             let row = drops.first(where: { $0.id == drop.id }) ?? drop
             enqueueCloudSync(row)
         }
@@ -1191,19 +1332,42 @@ final class DropLibrary: ObservableObject {
     /// Wave C SWE-14: local persistence failures throw to the originating CTA.
     /// The in-memory insert happens only AFTER the disk write succeeds.
     func add(_ drop: GeoDrop) async throws {
+        guard !drops.contains(where: { $0.id == drop.id }) else {
+            throw DropPermissionError.ownershipChanged
+        }
+        let role = DropOwnershipRole(drop: drop, currentUID: activeUID)
+        guard role == .owned || role == .legacyLocal else {
+            throw DropPermissionError.cannotEdit
+        }
+        var authored = drop
+        // A newly authored row has known local provenance even before its
+        // first cloud ack. The backend still verifies ownership on create and
+        // keeps it immutable on update.
+        if authored.ownerUid == nil, let uid = activeUID {
+            authored.ownerUid = uid
+            markProvisionalOwner(drop.id)
+        }
         refreshGeneration &+= 1
         rowGenerations[drop.id] = (rowGenerations[drop.id] ?? 0) &+ 1
         do {
-            try await local.save(drop)
+            try await local.save(authored)
         } catch {
+            clearProvisionalOwner(drop.id)
             lastPersistError = "Couldn't save the drop: \(error.localizedDescription)"
             throw error
         }
+        // A refresh may have started while the disk write was suspended and
+        // read the old file. Its phase-2 publish must not erase this new row.
+        refreshGeneration &+= 1
         lastPersistError = nil
         drops.removeAll { $0.id == drop.id }
-        drops.insert(drop, at: 0)
+        drops.insert(authored, at: 0)
         clearLost(drop.id)
-        enqueueCloudSync(drop)
+        // Keep the outbox intent for a pre-auth creation. Firebase will answer
+        // notSignedIn now, and auth-ready reconciliation will retry after UID
+        // attachment even if that refresh finished before this disk save.
+        if cloud != nil { markPending(drop.id) }
+        enqueueCloudSync(authored)
     }
 
     /// In-place edit — the EDITOR write path only. Round 10 (counsel
@@ -1211,33 +1375,95 @@ final class DropLibrary: ObservableObject {
     /// which owns the tombstone-redemption semantics this method carried in
     /// rounds 6–8 and adds the pending-edit protection a fetched copy needs.
     func update(_ drop: GeoDrop, persist: Bool = true) async throws {
-        refreshGeneration &+= 1
-        rowGenerations[drop.id] = (rowGenerations[drop.id] ?? 0) &+ 1
-        if let index = drops.firstIndex(where: { $0.id == drop.id }) {
-            drops[index] = drop
-        } else {
-            drops.insert(drop, at: 0)
+        guard let index = drops.firstIndex(where: { $0.id == drop.id }) else {
+            throw DropPermissionError.missingDrop
         }
-        guard persist else { return }
+        let live = drops[index]
+        guard canEditLocally(id: drop.id) else {
+            throw DropPermissionError.cannotEdit
+        }
+        // ownerUid and the viewer marker are not editor fields. A copied row
+        // that strips either cannot turn a received drop into an authored one.
+        guard drop.ownerUid == live.ownerUid,
+              drop.receivedViaLink == live.receivedViaLink else {
+            throw DropPermissionError.ownershipChanged
+        }
+        let commandUID = activeUID
+        refreshGeneration &+= 1
+        let rowGeneration = (rowGenerations[drop.id] ?? 0) &+ 1
+        rowGenerations[drop.id] = rowGeneration
+        if !persist {
+            drops[index] = drop
+            return
+        }
         do {
             try await local.save(drop)
         } catch {
             lastPersistError = "Couldn't save the change: \(error.localizedDescription)"
             throw error
         }
+        guard rowGenerations[drop.id] == rowGeneration else {
+            throw DropPermissionError.ownershipChanged
+        }
+        refreshGeneration &+= 1
+        guard let currentIndex = drops.firstIndex(where: { $0.id == drop.id }) else {
+            throw DropPermissionError.missingDrop
+        }
+        drops[currentIndex] = drop
         lastPersistError = nil
         clearLost(drop.id)
+        if drop.ownerUid == nil, let commandUID {
+            bindPendingSyncOwner(drop.id, uid: commandUID)
+        }
+        if cloud != nil { markPending(drop.id) }
         enqueueCloudSync(drop)
+        guard activeUID == commandUID, canEditLocally(id: drop.id) else {
+            throw DropPermissionError.ownershipChanged
+        }
     }
 
+    /// Compatibility entry point for map actions and older callers. The role
+    /// is resolved from the current row; caller-supplied metadata is ignored.
     func remove(_ drop: GeoDrop) async throws {
+        switch ownershipRole(id: drop.id) {
+        case .owned:
+            try await removeOwned(id: drop.id)
+        case .received, .legacyLocal:
+            try await removeLocalCopy(id: drop.id)
+        case .unresolved:
+            throw DropPermissionError.cannotEdit
+        case nil:
+            throw DropPermissionError.missingDrop
+        }
+    }
+
+    func removeOwned(id: UUID) async throws {
+        guard let uid = activeUID, ownershipRole(id: id) == .owned else {
+            throw DropPermissionError.cannotEdit
+        }
+        try await removeLive(id: id, remoteOwnerUID: uid)
+    }
+
+    /// Removing a received or legacy local copy never revokes a cloud record.
+    /// The intent stays local even if the account changes during the disk write.
+    func removeLocalCopy(id: UUID) async throws {
+        guard canRemoveLocalCopy(id: id) else {
+            throw DropPermissionError.cannotRemoveUnverified
+        }
+        try await removeLive(id: id, remoteOwnerUID: nil)
+    }
+
+    private func removeLive(id: UUID, remoteOwnerUID: String?) async throws {
+        guard let live = drops.first(where: { $0.id == id }) else {
+            throw DropPermissionError.missingDrop
+        }
         refreshGeneration &+= 1
-        let rowGeneration = (rowGenerations[drop.id] ?? 0) &+ 1
-        rowGenerations[drop.id] = rowGeneration
+        let rowGeneration = (rowGenerations[id] ?? 0) &+ 1
+        rowGenerations[id] = rowGeneration
         // Counsel round 2 (C26): disk FIRST — only a successful delete may
         // destroy the sync bookkeeping.
         do {
-            try await local.delete(drop)
+            try await local.delete(live)
         } catch {
             lastPersistError = "Couldn't delete the drop: \(error.localizedDescription)"
             throw error
@@ -1247,22 +1473,21 @@ final class DropLibrary: ObservableObject {
         // epoch, never the global publish counter — a concurrent refresh must
         // not abandon a delete whose disk row is already destroyed; only
         // another MUTATOR of this drop (e.g. a redeem restoring it) may.
-        guard rowGenerations[drop.id] == rowGeneration else {
-            log.log("remove(\(drop.id)) superseded by a newer row mutation — bookkeeping skipped")
+        guard rowGenerations[id] == rowGeneration else {
+            log.log("remove(\(id)) superseded by a newer row mutation — bookkeeping skipped")
             return
         }
+        refreshGeneration &+= 1
         lastPersistError = nil
-        drops.removeAll { $0.id == drop.id }
-        forgetLocalID(drop.id)
-        syncGenerations[drop.id] = (syncGenerations[drop.id] ?? 0) &+ 1
-        syncTasks[drop.id]?.cancel()
-        syncTasks[drop.id] = nil
-        clearPending(drop.id)
-        clearTerminal(drop.id)
-        deleteAttempts[drop.id] = nil
-        // Counsel round 2 (C13): never fire a cloud delete at someone else's
-        // document — a received drop's cloud copy belongs to the sharer.
-        guard cloud != nil, drop.receivedViaLink != true else { return }
+        drops.removeAll { $0.id == id }
+        forgetLocalID(id)
+        syncGenerations[id] = (syncGenerations[id] ?? 0) &+ 1
+        syncTasks[id]?.cancel()
+        syncTasks[id] = nil
+        clearPending(id)
+        clearTerminal(id)
+        deleteAttempts[id] = nil
+        guard cloud != nil, let remoteOwnerUID else { return }
         // Round 12 (counsel FLOWS-lens-1) corrected in round 14 (counsel
         // flows-lens-3 + seams-5): positive cloud provenance is a stamped
         // ownerUid or a recorded ack — a REFUSED write is proof the server
@@ -1270,11 +1495,13 @@ final class DropLibrary: ObservableObject {
         // produced a permanent, unretirable false alarm); and the capture
         // sits below the received-drop return so viewer copies can't leak
         // unclearable entries into the durable set.
-        if drop.ownerUid != nil || ackedCloudIDs.contains(drop.id) {
-            markCloudProven(drop.id)
+        if (live.ownerUid != nil && !provisionalOwnerIDs.contains(id))
+            || ackedCloudIDs.contains(id) {
+            markCloudProven(id)
         }
-        markPendingDelete(drop.id)
-        launchCloudDelete(drop.id)
+        clearProvisionalOwner(id)
+        markPendingDelete(id, ownerUID: remoteOwnerUID)
+        launchCloudDelete(id)
     }
 
     /// Round 4 (sync-5): batch mutations report per-item outcomes — one item's
@@ -1290,6 +1517,28 @@ final class DropLibrary: ObservableObject {
         }
         if failures > 0 {
             lastPersistError = "\(failures) of \(doomed.count) drops couldn't be deleted"
+        }
+    }
+
+    func removeOwned(ids: [UUID]) async {
+        var failures = 0
+        for id in ids {
+            do { try await removeOwned(id: id) }
+            catch { failures += 1 }
+        }
+        if failures > 0 {
+            lastPersistError = "\(failures) of \(ids.count) owned drops couldn't be deleted"
+        }
+    }
+
+    func removeLocalCopies(ids: [UUID]) async {
+        var failures = 0
+        for id in ids {
+            do { try await removeLocalCopy(id: id) }
+            catch { failures += 1 }
+        }
+        if failures > 0 {
+            lastPersistError = "\(failures) of \(ids.count) local copies couldn't be removed"
         }
     }
 
@@ -1315,6 +1564,14 @@ final class DropLibrary: ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// Lets concurrency tests observe a completed delete attempt without a
+    /// timer; the task itself owns the refusal bookkeeping being asserted.
+    func waitForCloudDeleteAttempt(id: UUID) async {
+        await deleteTasks[id]?.value
+    }
+    #endif
+
     /// Drops close enough to render in the AR camera.
     func drops(near location: CLLocation, within radius: CLLocationDistance) -> [GeoDrop] {
         drops.filter { $0.location.distance(from: location) <= radius }
@@ -1324,7 +1581,25 @@ final class DropLibrary: ObservableObject {
 
     private func enqueueCloudSync(_ drop: GeoDrop) {
         guard cloud != nil else { return }
-        guard drop.receivedViaLink != true else { return }
+        let role = DropOwnershipRole(drop: drop, currentUID: activeUID)
+        let originUID = pendingSyncOwners[drop.id]
+        guard (role == .owned || role == .legacyLocal),
+              originUID == nil || originUID == activeUID else {
+            if pendingSyncIDs.contains(drop.id) {
+                syncGenerations[drop.id] = (syncGenerations[drop.id] ?? 0) &+ 1
+                syncTasks[drop.id]?.cancel()
+                syncTasks[drop.id] = nil
+            }
+            if pendingSyncIDs.contains(drop.id),
+               (originUID != nil || (drop.ownerUid != nil && activeUID != nil)) {
+                markTerminal(drop.id)
+                syncFailureReasons[drop.id] = DropStoreError.ownedByAnotherAccount.errorDescription
+            }
+            return
+        }
+        if role == .legacyLocal, originUID == nil, let uid = activeUID {
+            bindPendingSyncOwner(drop.id, uid: uid)
+        }
         markPending(drop.id)
         // Round 6 (counsel flows-2): the terminal verdict is NOT cleared here.
         // A verdict may be revoked only by the authority that issued it — the
@@ -1347,8 +1622,20 @@ final class DropLibrary: ObservableObject {
         defer {
             if syncGenerations[drop.id] == generation { syncTasks[drop.id] = nil }
         }
+        var candidate = drop
+        if candidate.ownerUid == nil {
+            if let originUID = pendingSyncOwners[drop.id] {
+                guard activeUID == originUID else { return }
+                candidate.ownerUid = originUID
+            } else if let uid = activeUID {
+                bindPendingSyncOwner(drop.id, uid: uid)
+                candidate.ownerUid = uid
+            }
+        } else {
+            guard activeUID == candidate.ownerUid else { return }
+        }
         do {
-            let stored = try await cloud.save(drop)
+            let stored = try await cloud.save(candidate)
             guard syncGenerations[drop.id] == generation else { return }
             clearPending(drop.id)
             clearTerminal(drop.id)
@@ -1357,6 +1644,7 @@ final class DropLibrary: ObservableObject {
             // has seen this id" a durable first-class fact — the delete
             // pipeline's verdicts stop guessing it from the outbox.
             markAcked(drop.id)
+            clearProvisionalOwner(drop.id)
             // A cloud ack proves the server accepted a write. It cannot prove
             // the unreadable local row was restored, so its incident remains
             // until a successful local save/load or explicit acknowledgement.
@@ -1388,6 +1676,15 @@ final class DropLibrary: ObservableObject {
             // Stays pending, no error to show — and critically this task ENDS,
             // so the registry entry clears and the next reconcile can retry.
         } catch DropStoreError.ownedByAnotherAccount {
+            if activeUID != candidate.ownerUid {
+                // Auth changed between the command's preflight and the
+                // adapter call. Keep the originating owner's outbox intent so
+                // reconnecting that UID can still save the local edit.
+                guard syncGenerations[drop.id] == generation else { return }
+                markTerminal(drop.id)
+                syncFailureReasons[drop.id] = DropStoreError.ownedByAnotherAccount.errorDescription
+                return
+            }
             // Round 4 (sync-1): terminal — but VISIBLY so, in durable per-drop
             // state that outranks "Synced" everywhere. Never a shared string.
             guard syncGenerations[drop.id] == generation else { return }
@@ -1395,6 +1692,12 @@ final class DropLibrary: ObservableObject {
             markTerminal(drop.id)
             syncFailureReasons[drop.id] = DropStoreError.ownedByAnotherAccount.errorDescription
         } catch DropStoreError.refusedByServer(let reason) {
+            if activeUID != candidate.ownerUid {
+                guard syncGenerations[drop.id] == generation else { return }
+                markTerminal(drop.id)
+                syncFailureReasons[drop.id] = DropStoreError.ownedByAnotherAccount.errorDescription
+                return
+            }
             // Round 8 (counsel B1): the server ANSWERED with a non-retryable
             // refusal — the terminal-verdict producer that previously existed
             // only as a client-side pre-check on a usually-nil field. Same
@@ -1429,8 +1732,20 @@ final class DropLibrary: ObservableObject {
         defer {
             if deleteGenerations[id] == generation { deleteTasks[id] = nil }
         }
+        guard let ownerUID = pendingDeleteOwners[id] else {
+            // Pre-policy ID-only tombstones have lost the identity that
+            // authorized their delete. Keep suppression and a visible
+            // unresolved verdict; a server-confirmed absence can retire it.
+            clearPendingDelete(id)
+            markUnresolvedDelete(id)
+            return
+        }
+        // An account switch must never replay the previous owner's delete
+        // under the new UID. Retry remains available when that UID returns.
+        guard activeUID == ownerUID else { return }
         var ghost = GeoDrop()
         ghost.id = id
+        ghost.ownerUid = ownerUID
         do {
             try await cloud.delete(ghost)
             guard deleteGenerations[id] == generation else { return }
@@ -1445,6 +1760,10 @@ final class DropLibrary: ObservableObject {
             // both here and in Firestore's local queue; no attempt spent.
         } catch {
             guard deleteGenerations[id] == generation else { return }
+            // The adapter may have started under this owner and returned a
+            // permission refusal after Auth switched accounts. That answer
+            // says nothing about the originating owner's delete intent.
+            guard activeUID == ownerUID else { return }
             // Round 12 (counsel SEAMS-lens-2): the attempt budget is spent
             // only on NON-RETRYABLE refusals — a transient failure (offline
             // blips, quota, aborted) keeps the tombstone pending and the next
@@ -1478,6 +1797,21 @@ final class DropLibrary: ObservableObject {
         }
     }
 
+    private func persistPendingSyncOwners() {
+        defaults.set(
+            Dictionary(uniqueKeysWithValues: pendingSyncOwners.map { ($0.key.uuidString, $0.value) }),
+            forKey: Self.pendingSyncOwnerDefaultsKey
+        )
+    }
+
+    private func bindPendingSyncOwner(_ id: UUID, uid: String) {
+        // Callers have already checked a live local row and the current role.
+        // Never overwrite an older mutation's origin on an account switch.
+        guard pendingSyncOwners[id] == nil || pendingSyncOwners[id] == uid else { return }
+        pendingSyncOwners[id] = uid
+        persistPendingSyncOwners()
+    }
+
     private func markPending(_ id: UUID) {
         // Round 10 (counsel lens-1 invariant): a drop is never simultaneously
         // pending-upload and pending-delete — every path that marks one side
@@ -1494,6 +1828,8 @@ final class DropLibrary: ObservableObject {
     private func clearPending(_ id: UUID) {
         pendingSyncIDs.remove(id)
         persistSet(pendingSyncIDs, key: Self.pendingDefaultsKey)
+        pendingSyncOwners[id] = nil
+        persistPendingSyncOwners()
     }
 
     private func markTerminal(_ id: UUID) {
@@ -1508,11 +1844,20 @@ final class DropLibrary: ObservableObject {
         persistSet(terminalSyncFailureIDs, key: Self.terminalDefaultsKey)
     }
 
-    private func markPendingDelete(_ id: UUID) {
+    private func persistPendingDeleteOwners() {
+        defaults.set(
+            Dictionary(uniqueKeysWithValues: pendingDeleteOwners.map { ($0.key.uuidString, $0.value) }),
+            forKey: Self.pendingDeleteOwnerDefaultsKey
+        )
+    }
+
+    private func markPendingDelete(_ id: UUID, ownerUID: String) {
         assert(
             !pendingSyncIDs.contains(id),
             "invariant violated: \(id) tombstoned while pending-sync"
         )
+        pendingDeleteOwners[id] = ownerUID
+        persistPendingDeleteOwners()
         pendingDeleteIDs.insert(id)
         persistSet(pendingDeleteIDs, key: Self.pendingDeleteDefaultsKey)
     }
@@ -1520,6 +1865,8 @@ final class DropLibrary: ObservableObject {
     private func clearPendingDelete(_ id: UUID) {
         pendingDeleteIDs.remove(id)
         persistSet(pendingDeleteIDs, key: Self.pendingDeleteDefaultsKey)
+        pendingDeleteOwners[id] = nil
+        persistPendingDeleteOwners()
     }
 
     private func markUnresolvedDelete(_ id: UUID) {
@@ -1530,6 +1877,16 @@ final class DropLibrary: ObservableObject {
     private func clearUnresolvedDelete(_ id: UUID) {
         unresolvedDeleteIDs.remove(id)
         persistSet(unresolvedDeleteIDs, key: Self.unresolvedDeleteDefaultsKey)
+    }
+
+    private func markProvisionalOwner(_ id: UUID) {
+        provisionalOwnerIDs.insert(id)
+        persistSet(provisionalOwnerIDs, key: Self.provisionalOwnerDefaultsKey)
+    }
+
+    private func clearProvisionalOwner(_ id: UUID) {
+        guard provisionalOwnerIDs.remove(id) != nil else { return }
+        persistSet(provisionalOwnerIDs, key: Self.provisionalOwnerDefaultsKey)
     }
 
     private func markAcked(_ id: UUID) {

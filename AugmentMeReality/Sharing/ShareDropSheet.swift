@@ -11,6 +11,7 @@ struct ShareDropSheet: View {
 
     @State private var recipientName: String
     @State private var showShareSheet = false
+    @State private var preparedShare: GeoDrop?
     /// Wave C (counsel SWE-14/SWE-3): the link is only handed out after the
     /// share persisted; a failure shows here instead of a silent dead link.
     @State private var shareError: String?
@@ -129,8 +130,14 @@ struct ShareDropSheet: View {
                 NightCTA(title: "Send the magic link") {
                     Task { await sendLink() }
                 }
+                .disabled(!library.canShare(id: drop.id))
                 if let shareError {
                     Text(shareError)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Night.coral)
+                        .multilineTextAlignment(.center)
+                } else if !library.canShare(id: drop.id) {
+                    Text("Ownership must be verified on this account before this drop can be shared")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Night.coral)
                         .multilineTextAlignment(.center)
@@ -165,6 +172,11 @@ struct ShareDropSheet: View {
         .onChange(of: library.terminalSyncFailureIDs.contains(drop.id)) { _, isTerminal in
             if !isTerminal { shareError = nil }
         }
+        .onChange(of: account.uid) { _, _ in
+            preparedShare = nil
+            showShareSheet = false
+            shareError = "The account changed — reopen the drop to share it"
+        }
         .sheet(isPresented: $showShareSheet, onDismiss: {
             // Round 4 (flows-3): stay open on a terminal failure so the user
             // sees the truth instead of landing on the Sent tab reassured.
@@ -172,9 +184,11 @@ struct ShareDropSheet: View {
                 dismiss()
             }
         }) {
-            ActivitySheet(items: [DropSharingService.shareMessage(
-                for: sharedDrop, senderName: account.profile?.displayName ?? "A friend"
-            )])
+            if let preparedShare {
+                ActivitySheet(items: [DropSharingService.shareMessage(
+                    for: preparedShare, senderName: senderName
+                )])
+            }
         }
     }
 
@@ -185,14 +199,19 @@ struct ShareDropSheet: View {
         library.drops.first(where: { $0.id == drop.id }) ?? drop
     }
 
-    private var sharedDrop: GeoDrop {
-        var updated = liveDrop
-        updated.visibility = "link"
-        updated.recipientName = recipientName.isEmpty ? nil : recipientName
-        return updated
+    private var senderName: String {
+        guard let profile = account.profile, profile.uid == account.uid else {
+            return liveDrop.createdBy
+        }
+        return profile.displayName
     }
 
     private func sendLink() async {
+        let accountUID = account.uid
+        guard accountUID != nil, library.canShare(id: drop.id) else {
+            shareError = DropPermissionError.cannotShare.localizedDescription
+            return
+        }
         // Round 4 (flows-3): never present the activity sheet for a drop the
         // app already KNOWS can't upload — a confidently shared dead link is
         // worse than an error. Round 6 (counsel sync-4): the refusal is no
@@ -210,7 +229,11 @@ struct ShareDropSheet: View {
         do {
             // Persists locally (throws on failure) and enqueues the
             // server-acknowledged cloud upload (tracked in pendingSyncIDs).
-            try await library.update(sharedDrop)
+            let saved = try await library.share(id: drop.id, recipientName: recipientName)
+            guard account.uid == accountUID, library.canShare(id: drop.id) else {
+                throw DropPermissionError.ownershipChanged
+            }
+            preparedShare = saved
             shareError = nil
             showShareSheet = true
         } catch {

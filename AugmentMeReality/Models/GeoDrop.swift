@@ -49,6 +49,9 @@ struct GeoDrop: Identifiable, Codable, Equatable, Hashable, Sendable {
     var message: String = ""
     var latitude: Double = 0
     var longitude: Double = 0
+    /// How this saved coordinate was authored and its estimated geographic
+    /// uncertainty. Nil on legacy rows means unknown, never precise by default.
+    var geographicQuality: GeographicQuality? = nil
     /// Where the content floats relative to the local ground (meters).
     var heightAboveGround: Double = 2
     /// 1.0 = default size (3D text ≈ 0.6 m tall letters).
@@ -112,6 +115,7 @@ extension GeoDrop {
         message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
         latitude = try c.decodeIfPresent(Double.self, forKey: .latitude) ?? 0
         longitude = try c.decodeIfPresent(Double.self, forKey: .longitude) ?? 0
+        geographicQuality = try? c.decodeIfPresent(GeographicQuality.self, forKey: .geographicQuality)
         heightAboveGround = try c.decodeIfPresent(Double.self, forKey: .heightAboveGround) ?? 2
         scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1
         facingDegrees = try c.decodeIfPresent(Double.self, forKey: .facingDegrees)

@@ -31,6 +31,12 @@ final class GeospatialEngine {
     }
 
     private(set) var state: State = .off
+    private struct CameraLocalizationSample {
+        let horizontalAccuracy: Double
+        let yawAccuracyDegrees: Double
+        let measuredAt: Date
+    }
+    private var cameraLocalizationSample: CameraLocalizationSample?
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "geospatial")
 
     /// Latest Scene Semantics buffers for the SilhouetteRefiner (ADR-011).
@@ -76,6 +82,7 @@ final class GeospatialEngine {
         // Reset its coordinate gate so a fresh update can issue the check again.
         lastCoverageCheck = nil
         headingErrorSample = nil
+        cameraLocalizationSample = nil
         if !allowed { setSemanticsActive(false) }
         recordSemanticBlock()
     }
@@ -96,6 +103,7 @@ final class GeospatialEngine {
         let transform: simd_float4x4
         let isFirst: Bool
         let version: VPSPoseVersion
+        let quality: VPSPoseQuality?
     }
 
     /// Ordered pose with the world-frame and anchor generation it came from.
@@ -134,7 +142,8 @@ final class GeospatialEngine {
 
     var isAccuratelyLocalized: Bool {
         if case let .localized(h, yaw) = state {
-            return h <= AppConfig.vpsGoodHorizontalAccuracy
+            return h.isFinite && h > 0 && yaw.isFinite && yaw >= 0
+                && h <= AppConfig.vpsGoodHorizontalAccuracy
                 && yaw <= AppConfig.vpsGoodYawAccuracyDegrees
         }
         return false
@@ -156,8 +165,8 @@ final class GeospatialEngine {
             return nil
         case .searching:
             return "VPS searching…"
-        case .localized(let h, _):
-            return String(format: "VPS ±%.1f m", h)
+        case .localized(let h, let yaw):
+            return String(format: "VPS camera ±%.1f m / yaw ±%.1f°", h, yaw)
         case .failed(let message):
             return message
         }
@@ -167,6 +176,7 @@ final class GeospatialEngine {
 
     func start(arView: ARView) {
         poseGeneration &+= 1
+        cameraLocalizationSample = nil
         anchorBindings.removeAll()
         activeAnchorGeneration.removeAll()
         guard AppConfig.vpsEnabled else {
@@ -240,18 +250,27 @@ final class GeospatialEngine {
         }
     }
 
-    /// ADR-041 precision placement: convert an AR-frame world position to a
-    /// WGS84 coordinate (the inverse of anchoring). Returns nil unless VPS is
-    /// localized; the accuracy lets callers gate on quality.
+    /// Convert an AR-frame point to WGS84 together with the camera and target
+    /// accuracy reported by ARCore. The target's horizontal accuracy already
+    /// describes uncertainty for that coordinate; the caller assesses how
+    /// camera yaw may enlarge it at the tapped point's distance.
     func geoCoordinate(
         of worldPosition: SIMD3<Float>
-    ) -> (coordinate: CLLocationCoordinate2D, horizontalAccuracy: Double)? {
-        guard let garSession, case .localized(let h, _) = state else { return nil }
+    ) -> (coordinate: CLLocationCoordinate2D, targetHorizontalAccuracy: Double,
+          cameraHorizontalAccuracy: Double, yawAccuracyDegrees: Double,
+          measuredAt: Date)? {
+        guard let garSession, workAdmission.allowed,
+              case .localized = state,
+              let sample = cameraLocalizationSample else { return nil }
         var transform = matrix_identity_float4x4
         transform.columns.3 = SIMD4(worldPosition.x, worldPosition.y, worldPosition.z, 1)
         do {
             let geo = try garSession.geospatialTransform(transform: transform)
-            return (geo.coordinate, max(h, geo.horizontalAccuracy))
+            return (
+                geo.coordinate, geo.horizontalAccuracy,
+                sample.horizontalAccuracy, sample.yawAccuracyDegrees,
+                sample.measuredAt
+            )
         } catch {
             recordRuntimeFailure(.transform, error: error)
             return nil
@@ -305,6 +324,7 @@ final class GeospatialEngine {
         occluderRoot = nil
         seenGeometry.replace([], token: nil)
         headingErrorSample = nil
+        cameraLocalizationSample = nil
         semanticActive = false
         semanticRequested = false
         recordSemanticBlock()
@@ -341,6 +361,9 @@ final class GeospatialEngine {
         if let earth = garFrame.earth {
             updateState(earth: earth)
             updateHeadingErrorSample(earth: earth, frame: frame)
+        } else {
+            cameraLocalizationSample = nil
+            state = .searching
         }
 
         for anchor in garFrame.updatedAnchors {
@@ -386,15 +409,24 @@ final class GeospatialEngine {
                     horizontalM: transform.horizontalAccuracy,
                     yawDeg: transform.orientationYawAccuracy
                 )
+                cameraLocalizationSample = CameraLocalizationSample(
+                    horizontalAccuracy: transform.horizontalAccuracy,
+                    yawAccuracyDegrees: transform.orientationYawAccuracy,
+                    measuredAt: Date()
+                )
             } else {
                 state = .searching
+                cameraLocalizationSample = nil
             }
         case .errorNotAuthorized:
             state = .failed("VPS: API key not authorized")
+            cameraLocalizationSample = nil
         case .errorResourceExhausted:
             state = .failed("VPS: API quota exhausted")
+            cameraLocalizationSample = nil
         default:
             state = .failed("VPS: internal error")
+            cameraLocalizationSample = nil
         }
     }
 
@@ -447,7 +479,14 @@ final class GeospatialEngine {
                 sessionGeneration: binding.sessionGeneration,
                 anchorGeneration: binding.anchorGeneration,
                 capturedAt: capturedAt, sequence: poseSequence
-            )
+            ),
+            quality: cameraLocalizationSample.map {
+                VPSPoseQuality(
+                    horizontalAccuracyMeters: $0.horizontalAccuracy,
+                    yawAccuracyDegrees: $0.yawAccuracyDegrees,
+                    observedAt: $0.measuredAt
+                )
+            }
         )
         onDropTransform?(sample)
     }

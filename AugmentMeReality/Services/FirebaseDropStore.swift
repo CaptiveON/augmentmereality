@@ -102,9 +102,9 @@ final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropS
         guard let uid = Auth.auth().currentUser?.uid else {
             throw DropStoreError.notSignedIn
         }
-        // Drops received from someone else are never re-uploaded by the viewer
-        // (the library's enqueue already filters these; defense in depth).
-        if drop.receivedViaLink == true { return drop }
+        // A direct adapter call must fail visibly instead of reporting a
+        // successful upload for a received copy.
+        if drop.receivedViaLink == true { throw DropStoreError.ownedByAnotherAccount }
         // Counsel round 2 (C4/C15): any OTHER owner mismatch must not be a
         // silent success — the ack pipeline would clear pending and report
         // "Synced" for a write that uploaded nothing (the SWE-3 pattern
@@ -164,9 +164,12 @@ final class FirebaseDropStore: DropStore, DropAbsenceVerifying, ProvenancedDropS
         guard let uid = Auth.auth().currentUser?.uid else {
             throw DropStoreError.notSignedIn
         }
-        // Counsel round 2 (C13): never aim a delete at someone else's document
-        // — the library filters received drops, this is the backstop.
-        if let owner = drop.ownerUid, owner != uid { return }
+        // Cloud deletion requires a positively known owner. The library's
+        // persisted tombstone carries that owner across offline retries; an
+        // ID-only ghost or a received marker is never enough authority.
+        guard drop.receivedViaLink != true, drop.ownerUid == uid else {
+            throw DropStoreError.ownedByAnotherAccount
+        }
         let outcome = await FirestoreAcked.delete(
             Firestore.firestore().collection("drops").document(drop.id.uuidString)
         )

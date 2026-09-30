@@ -7,12 +7,14 @@ struct MapScreen: View {
     @EnvironmentObject private var locationService: LocationService
     @EnvironmentObject private var arHolder: ARSessionHolder
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var account: AccountService
 
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var searchText = ""
     @State private var searchedPlace: SearchedPlace?
     @State private var isSearching = false
     @State private var searchError: String?
+    @State private var actionError: String?
     /// ADR-041: real imagery for precise pinning ("the gate", not "the street").
     @State private var satellite = false
 
@@ -32,10 +34,32 @@ struct MapScreen: View {
                         Annotation(drop.title, coordinate: drop.coordinate) {
                             DropMapBadge(drop: drop)
                                 .contextMenu {
-                                    Button(role: .destructive) {
-                                        Task { try? await library.remove(drop) }
-                                    } label: {
-                                        Label("Remove drop", systemImage: "trash")
+                                    if library.ownershipRole(id: drop.id) == .owned {
+                                        Button(role: .destructive) {
+                                            Task {
+                                                do {
+                                                    try await library.removeOwned(id: drop.id)
+                                                    actionError = nil
+                                                } catch {
+                                                    actionError = error.localizedDescription
+                                                }
+                                            }
+                                        } label: {
+                                            Label("Delete your drop", systemImage: "trash")
+                                        }
+                                    } else if library.canRemoveLocalCopy(id: drop.id) {
+                                        Button(role: .destructive) {
+                                            Task {
+                                                do {
+                                                    try await library.removeLocalCopy(id: drop.id)
+                                                    actionError = nil
+                                                } catch {
+                                                    actionError = error.localizedDescription
+                                                }
+                                            }
+                                        } label: {
+                                            Label("Remove local copy", systemImage: "trash")
+                                        }
                                     }
                                 }
                         }
@@ -110,6 +134,7 @@ struct MapScreen: View {
                 // until the user actually asks for the viewfinder.
                 arHolder.warmWithoutCamera()
             }
+            .onChange(of: account.uid) { _, _ in actionError = nil }
         }
     }
 
@@ -143,6 +168,11 @@ struct MapScreen: View {
                 Text(searchError)
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+            if let actionError {
+                Text(actionError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         }
         .padding(.top, 4)

@@ -1348,3 +1348,30 @@ The [phase-two status and evidence](docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE2
 records validation and the external GitHub Actions billing restriction on PR #36.
 Persisted geographic accuracy/provenance, physical animation-stop behavior and
 sustained thermal/frame-pacing acceptance remain separate requirements.
+
+## ADR-058 — Saved placement evidence and owner-bound commands (2026-09-30)
+
+Saved geographic coordinates carry optional source, capture time and uncertainty
+inputs. Legacy/manual points retain unknown accuracy. A camera tap may publish
+new coordinates only with a fresh VPS projection whose horizontal estimate is
+at most 2 metres and yaw uncertainty at most 5 degrees; these are admission
+limits, not surveyed error bounds. Other taps keep a session-local world pose,
+including across scene-budget eviction, without moving the saved shared point.
+Save failures downgrade to local placement and sync progress remains explicit.
+Automatic VPS refinement never writes geographic coordinates back.
+
+One role policy distinguishes owned, received, legacy-local and unresolved
+content. Commands resolve live IDs and recheck identity after suspension.
+Received removal is local only; this app does not forward received content as
+recipient-authored shares. Legacy ownership is established by an acknowledged
+cloud claim, while a prior account's unmarked row stays unresolved. Upload and
+delete intents retain their originating UID across retries; unattributed old
+delete records remain unresolved until authoritative absence is established.
+The disabled public CloudKit adapter has no owner contract and receives no
+legacy authorization bypass.
+
+The owner authorized merging the preceding batches while Actions credits are
+exhausted. PRs #36/#37 are merged; hosted CI is deferred without disabling its
+workflow. See the [phase-three status and evidence](docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE3.md)
+for local validation. Physical shared-placement accuracy and overheating
+acceptance remain open.

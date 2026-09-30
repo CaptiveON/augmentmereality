@@ -92,6 +92,11 @@ enum DropSharingService {
             return .unknown
         }
         if !cloud.ownerUid.isEmpty {
+            // The envelope is the rules-checked owner field. Contradictory
+            // nested metadata is a malformed link, not a reason to grant the
+            // viewer owner controls.
+            if let nestedOwner = cloud.drop.ownerUid,
+               nestedOwner != cloud.ownerUid { return .unknown }
             cloud.drop.ownerUid = cloud.ownerUid
         }
         // Round 8 (counsel state-6 interim fix): opening MY OWN drop's link

@@ -56,7 +56,7 @@ final class CloudKitDropStore: DropStore {
     }
 }
 
-private extension GeoDrop {
+extension GeoDrop {
     init?(record: CKRecord) {
         guard
             let id = UUID(uuidString: record.recordID.recordName),
@@ -80,6 +80,11 @@ private extension GeoDrop {
             createdBy: record["createdBy"] as? String ?? "Someone",
             createdAt: record["createdAt"] as? Date ?? record.creationDate ?? Date()
         )
+        // Preserve the same optional value schema as JSON/Firebase. A legacy or
+        // malformed quality field must not discard an otherwise readable drop.
+        if let data = record["geographicQuality"] as? Data {
+            geographicQuality = try? JSONDecoder().decode(GeographicQuality.self, from: data)
+        }
     }
 
     func populate(_ record: CKRecord) {
@@ -93,5 +98,9 @@ private extension GeoDrop {
         record["colorHex"] = colorHex
         record["createdBy"] = createdBy
         record["createdAt"] = createdAt
+        // Assign nil as well, so clearing an old sensor claim cannot leave it
+        // attached to a manually relocated point on the next read.
+        let qualityData = geographicQuality.flatMap { try? JSONEncoder().encode($0) }
+        record["geographicQuality"] = qualityData as CKRecordValue?
     }
 }

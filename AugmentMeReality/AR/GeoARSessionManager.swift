@@ -228,6 +228,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var placedHolders: [UUID: Entity] = [:]
     private var placedDrops: [UUID: GeoDrop] = [:]
     private var authoredDropOverlay = AuthoredDropOverlay()
+    private var nextGeographicSaveTicket: UInt64 = 0
+    private var pendingGeographicSaves: [UUID: UInt64] = [:]
+    private var unconfirmedGeographicSaves: Set<UUID> = []
     private var sceneSelection = SceneContentBudget.Selection()
     private var geoAdmissionNeedsSync = false
     private var memoryPressureUntil = Date.distantPast
@@ -244,6 +247,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// the user witnesses presence, never placement.
     private var deferredTargets: [UUID: SIMD3<Float>] = [:]
     private var vpsCorrections = VPSCorrectionAdmission()
+    private var localPinOverrides = LocalPinOverrides()
 
     /// ADR-046: drops that already played their close-range reveal burst.
     private var revealedDrops: Set<UUID> = []
@@ -532,10 +536,64 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// capture; a tick arriving with NO capture and NO held gesture is stale
     /// context and is refused (re-bind refusal).
     func beginLiveEdit() {
+        guard let target = editingDropID ?? nearestDrop?.id,
+              canEditDrop(target) else { return }
         heldGestures = min(heldGestures + 1, 4) // bounded: >4 thumbs is noise
         lastLiveEditTickAt = Date()
-        if editingDropID == nil { editingDropID = nearestDrop?.id }
+        if editingDropID == nil { editingDropID = target }
         if let editingDropID { protectLiveEdit(editingDropID) }
+    }
+
+    var canEditNearestDrop: Bool {
+        nearestDrop.map { canEditDrop($0.id) } ?? false
+    }
+
+    var nearestIsLocalOnly: Bool {
+        nearestDrop.map { localPinOverrides.contains($0.id) } ?? false
+    }
+
+    var nearestPlacementDisclosure: String? {
+        guard let nearestDrop else { return nil }
+        if pendingGeographicSaves[nearestDrop.id] != nil {
+            return "Saving this geographic point on the phone…"
+        }
+        if localPinOverrides.contains(nearestDrop.id) {
+            if unconfirmedGeographicSaves.contains(nearestDrop.id) {
+                return "Pinned for this camera session · geographic save unconfirmed"
+            }
+            return "Pinned on this phone for this camera session · shared location unchanged"
+        }
+        let syncNote: String
+        if library?.terminalSyncFailureIDs.contains(nearestDrop.id) == true {
+            syncNote = " · cloud sync blocked"
+        } else if library?.pendingSyncIDs.contains(nearestDrop.id) == true {
+            syncNote = " · awaiting cloud sync"
+        } else {
+            syncNote = ""
+        }
+        let quality = (placedDrops[nearestDrop.id] ?? nearestDrop).geographicQuality
+        guard let quality else { return "Saved location accuracy unknown (older pin)" + syncNote }
+        if let saved = quality.horizontalEstimateMeters,
+           let distance = nearestDropDistance,
+           case let .localized(cameraH, yaw) = geospatial.state,
+           let viewed = GeographicWritebackPolicy.viewingEstimate(
+            savedHorizontal: saved, cameraHorizontal: cameraH,
+            yawDegrees: yaw, distanceMeters: distance
+           ) {
+            return String(format: "Saved point estimated ±%.1f m · here about ±%.1f m with tracking and distance",
+                          saved, viewed) + syncNote
+        }
+        if !syncNote.isEmpty {
+            return "Saved on this phone · " + quality.disclosure + syncNote
+        }
+        return quality.disclosure
+    }
+
+    private func canEditDrop(_ id: UUID) -> Bool {
+        if roomDrops[id] != nil || demoDrops.contains(where: { $0.id == id }) {
+            return true
+        }
+        return library?.canEditLocally(id: id) == true
     }
 
     private func protectLiveEdit(_ id: UUID) {
@@ -1137,6 +1195,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         groundLockBaseY.removeAll()
         deferredTargets.removeAll()
         vpsCorrections.resetGeneration()
+        localPinOverrides.reset()
+        pendingGeographicSaves.removeAll()
+        unconfirmedGeographicSaves.removeAll()
         liveEditingDrops.removeAll()
         editingDropID = nil
         heldGestures = 0
@@ -1244,8 +1305,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// VPS resolved (or refined) a drop's pose. A new accepted pose supersedes
     /// every older queued correction, including one from the compass tier.
     private func applyVPSTransform(_ sample: GeospatialEngine.DropTransformSample) {
-        guard geospatial.accepts(sample) else { return }
+        guard geospatial.accepts(sample),
+              let quality = sample.quality, quality.isCurrent(at: Date()) else { return }
         let dropID = sample.dropID
+        guard !localPinOverrides.contains(dropID) else { return }
         let isFirst = sample.isFirst || !vpsOwnedDrops.contains(dropID)
         // Transit: VPS transforms live in the untrusted VIO frame — ignore them;
         // the transit frame loop owns positions (ADR-015).
@@ -1274,7 +1337,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             position: target.translation, rotation: target.rotation)
         let decision = vpsCorrections.accept(
             id: dropID, transform: transform, pose: targetPose,
-            version: sample.version, current: currentPose,
+            version: sample.version, quality: quality, current: currentPose,
             cameraPosition: arView?.cameraTransform.translation ?? .zero,
             isVisible: arView.map { isInView(current.translation, arView: $0) } ?? false,
             isFirst: isFirst, glideActive: Date() < (vpsGlideUntil[dropID] ?? .distantPast),
@@ -1367,6 +1430,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// view (or grows past the forced threshold).
     private func drainDeferredCorrections(arView: ARView) {
         for (id, target) in deferredTargets {
+            if localPinOverrides.contains(id) {
+                deferredTargets[id] = nil
+                continue
+            }
             if vpsOwnedDrops.contains(id) {
                 deferredTargets[id] = nil
                 continue
@@ -1394,6 +1461,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
         for id in vpsCorrections.pendingIDs {
+            if localPinOverrides.contains(id) {
+                vpsCorrections.remove(id)
+                continue
+            }
             guard !liveEditingDrops.contains(id) else { continue }
             guard let holder = placedHolders[id], vpsOwnedDrops.contains(id) else {
                 vpsCorrections.remove(id)
@@ -1896,6 +1967,11 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         renderPath = desired
         switch desired {
         case .transit:
+            // Transit deliberately abandons the pedestrian world frame. A
+            // session-local raycast cannot survive transit's GPS repositioning.
+            localPinOverrides.reset()
+            pendingGeographicSaves.removeAll()
+            unconfirmedGeographicSaves.removeAll()
             // §6.3: LiDAR/scene-mesh occlusion is unreliable through vehicle glass
             // (it would mesh the window itself), and streetscape occluders live in
             // the now-untrusted VIO frame. Semantic matte + person-seg carry it.
@@ -1920,26 +1996,49 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     }
 
     private var eligibleDrops: [GeoDrop] {
-        guard let location = locationService?.location else { return demoDrops }
+        guard let location = locationService?.location else {
+            return (library?.drops.filter { localPinOverrides.contains($0.id) } ?? [])
+                .map { localPinOverrides.resolve($0) } + demoDrops
+        }
         let nearby = library?.drops(near: location, within: AppConfig.arVisibilityRadius) ?? []
-        return nearby + demoDrops
+        // A local-only pin may lie outside the old saved coordinate's radius.
+        // Keep it present for this world-tracking session.
+        let nearbyIDs = Set(nearby.map { $0.id })
+        let pinned = library?.drops.filter {
+            localPinOverrides.contains($0.id) && !nearbyIDs.contains($0.id)
+        } ?? []
+        return (nearby + pinned).map { localPinOverrides.resolve($0) } + demoDrops
     }
 
     private var admittedGeoDrops: [GeoDrop] {
         let eligible = eligibleDrops
         authoredDropOverlay.retainOnly(Set(eligible.map(\.id)))
         return eligible.filter { sceneSelection.visible.contains($0.id) }
-            .map { authoredDropOverlay.resolve($0) }
+            .map { localPinOverrides.resolve(authoredDropOverlay.resolve($0)) }
     }
 
     private func reconcileSceneAdmission() {
+        for id in localPinOverrides.ids where !canEditDrop(id) {
+            localPinOverrides.remove(id)
+            geoAdmissionNeedsSync = true
+            placementBasis = nil
+        }
         let location = locationService?.location
         let cameraPosition = arView?.cameraTransform.translation
         let selectedID = readiness?.heroID
         let geoCandidates = eligibleDrops.map { drop in
-            SceneContentBudget.Candidate(
+            let candidateDistance: Double = {
+                if let world = localPinOverrides.worldTransform(for: drop.id),
+                   let cameraPosition {
+                    let point = SIMD3<Float>(world.columns.3.x, world.columns.3.y,
+                                             world.columns.3.z)
+                    return Double(simd_length(point - cameraPosition))
+                }
+                return location.map { drop.location.distance(from: $0) } ?? 0
+            }()
+            return SceneContentBudget.Candidate(
                 id: drop.id,
-                distance: location.map { drop.location.distance(from: $0) } ?? 0,
+                distance: candidateDistance,
                 cost: Self.sceneContentCost(drop),
                 sourceBytes: Self.sceneSourceBytes(drop),
                 selected: drop.id == selectedID || drop.id == nearestDrop?.id,
@@ -2076,6 +2175,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         groundLockBaseY[id] = nil
         deferredTargets[id] = nil
         vpsCorrections.remove(id)
+        // SceneContentBudget also calls this method when it unloads a visible
+        // holder. Preserve a local raycast while its editable source row still
+        // exists; re-admission can rebuild from the saved world transform.
+        if !canEditDrop(id) { localPinOverrides.remove(id) }
         liveEditingDrops.remove(id)
         if editingDropID == id {
             editingDropID = nil
@@ -2099,11 +2202,33 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         geospatial.invalidateAnchor(for: id)
     }
 
+    /// A local raycast belongs to the current AR world, not to the old saved
+    /// geographic anchor. Detach the existing holder before the anchor moves it.
+    private func releaseGeoAnchor(for id: UUID) {
+        if let holder = placedHolders[id], let arView {
+            let worldTransform = holder.transformMatrix(relativeTo: nil)
+            holder.removeFromParent()
+            ensureWorldRoot(in: arView).addChild(holder)
+            holder.setTransformMatrix(worldTransform, relativeTo: nil)
+        }
+        if let anchor = geoAnchorEntities.removeValue(forKey: id) {
+            arView?.scene.removeAnchor(anchor)
+            geoAnchors.removeAll { $0 === anchor }
+        }
+        if let anchor = geoARAnchors.removeValue(forKey: id) {
+            arView?.session.remove(anchor: anchor)
+        }
+        geoAnchoredDropIDs.remove(id)
+    }
+
     private func updateNearest() {
         // Wave D (counsel SWE-5): nearest is FROZEN while a drag is live — a
         // mid-drag nearest change used to jump the sliders (`syncSliders`) and
         // land the release-commit on a drop the user wasn't editing.
         guard editingDropID == nil else { return }
+        // A local function used by the distance comparators has its own
+        // isolation context. Snapshot the session pins before entering it.
+        let pinOverrides = localPinOverrides
         // Room drops win by AR-space distance — geo distance is meaningless for
         // them, and indoors they are what the user is testing (ADR-025).
         if !roomDrops.isEmpty, let arView {
@@ -2122,15 +2247,45 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
         guard let location = locationService?.location else {
-            nearestDrop = nil
-            nearestDropDistance = nil
+            if let camera = arView?.cameraTransform.translation {
+                let pinned = (library?.drops ?? []).filter {
+                    pinOverrides.contains($0.id)
+                }.map { pinOverrides.resolve($0) }
+                nearestDrop = pinned.min { left, right in
+                    func distance(_ drop: GeoDrop) -> Float {
+                        guard let world = pinOverrides.worldTransform(for: drop.id) else {
+                            return .infinity
+                        }
+                        return simd_length(SIMD3(world.columns.3.x, world.columns.3.y,
+                                                 world.columns.3.z) - camera)
+                    }
+                    return distance(left) < distance(right)
+                }
+                nearestDropDistance = nearestDrop.flatMap { drop in
+                    pinOverrides.worldTransform(for: drop.id).map { world in
+                        Double(simd_length(SIMD3(world.columns.3.x, world.columns.3.y,
+                                                  world.columns.3.z) - camera))
+                    }
+                }
+            } else {
+                nearestDrop = nil
+                nearestDropDistance = nil
+            }
             return
         }
-        let all = (library?.drops ?? []) + demoDrops
-        nearestDrop = all.min {
-            $0.location.distance(from: location) < $1.location.distance(from: location)
+        let all = ((library?.drops ?? []) + demoDrops)
+            .map { pinOverrides.resolve($0) }
+        let camera = arView?.cameraTransform.translation
+        func distance(to drop: GeoDrop) -> Double {
+            if let world = pinOverrides.worldTransform(for: drop.id), let camera {
+                let point = SIMD3<Float>(world.columns.3.x, world.columns.3.y,
+                                         world.columns.3.z)
+                return Double(simd_length(point - camera))
+            }
+            return drop.location.distance(from: location)
         }
-        nearestDropDistance = nearestDrop.map { $0.location.distance(from: location) }
+        nearestDrop = all.min { distance(to: $0) < distance(to: $1) }
+        nearestDropDistance = nearestDrop.map { distance(to: $0) }
     }
 
     // MARK: - Tier A: GPS + compass
@@ -2157,6 +2312,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         let currentFix = locationService.currentLocation(at: now)
         motionState = motion.update(location: currentFix, at: now)
         guard let fix = currentFix else {
+            // A local raycast already has a pose in this AR world. It can be
+            // restored after budget eviction even while GPS is temporarily stale.
+            if arView.session.currentFrame != nil { restoreLocalPinHolders() }
             statusText = renderPath == .transit
                 ? "Transit — GPS stale · positions hidden"
                 : "Waiting for a current GPS fix…"
@@ -2196,7 +2354,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         vpsStatusText = geospatial.statusText
         vpsLocked = geospatial.isAccuratelyLocalized
         if geospatial.isAccuratelyLocalized {
-            for drop in drops where sceneSelection.full.contains(drop.id) {
+            for drop in drops where sceneSelection.full.contains(drop.id)
+                && !localPinOverrides.contains(drop.id) {
                 geospatial.requestAnchor(for: drop, viewer: fix)
             }
         }
@@ -2275,6 +2434,24 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
     }
 
+    /// Recreates an admitted session-local holder after a content-budget unload,
+    /// without needing a new GPS fix or publishing a geographic coordinate.
+    private func restoreLocalPinHolders() {
+        guard let arView else { return }
+        let root = ensureWorldRoot(in: arView)
+        for drop in admittedGeoDrops {
+            guard let world = localPinOverrides.worldTransform(for: drop.id),
+                  placedHolders[drop.id] == nil else { continue }
+            let holder = makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+            root.addChild(holder)
+            holder.setTransformMatrix(world, relativeTo: nil)
+            placedHolders[drop.id] = holder
+            placedDrops[drop.id] = drop
+            DropEntityFactory.startAnimations(on: holder)
+        }
+        renderedDropCount = placedHolders.count
+    }
+
     /// Creates/moves one holder entity per drop at its world position. Existing
     /// holders slide smoothly to corrected positions instead of popping.
     private func syncGPSPlacements(drops: [GeoDrop], fix: CLLocation, frame: ARFrame, animated: Bool) {
@@ -2288,6 +2465,26 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         var seen: Set<UUID> = []
         var placedUsingValidOffset = false
         for drop in drops {
+            if let localWorld = localPinOverrides.worldTransform(for: drop.id) {
+                seen.insert(drop.id)
+                if placedHolders[drop.id] != nil {
+                    if sceneSelection.full.contains(drop.id) != (contentEntities[drop.id] != nil) {
+                        replaceHolderContent(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+                    }
+                    synchronizePhysicalSize(for: drop.id, authoredScale: drop.scale)
+                } else {
+                    let holder = makeHolder(
+                        for: drop, fullContent: sceneSelection.full.contains(drop.id)
+                    )
+                    root.addChild(holder)
+                    holder.setTransformMatrix(localWorld, relativeTo: nil)
+                    placedHolders[drop.id] = holder
+                    DropEntityFactory.startAnimations(on: holder)
+                }
+                placedDrops[drop.id] = drop
+                placedUsingValidOffset = true
+                continue
+            }
             guard let enu = GeoMath.checkedENUOffset(from: fix.coordinate, to: drop.coordinate) else { continue }
             seen.insert(drop.id)
             if placedHolders[drop.id] != nil,
@@ -2299,10 +2496,11 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 synchronizePhysicalSize(for: drop.id, authoredScale: drop.scale)
             }
 
-            // Drops owned by VPS are world-accurate already — never touch them here.
-            // Ditto anything mid-live-edit: the sliders own it until release.
+            // A local-only raycast owns its holder until this world frame ends.
+            // VPS ownership and a held edit also exclude compass re-sync.
             if placedHolders[drop.id] != nil,
-               vpsOwnedDrops.contains(drop.id) || liveEditingDrops.contains(drop.id) {
+               vpsOwnedDrops.contains(drop.id) || liveEditingDrops.contains(drop.id)
+                || localPinOverrides.contains(drop.id) {
                 continue
             }
 
@@ -2541,6 +2739,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         guard let id = Self.editTarget(
             capture: editingDropID, held: gestureHeld, nearest: nearestDrop?.id
         ) else { return }
+        guard canEditDrop(id) else {
+            cancelLiveEdit()
+            return
+        }
         editingDropID = id
         if !commit {
             lastLiveEditTickAt = Date()
@@ -2579,6 +2781,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         to id: UUID, height: Double? = nil, scale: Double? = nil,
         rotation: Double? = nil, commit: Bool
     ) {
+        guard canEditDrop(id) else { return }
         // Round 2 (counsel STATE-4): resolve STRICTLY from owned state — the
         // old `nearestDrop` fallback was invariantly non-nil while a capture
         // existed (updateNearest is frozen), which made the vanish-guard dead
@@ -2615,7 +2818,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
 
-        if roomDrops[id] != nil {
+        if localPinOverrides.contains(id) {
+            // The edited point is still local-only; persisting any placement
+            // field would silently attach it to the old geographic coordinate.
+            if let holder = placedHolders[id] {
+                localPinOverrides.update(
+                    drop, worldTransform: holder.transformMatrix(relativeTo: nil)
+                )
+            }
+        } else if roomDrops[id] != nil {
             roomDrops[id] = drop // session-scoped; never persisted
         } else if let index = demoDrops.firstIndex(where: { $0.id == id }) {
             demoDrops[index] = drop
@@ -2673,7 +2884,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// snap landed, then the geo pipeline lifted it again).
     func snapNearestDropToGround() {
         guard let arView, let drop = nearestDrop,
-              let holder = placedHolders[drop.id] else { return }
+              let holder = placedHolders[drop.id],
+              canEditDrop(drop.id) else { return }
         let base = holder.position
         var groundY: Float?
 
@@ -2763,50 +2975,52 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         })
     }
 
-    /// ADR-041 "pin to this exact spot": the user tapped a real-world point in
-    /// the camera — make that the drop's true home. The coordinate comes from
-    /// VPS when localized (~1–5 m absolute, the precision ceiling for other
-    /// viewers) else inverse-ENU from the current GPS fix. The tapped point is
-    /// ground-locked so the visual placement is exact for THIS session either way.
-    func relocateNearestDrop(to worldPoint: SIMD3<Float>) {
-        guard let drop = nearestDrop, let holder = placedHolders[drop.id],
-              let arView else { return }
-        let id = drop.id
-        var updated = placedDrops[id] ?? drop
+    enum RelocationResult: Equatable { case savedGeographic, localOnly, rejected }
 
-        // 1. New coordinate — VPS first, GPS+heading fallback.
-        guard worldPoint.x.isFinite, worldPoint.y.isFinite, worldPoint.z.isFinite else { return }
-        if let geo = geospatial.geoCoordinate(of: worldPoint), GeoMath.isValid(geo.coordinate) {
+    /// Keep the raycast on the measured surface in this AR world. Its WGS84
+    /// coordinate changes only when a fresh VPS projection meets the separate
+    /// shared-placement tolerance; GPS/compass cannot quantify the current
+    /// AR-frame heading error well enough to write this point back honestly.
+    @discardableResult
+    func relocateNearestDrop(to worldPoint: SIMD3<Float>) -> RelocationResult {
+        guard let drop = nearestDrop, let holder = placedHolders[drop.id],
+              let arView, canEditDrop(drop.id),
+              worldPoint.x.isFinite, worldPoint.y.isFinite, worldPoint.z.isFinite
+        else { return .rejected }
+        let id = drop.id
+        // A later tap supersedes an in-flight geographic save for this view.
+        nextGeographicSaveTicket &+= 1
+        let saveTicket = nextGeographicSaveTicket
+        pendingGeographicSaves[id] = nil
+        unconfirmedGeographicSaves.remove(id)
+        var updated = placedDrops[id] ?? drop
+        let camera = arView.cameraTransform.translation
+        let horizontalDistance = Double(simd_length(SIMD2(
+            worldPoint.x - camera.x, worldPoint.z - camera.z
+        )))
+        let now = Date()
+        let projected = geospatial.geoCoordinate(of: worldPoint)
+        let quality = projected.flatMap { geo in
+            GeographicWritebackPolicy.assessVPS(
+                targetHorizontal: geo.targetHorizontalAccuracy,
+                cameraHorizontal: geo.cameraHorizontalAccuracy,
+                yawDegrees: geo.yawAccuracyDegrees,
+                distanceMeters: horizontalDistance,
+                measuredAt: geo.measuredAt, now: now
+            )
+        }
+        let persistent = roomDrops[id] == nil
+            && !demoDrops.contains(where: { $0.id == id })
+        let publish = persistent && GeographicWritebackPolicy.mayPublish(quality, at: now)
+            && projected.map { GeoMath.isValid($0.coordinate) } == true
+        if publish, let geo = projected {
             updated.latitude = geo.coordinate.latitude
             updated.longitude = geo.coordinate.longitude
-            metricsLog.log("Relocate via VPS ±\(geo.horizontalAccuracy) m")
-        } else if let fix = locationService?.currentLocation() {
-            guard headingSampleCount > 0, !headingSeededMagneticOnly else {
-                showPersistError("Waiting for true north before saving this location")
-                return
-            }
-            let camPos = arView.cameraTransform.translation
-            let offset = worldPoint - camPos
-            let eastAR = Double(offset.x)
-            let northAR = Double(-offset.z)
-            guard let enu = GeoMath.enu(fromARHorizontal: SIMD2(eastAR, northAR), headingCorrection: headingCorrection),
-                  let coordinate = GeoMath.checkedCoordinate(
-                from: fix.coordinate,
-                bearingDegrees: atan2(enu.x, enu.y) * 180 / .pi,
-                distanceMeters: simd_length(enu)
-            ) else {
-                showPersistError("Couldn’t locate this spot — wait for a reliable GPS fix")
-                return
-            }
-            updated.latitude = coordinate.latitude
-            updated.longitude = coordinate.longitude
-            metricsLog.log("Relocate via GPS fallback (±\(fix.horizontalAccuracy) m)")
-        } else {
-            showPersistError("Couldn’t locate this spot — wait for a current GPS fix")
-            return
+            updated.geographicQuality = quality
+            metricsLog.log("Relocate via VPS with a publishable geographic estimate")
         }
 
-        // 2. Height above ground at the tapped point (snap small values to 0).
+        // Height above ground at the tapped point (snap small values to 0).
         var groundY: Float?
         if let frame = arView.session.currentFrame {
             groundY = estimatedGroundY(frame: frame)
@@ -2816,16 +3030,20 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         if abs(height) < 0.3 { height = 0 }
         updated.heightAboveGround = min(max(height, -2), 20)
 
-        // 3. Apply everywhere: model, scene (exact tap point), cloud, VPS.
+        // The holder belongs to the current world frame. Detach an ARGeoAnchor
+        // before moving it, then let a published coordinate acquire a new one.
+        releaseGeoAnchor(for: id)
         placedDrops[id] = updated
         nearestDrop = updated
         stopPlacementMotion(for: id)
+        let worldRotation = Transform(matrix: holder.transformMatrix(relativeTo: nil)).rotation
+        let targetWorld = Transform(
+            scale: .one, rotation: worldRotation,
+            translation: SIMD3(worldPoint.x, worldPoint.y + 0.005, worldPoint.z)
+        )
         holder.move(
-            to: Transform(
-                scale: .one, rotation: holder.orientation,
-                translation: SIMD3(worldPoint.x, worldPoint.y + 0.005, worldPoint.z)
-            ),
-            relativeTo: holder.parent, duration: 0.3, timingFunction: .easeInOut
+            to: targetWorld,
+            relativeTo: nil, duration: 0.3, timingFunction: .easeInOut
         )
         groundLockBaseY[id] = worldPoint.y + 0.005
         groundDiscs[id]?.position.y = -Float(updated.heightAboveGround) + 0.04
@@ -2834,23 +3052,60 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         vpsOwnedDrops.remove(id)
         vpsGlideUntil[id] = nil
         if roomDrops[id] == nil {
-            geospatial.invalidateAnchor(for: id) // re-pins at the NEW coordinate
+            geospatial.invalidateAnchor(for: id)
         }
         if let index = demoDrops.firstIndex(where: { $0.id == id }) {
             demoDrops[index] = updated
         } else if roomDrops[id] != nil {
             roomDrops[id] = updated
-        } else if let library {
+        }
+        if !publish, roomDrops[id] == nil {
+            localPinOverrides.stage(updated, worldTransform: targetWorld.matrix)
+            return .localOnly
+        }
+        localPinOverrides.remove(id)
+        if let library, persistent {
             let toSave = updated
+            let previousShared = library.drops.first { $0.id == id } ?? drop
+            let cameraSession = sessionGeneration
+            pendingGeographicSaves[id] = saveTicket
             authoredDropOverlay.stage(toSave)
             Task { [weak self] in
                 do {
                     try await library.update(toSave, persist: true)
+                    guard let self, self.pendingGeographicSaves[id] == saveTicket else {
+                        return
+                    }
+                    self.pendingGeographicSaves[id] = nil
+                    if self.nearestDrop?.id == id { self.nearestDrop = self.placedDrops[id] }
                 } catch {
-                    self?.showPersistError("Couldn't save the change — it may revert")
+                    guard let self else { return }
+                    guard self.pendingGeographicSaves[id] == saveTicket else { return }
+                    self.pendingGeographicSaves[id] = nil
+                    self.authoredDropOverlay.discardIfMatching(toSave)
+                    guard self.sessionGeneration == cameraSession else { return }
+                    let shared = library.drops.first { $0.id == id } ?? previousShared
+                    guard self.canEditDrop(id) else {
+                        self.placedDrops[id] = shared
+                        if self.nearestDrop?.id == id { self.nearestDrop = shared }
+                        self.showPersistError("Couldn't save the geographic point")
+                        return
+                    }
+                    var local = self.placedDrops[id] ?? toSave
+                    local.latitude = shared.latitude
+                    local.longitude = shared.longitude
+                    local.geographicQuality = shared.geographicQuality
+                    let pose = self.placedHolders[id]?.transformMatrix(relativeTo: nil)
+                        ?? targetWorld.matrix
+                    self.localPinOverrides.stage(local, worldTransform: pose)
+                    self.placedDrops[id] = local
+                    if self.nearestDrop?.id == id { self.nearestDrop = local }
+                    self.unconfirmedGeographicSaves.insert(id)
+                    self.showPersistError("Couldn't confirm the geographic save — pin stays here for this camera session")
                 }
             }
         }
+        return publish ? .savedGeographic : .localOnly
     }
 
     /// ADR-020: swap each placed drop's content for a re-skinned copy in place.
@@ -3322,7 +3577,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         if let status = arView.session.currentFrame?.geoTrackingStatus {
             switch status.state {
             case .localized:
-                statusText = "Precise mode locked — content is world-accurate"
+                statusText = "Geographic tracking localized — saved pin accuracy varies"
             case .localizing:
                 statusText = "Point the camera at buildings across the street…"
             case .initializing:
@@ -3340,6 +3595,22 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             removePerDropState(id)
         }
         for drop in drops {
+            if let localWorld = localPinOverrides.worldTransform(for: drop.id) {
+                if placedHolders[drop.id] == nil {
+                    let holder = makeHolder(
+                        for: drop, fullContent: sceneSelection.full.contains(drop.id)
+                    )
+                    ensureWorldRoot(in: arView).addChild(holder)
+                    holder.setTransformMatrix(localWorld, relativeTo: nil)
+                    placedHolders[drop.id] = holder
+                    DropEntityFactory.startAnimations(on: holder)
+                } else if sceneSelection.full.contains(drop.id)
+                    != (contentEntities[drop.id] != nil) {
+                    replaceHolderContent(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+                }
+                placedDrops[drop.id] = drop
+                continue
+            }
             if geoAnchoredDropIDs.contains(drop.id) {
                 placedDrops[drop.id] = drop
                 if sceneSelection.full.contains(drop.id) != (contentEntities[drop.id] != nil) {
@@ -3354,7 +3625,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             // Target-by-identifier avoids the ARAnchor convenience initializer's
             // missing back-deployment symbol with Xcode 26.6 on iOS 17.
             let anchorEntity = AnchorEntity(.anchor(identifier: geoAnchor.identifier))
-            let entity = makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+            let entity = placedHolders[drop.id]
+                ?? makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
+            entity.removeFromParent()
             entity.position.y = Float(drop.heightAboveGround)
             // Geo anchor local frame: +X east, −Z north. Face the viewer's position.
             if let viewer = locationService?.location {

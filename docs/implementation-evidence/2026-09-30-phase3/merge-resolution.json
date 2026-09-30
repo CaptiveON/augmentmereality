@@ -1,0 +1,28 @@
+{
+  "mergeAuthorization": "Owner explicitly requested merging completed functionality while GitHub Actions credits are exhausted.",
+  "hostedCI": "Deferred; no hosted pass claimed and no workflow definitions disabled.",
+  "pullRequests": [
+    {
+      "number": 36,
+      "url": "https://github.com/CaptiveON/augmentmereality/pull/36",
+      "mergeCommit": "a5625924128135a1516a02071ded73a46236bbb8",
+      "mergedAt": "2026-09-30T00:08:16Z"
+    },
+    {
+      "number": 37,
+      "url": "https://github.com/CaptiveON/augmentmereality/pull/37",
+      "mergeCommit": "a759033e0ad5348246750fb7d84ff288f35ec752",
+      "mergedAt": "2026-09-30T00:08:57Z"
+    }
+  ],
+  "previouslyTestedAndInstalledCommit": "684f6b40b5da18d44b600e8db88396c85ab81a96",
+  "testedTree": "7014bcb95e43e9813068d42bb703f78c1e8b614a",
+  "mergedMainTree": "7014bcb95e43e9813068d42bb703f78c1e8b614a",
+  "phase2Verification": "../2026-09-30-phase2/verification.json",
+  "closedIssues": [
+    3,
+    25,
+    28
+  ],
+  "physicalAcceptance": "Still pending; no new phone validation performed for merge."
+}
