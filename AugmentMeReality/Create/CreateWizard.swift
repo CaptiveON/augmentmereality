@@ -28,6 +28,9 @@ struct CreateWizard: View {
 
     // Where
     @State private var pin: CLLocationCoordinate2D?
+    @State private var pinSource = GeographicQuality.Source.mapSelection
+    @State private var pinFixAccuracy: Double?
+    @State private var pinMeasuredAt: Date?
     @State private var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var searchText = ""
     @State private var isSearching = false
@@ -82,6 +85,7 @@ struct CreateWizard: View {
         .onAppear {
             if let initialCoordinate {
                 pin = initialCoordinate
+                pinSource = GeographicQuality.Source.mapSelection
                 cameraPosition = .region(MKCoordinateRegion(
                     center: initialCoordinate,
                     latitudinalMeters: 140, longitudinalMeters: 140
@@ -257,7 +261,7 @@ struct CreateWizard: View {
         VStack(spacing: 0) {
             stepHeader(
                 "Where will they find it?",
-                sub: "Their doorstep, a bench, the spot you met — tap the exact place."
+                sub: "Their doorstep, a bench, the spot you met — choose a recognizable point on the map."
             )
             .padding(.horizontal, 18)
             .padding(.top, 14)
@@ -284,6 +288,9 @@ struct CreateWizard: View {
                 .onTapGesture { screenPoint in
                     if let coordinate = proxy.convert(screenPoint, from: .local) {
                         pin = coordinate
+                        pinSource = GeographicQuality.Source.mapSelection
+                        pinFixAccuracy = nil
+                        pinMeasuredAt = nil
                     }
                 }
                 .overlay(alignment: .top) { searchBar.padding(10) }
@@ -395,6 +402,11 @@ struct CreateWizard: View {
                     from: current, bearingDegrees: bearing, distanceMeters: nudgeStep
                   ) else { return }
             pin = nudged
+            // A manual nudge supersedes the source fix or search result. Map
+            // image alignment has no measured horizontal error to inherit.
+            pinSource = GeographicQuality.Source.mapSelection
+            pinFixAccuracy = nil
+            pinMeasuredAt = nil
         } label: {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .semibold))
@@ -407,8 +419,14 @@ struct CreateWizard: View {
     }
 
     private func dropWhereIStand() {
-        guard let here = locationService.location else { return }
+        guard let here = locationService.currentLocation() else {
+            searchError = "Waiting for a current location fix"
+            return
+        }
         pin = here.coordinate
+        pinSource = GeographicQuality.Source.deviceFix
+        pinFixAccuracy = here.horizontalAccuracy
+        pinMeasuredAt = here.timestamp
         withAnimation {
             cameraPosition = .region(MKCoordinateRegion(
                 center: here.coordinate,
@@ -437,6 +455,9 @@ struct CreateWizard: View {
                 return
             }
             pin = item.placemark.coordinate
+            pinSource = GeographicQuality.Source.mapSearch
+            pinFixAccuracy = nil
+            pinMeasuredAt = nil
             withAnimation {
                 cameraPosition = .region(MKCoordinateRegion(
                     center: item.placemark.coordinate,
@@ -452,16 +473,21 @@ struct CreateWizard: View {
     /// never be confused (field feedback 2026-07-07).
     private var pinDescription: String {
         guard let pin else { return "" }
-        guard let here = locationService.location else {
-            return String(format: "Pinned at %.5f, %.5f", pin.latitude, pin.longitude)
+        let quality = GeographicQuality(
+            source: pinSource, sensorHorizontalAccuracyMeters: pinFixAccuracy,
+            measuredAt: pinMeasuredAt
+        )
+        guard let here = locationService.currentLocation() else {
+            return quality.disclosure
         }
         let target = CLLocation(latitude: pin.latitude, longitude: pin.longitude)
         let distance = target.distance(from: here)
-        if distance < 10 { return "Pinned right where you're standing" }
+        if distance < 10 { return "Near where you're standing · \(quality.disclosure)" }
         return String(
-            format: "Pinned %@ %@ of you — they'll see it in AR at the spot",
+            format: "Pinned %@ %@ of you · %@",
             GeoMath.distanceLabel(distance),
-            GeoMath.compassPoint(for: GeoMath.bearing(from: here.coordinate, to: pin))
+            GeoMath.compassPoint(for: GeoMath.bearing(from: here.coordinate, to: pin)),
+            quality.disclosure
         )
     }
 
@@ -627,6 +653,10 @@ struct CreateWizard: View {
             message: message.trimmingCharacters(in: .whitespacesAndNewlines),
             latitude: pin.latitude,
             longitude: pin.longitude,
+            geographicQuality: GeographicQuality(
+                source: pinSource, sensorHorizontalAccuracyMeters: pinFixAccuracy,
+                measuredAt: pinMeasuredAt
+            ),
             heightAboveGround: heightAboveGround,
             scale: scale,
             facingDegrees: facing.degrees,

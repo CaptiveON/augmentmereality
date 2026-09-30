@@ -7,6 +7,25 @@ audit, research, and implementation-plan files remain unchanged.
 
 ## Merge diagnosis
 
+### Resolution — 30 September 2026
+
+The repository owner confirmed that GitHub Actions credits are exhausted and
+explicitly authorized merging the locally verified functionality without waiting
+for hosted CI. [PR #36](https://github.com/CaptiveON/augmentmereality/pull/36)
+merged as `a5625924128135a1516a02071ded73a46236bbb8`;
+[PR #37](https://github.com/CaptiveON/augmentmereality/pull/37) merged this storage
+and VPS batch as `a759033`.
+The resulting `main` tree exactly matches the tested and installed `684f6b4`
+tree; all 93 source files match the final validation fingerprint. Workflow and
+check definitions were not disabled. Hosted CI remains unverified and deferred
+at the owner's request. The diagnosis below records the earlier blocked state.
+
+Issues #25 and #28 were closed with implementation and validation evidence. The
+umbrella tracker also reflects the previously closed #3. Other issues retain
+their outstanding implementation, service, or physical acceptance requirements.
+
+### Original diagnosis
+
 [PR #36](https://github.com/CaptiveON/augmentmereality/pull/36) is mergeable
 without source conflicts. In
 [CI run 36645268084](https://github.com/CaptiveON/augmentmereality/actions/runs/36645268084),

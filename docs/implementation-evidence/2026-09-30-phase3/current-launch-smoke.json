@@ -1,0 +1,21 @@
+{
+  "app": "/tmp/amr-phase3-sep30/DerivedData/Build/Products/Debug-iphonesimulator/AugmentMeReality.app",
+  "bundleID": "com.adnan.augmentmereality",
+  "checks": [
+    {
+      "pid": 13297,
+      "reached": true,
+      "screenshot": "non-ar-root.png",
+      "surface": "non-ar-root"
+    },
+    {
+      "pid": 14186,
+      "reached": true,
+      "screenshot": "camera-unavailable.png",
+      "surface": "camera-unavailable"
+    }
+  ],
+  "locationPermissionSetup": "revocation requested; authorization not asserted",
+  "scope": "View appeared and process survived; screenshots need visual inspection",
+  "simulatorUDID": "A203C7B2-7DBA-494E-9E34-E1FED217D83B"
+}

@@ -1,0 +1,135 @@
+{
+  "checkedAt": "2026-09-30T00:38:03.460249+00:00",
+  "baseCommit": "a759033e0ad5348246750fb7d84ff288f35ec752",
+  "sourceState": "uncommitted working tree",
+  "sourceAggregateSHA256": "3d5a57a5fd357df5ffa1ad10f4784d0394c6ba7998869072edf1672a250abc04",
+  "sourceFileCount": 101,
+  "sourceFingerprintVerified": true,
+  "xcode": "Xcode 26.6\nBuild version 17F113",
+  "sdk": "26.5",
+  "tests": {
+    "current": {
+      "totalTestCount": 318,
+      "passedTests": 318,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    },
+    "minimum": {
+      "totalTestCount": 318,
+      "passedTests": 317,
+      "failedTests": 0,
+      "skippedTests": 1,
+      "result": "Passed"
+    },
+    "tsan": {
+      "totalTestCount": 128,
+      "passedTests": 128,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    }
+  },
+  "minimumSkipReason": "Opt-in native Firestore emulator contract passed on current lane",
+  "debugBuild": "passed",
+  "unsignedReleaseBuild": "passed",
+  "appDiagnostics": {
+    "Debug": 0,
+    "Release": 0,
+    "requiredCompiledBoundaries": 16
+  },
+  "releaseAndSwift6AppSourceMatchesFinalFingerprint": true,
+  "swift6": {
+    "wholeAppSILCompile": "passed",
+    "errors": 0,
+    "warnings": 0,
+    "productionLanguageMode": 5,
+    "usesRealSDKAndDependencies": true,
+    "appSwiftFileCount": 61,
+    "generatedCoreMLSourceCount": 1,
+    "replayCommandSHA256": "33d4947151cee9987696cd703d589d017fbd6ea0cdd83b93b12993708e362711"
+  },
+  "threadSanitizer": {
+    "runtimeLinked": true,
+    "reportedRaces": 0,
+    "scope": "128 selected simulator AR, storage, ownership and correction tests; not physical RealityKit safety proof"
+  },
+  "nativeSDKGateCounters": {
+    "heldWrites": 1,
+    "heldReads": 1,
+    "readyRequests": 1,
+    "seedRequests": 3,
+    "startupListens": 1
+  },
+  "localCIChecks": {
+    "rulesDriftTests": 8,
+    "currentRulesTests": 59,
+    "historicalRulesTests": 6,
+    "releaseSmokeChecks": 42,
+    "releaseSmokeCleanupComplete": true,
+    "diagnosticGateTests": 6,
+    "simulatorSelectorTests": 3,
+    "arBaselineTests": 6,
+    "releaseVerifierTests": 9,
+    "bothDriftLocks": "passed",
+    "bothLaunchSmokesPassed": true,
+    "allFourScreenshotsInspected": true,
+    "gitDiffCheck": "passed"
+  },
+  "uiReviewScope": "Root and unsupported-camera launch screenshots on iOS 26.5 and 17.0.1; ownership sections/actions reviewed statically with live-command regressions, not an interactive physical account-switch UI test",
+  "githubCI": {
+    "status": "deferred at explicit owner request because Actions credits are exhausted",
+    "hostedPassClaimed": false,
+    "workflowDefinitionsUnchanged": true,
+    "previousWorkMergedPRs": [
+      36,
+      37
+    ],
+    "mergedMain": "a759033e0ad5348246750fb7d84ff288f35ec752"
+  },
+  "phoneUsedForValidation": false,
+  "realServiceConfiguration": "excluded from simulator and unsigned Release builds",
+  "liveFirebaseIntegrationTests": "excluded; demo native SDK emulator contract included",
+  "cloudKit": "codec tested; backend remains disabled and no ownership/schema deployment is claimed",
+  "logs": {
+    "build.log": {
+      "path": "/tmp/amr-phase3-sep30/build.log",
+      "sha256": "5b51627041b6cd4f381bbe8cf8650dad031c6c92f14342370f61c1b0da936711"
+    },
+    "native-tests.log": {
+      "path": "/tmp/amr-phase3-sep30/native-tests.log",
+      "sha256": "97f36ad3e4591a32680a96e209ab92b52e64e6caba5b38c31a21be1b986ead25"
+    },
+    "minimum-tests.log": {
+      "path": "/tmp/amr-phase3-sep30/minimum-tests.log",
+      "sha256": "a904f518258569a3fd47960099a7fd403edb220f44e09c810a23d2c57d998f36"
+    },
+    "tsan-tests.log": {
+      "path": "/tmp/amr-phase3-sep30/tsan-tests.log",
+      "sha256": "8f2fe4eda952529ed187ba6c44926f7caec8f8b86ae6ca019acc0f61490e9f65"
+    },
+    "release.log": {
+      "path": "/tmp/amr-phase3-sep30/release.log",
+      "sha256": "34601d8f1de9775377b45f77a9e8ecafac33aff62e44001fd1902551d2b9e8a3"
+    },
+    "swift6.log": {
+      "path": "/tmp/amr-phase3-sep30/swift6.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rules-tests.log": {
+      "path": "/tmp/amr-phase3-sep30/rules-tests.log",
+      "sha256": "8b165775d25045439dccb18e7fedc63f1c96acf6a9c7310a90f549e16e185f50"
+    },
+    "release-smoke.log": {
+      "path": "/tmp/amr-phase3-sep30/release-smoke.log",
+      "sha256": "728a8d33ae90146a9af2f7b351c6f507ad78904b333a6bc4bb4279cff23f7ef9"
+    }
+  },
+  "remaining": [
+    "Issue #7 physical two-device placement comparison and degraded-localization behavior",
+    "Vertical reference/support (#10), readiness (#17), consolidated placement state (#18)",
+    "Physical Release thermal/frame-pacing/memory and heading/occlusion acceptance",
+    "Account/privacy/moderation/asset-rights and other open release gates",
+    "Hosted CI when credits are available"
+  ]
+}

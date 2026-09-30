@@ -3,9 +3,10 @@ import Foundation
 /// Keeps committed placement fields authoritative until the asynchronous library
 /// publication catches up. Other fields always come from the current library row.
 struct AuthoredDropOverlay {
-    private struct Placement: Equatable {
+    struct Placement: Equatable {
         let latitude: Double
         let longitude: Double
+        let geographicQuality: GeographicQuality?
         let heightAboveGround: Double
         let scale: Double
         let facingDegrees: Double?
@@ -14,6 +15,7 @@ struct AuthoredDropOverlay {
         init(_ drop: GeoDrop) {
             latitude = drop.latitude
             longitude = drop.longitude
+            geographicQuality = drop.geographicQuality
             heightAboveGround = drop.heightAboveGround
             scale = drop.scale
             facingDegrees = drop.facingDegrees
@@ -24,6 +26,7 @@ struct AuthoredDropOverlay {
             var result = source
             result.latitude = latitude
             result.longitude = longitude
+            result.geographicQuality = geographicQuality
             result.heightAboveGround = heightAboveGround
             result.scale = scale
             result.facingDegrees = facingDegrees
@@ -47,6 +50,13 @@ struct AuthoredDropOverlay {
            let oldest = pending.min(by: { $0.value.order < $1.value.order })?.key {
             pending[oldest] = nil
         }
+    }
+
+    /// An asynchronous save may fail after a newer edit has been staged. Retire
+    /// only the failed placement, leaving the newer author's intent intact.
+    mutating func discardIfMatching(_ drop: GeoDrop) {
+        guard pending[drop.id]?.placement == Placement(drop) else { return }
+        pending[drop.id] = nil
     }
 
     mutating func resolve(_ libraryDrop: GeoDrop) -> GeoDrop {

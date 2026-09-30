@@ -43,6 +43,7 @@ private struct ARScreenContent: View {
     let holder: ARSessionHolder
     @ObservedObject var manager: GeoARSessionManager
     @ObservedObject var locationService: LocationService
+    @EnvironmentObject private var account: AccountService
     @EnvironmentObject private var reactionSession: ReactionSession
     @EnvironmentObject private var router: AppRouter
     private var watching: Bool { reactionSession.drop != nil }
@@ -89,10 +90,13 @@ private struct ARScreenContent: View {
                     holder.cameraDidDisappear()
                 }
             }
-            .alert("Precise positioning", isPresented: $showVPSDisclosure) {
+            .onChange(of: account.uid) { _, _ in
+                if !manager.canEditNearestDrop { pinningToSpot = false }
+            }
+            .alert("Visual positioning", isPresented: $showVPSDisclosure) {
                 Button("Continue") { vpsDisclosureShown = true }
             } message: {
-                Text("To pin content with street-level precision, visual data from this camera session is processed by Google's Visual Positioning Service.")
+                Text("To refine nearby AR placement, visual data from this camera session is processed by Google's Visual Positioning Service. Shared location accuracy can still vary.")
             }
     }
 
@@ -126,7 +130,7 @@ private struct ARScreenContent: View {
                     VStack {
                         HStack(spacing: 8) {
                             Image(systemName: "scope")
-                            Text("TAP THE EXACT SPOT FOR “\(manager.nearestDrop?.title.prefix(14) ?? "")”")
+                            Text("TAP A SURFACE FOR “\(manager.nearestDrop?.title.prefix(14) ?? "")”")
                                 .font(Night.mono(10)).kerning(0.8)
                             Button {
                                 pinningToSpot = false
@@ -291,7 +295,8 @@ private struct ARScreenContent: View {
             Spacer()
 
             let demoing = router.onboardingPhase == .fireworksDemo
-            if manager.nearestDrop != nil, manager.nearestDropIsRendered, !demoing {
+            if manager.nearestDrop != nil, manager.nearestDropIsRendered,
+               canShowEditControls, !demoing {
                 adjustPanel
                     .padding(.bottom, 8)
                     // Round 6 (counsel F-D5-01): a gesture whose control left
@@ -308,7 +313,8 @@ private struct ARScreenContent: View {
 
             if let drop = manager.nearestDrop,
                let distance = manager.nearestDropDistance,
-               let viewer = locationService.location, !demoing {
+               let viewer = locationService.location,
+               !manager.nearestIsLocalOnly, !demoing {
                 guidanceCard(drop: drop, distance: distance, viewer: viewer)
                     .padding(.bottom, 10)
             }
@@ -432,6 +438,13 @@ private struct ARScreenContent: View {
             Text(manager.statusText)
                 .font(.footnote)
                 .multilineTextAlignment(.center)
+
+            if let placement = manager.nearestPlacementDisclosure {
+                Text(placement)
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                    .multilineTextAlignment(.center)
+            }
 
             // Wave C round 2 (C20): persist/asset failures are visible IN AR.
             if let error = manager.persistErrorText {
@@ -632,6 +645,11 @@ private struct ARScreenContent: View {
 
     /// ADR-041: raycast the tapped pixel to a real surface and re-home the drop.
     private func handlePinTap(at location: CGPoint, in arView: ARView) {
+        guard canShowEditControls else {
+            pinningToSpot = false
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return
+        }
         let results = arView.raycast(
             from: location, allowing: .estimatedPlane, alignment: .any
         )
@@ -640,10 +658,20 @@ private struct ARScreenContent: View {
             return
         }
         let t = hit.worldTransform.columns.3
-        manager.relocateNearestDrop(to: SIMD3(t.x, t.y, t.z))
+        let outcome = manager.relocateNearestDrop(to: SIMD3(t.x, t.y, t.z))
+        guard outcome != .rejected else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            pinningToSpot = false
+            return
+        }
         syncSliders()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         withAnimation { pinningToSpot = false }
+    }
+
+    private var canShowEditControls: Bool {
+        _ = account.uid // account changes invalidate the role-dependent HUD
+        return manager.canEditNearestDrop
     }
 
     /// Clean screenshot: `ARView.snapshot` renders only the camera + content —

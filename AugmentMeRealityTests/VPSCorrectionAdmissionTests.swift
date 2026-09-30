@@ -180,4 +180,59 @@ final class VPSCorrectionAdmissionTests: XCTestCase {
                               version: version(4, anchor: 5), first: true), .glide)
         XCTAssertEqual(admission.pendingTransform(for: id)?.columns.3.x, 0.25)
     }
+
+    func testNewerCorrectionReplacesPendingPoseAndItsQualityTogether() {
+        var admission = VPSCorrectionAdmission()
+        let observedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let coarse = VPSPoseQuality(
+            horizontalAccuracyMeters: 8, yawAccuracyDegrees: 7,
+            observedAt: observedAt
+        )
+        let refined = VPSPoseQuality(
+            horizontalAccuracyMeters: 1, yawAccuracyDegrees: 2,
+            observedAt: observedAt.addingTimeInterval(1)
+        )
+        XCTAssertEqual(admission.accept(
+            id: id, transform: matrix(x: 1), pose: pose(x: 1),
+            version: version(1), quality: coarse, current: pose(),
+            cameraPosition: camera, isVisible: true, isFirst: false,
+            glideActive: false, isEditing: false, at: observedAt
+        ), .deferUntilOffscreen)
+        XCTAssertEqual(admission.pendingQuality(for: id), coarse)
+
+        XCTAssertEqual(admission.accept(
+            id: id, transform: matrix(x: 0.1), pose: pose(x: 0.1),
+            version: version(2), quality: refined, current: pose(),
+            cameraPosition: camera, isVisible: true, isFirst: false,
+            glideActive: false, isEditing: false,
+            at: observedAt.addingTimeInterval(1)
+        ), .deferUntilOffscreen)
+        XCTAssertEqual(admission.pendingTransform(for: id)?.columns.3.x, 0.1)
+        XCTAssertEqual(admission.pendingQuality(for: id), refined)
+        XCTAssertEqual(admission.acceptedQuality(for: id), refined)
+
+        XCTAssertEqual(admission.accept(
+            id: id, transform: matrix(x: 0.2), pose: pose(x: 0.2),
+            version: version(3), quality: refined, current: pose(),
+            cameraPosition: camera, isVisible: true, isFirst: false,
+            glideActive: false, isEditing: false,
+            at: observedAt.addingTimeInterval(4)
+        ), .reject)
+        XCTAssertEqual(admission.pendingQuality(for: id), refined)
+
+        let malformed = VPSPoseQuality(
+            horizontalAccuracyMeters: -1, yawAccuracyDegrees: 2,
+            observedAt: observedAt
+        )
+        XCTAssertEqual(admission.accept(
+            id: id, transform: matrix(x: 0.2), pose: pose(x: 0.2),
+            version: version(3), quality: malformed, current: pose(),
+            cameraPosition: camera, isVisible: true, isFirst: false,
+            glideActive: false, isEditing: false,
+            at: observedAt.addingTimeInterval(1)
+        ), .reject)
+        XCTAssertEqual(admission.pendingQuality(for: id), refined)
+        admission.remove(id)
+        XCTAssertNil(admission.acceptedQuality(for: id))
+    }
 }

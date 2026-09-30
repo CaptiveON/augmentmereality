@@ -295,7 +295,8 @@ final class DropLibraryTests: XCTestCase {
 
     private func makeLibrary(
         local: DropStore? = nil, cloud: DropStore? = nil, defaults: UserDefaults? = nil,
-        absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        absenceProbeTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        currentUID: @escaping @MainActor () -> String? = { "test-owner" }
     ) -> DropLibrary {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("library-\(UUID().uuidString).json")
@@ -303,7 +304,8 @@ final class DropLibraryTests: XCTestCase {
             localStore: local ?? LocalDropStore(fileURL: url),
             cloudStore: cloud,
             defaults: defaults ?? makeDefaults(),
-            absenceProbeTime: absenceProbeTime
+            absenceProbeTime: absenceProbeTime,
+            currentUID: currentUID
         )
     }
 
@@ -441,6 +443,7 @@ final class DropLibraryTests: XCTestCase {
         try await library.add(drop) // task 1 parks inside save
         try await waitUntil { await cloud.parkedSaveCount == 1 }
 
+        drop = try XCTUnwrap(library.drops.first(where: { $0.id == drop.id }))
         drop.message = "v2"
         try await library.update(drop) // supersedes: task 2 parks
         try await waitUntil { await cloud.parkedSaveCount == 2 }
@@ -671,6 +674,7 @@ final class DropLibraryTests: XCTestCase {
         try await library.add(drop)
         try await waitUntil { library.terminalSyncFailureIDs.contains(drop.id) }
 
+        drop = try XCTUnwrap(library.drops.first(where: { $0.id == drop.id }))
         drop.message = "edited while terminal"
         try await library.update(drop)
         XCTAssertTrue(
@@ -1019,6 +1023,7 @@ final class DropLibraryTests: XCTestCase {
         let id = UUID()
         let defaults = makeDefaults()
         defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        defaults.set([id.uuidString: "test-owner"], forKey: "pendingDeleteOwnerUIDs")
         let cloud = GatedCloudStore()
         await cloud.setFailDelete(DropStoreError.ackTimedOut, for: id)
         await cloud.setAbsenceCapability(.denied)
@@ -1050,6 +1055,7 @@ final class DropLibraryTests: XCTestCase {
         let id = UUID()
         let defaults = makeDefaults()
         defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        defaults.set([id.uuidString: "test-owner"], forKey: "pendingDeleteOwnerUIDs")
         let cloud = GatedCloudStore()
         await cloud.setFailDelete(DropStoreError.ackTimedOut, for: id)
         await cloud.setAbsenceCapability(.denied)
@@ -1073,6 +1079,7 @@ final class DropLibraryTests: XCTestCase {
         let id = UUID()
         let defaults = makeDefaults()
         defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        defaults.set([id.uuidString: "test-owner"], forKey: "pendingDeleteOwnerUIDs")
         let cloud = GatedCloudStore()
         await cloud.setFailDelete(DropStoreError.ackTimedOut, for: id)
         await cloud.setAbsenceCapability(.denied)
@@ -1132,12 +1139,13 @@ final class DropLibraryTests: XCTestCase {
         let drop = GeoDrop() // own drop: receivedViaLink nil
         try await library.add(drop)
         try await waitUntil { !library.pendingSyncIDs.contains(drop.id) } // acked
+        let owned = try XCTUnwrap(library.drops.first(where: { $0.id == drop.id }))
 
         await cloud.setFailDelete(DropStoreError.ackTimedOut, for: drop.id) // staged, unanswered
-        try await library.remove(drop)
+        try await library.remove(owned)
         try await waitUntil { library.pendingDeleteIDs.contains(drop.id) }
 
-        try await library.redeem(drop) // the user re-opens their own link
+        try await library.redeem(owned) // the user re-opens their own link
         XCTAssertFalse(library.pendingDeleteIDs.contains(drop.id))
         try await waitUntil {
             await cloud.saved.filter { $0 == drop.id }.count >= 2
@@ -1153,7 +1161,8 @@ final class DropLibraryTests: XCTestCase {
         let local = LocalDropStore(fileURL: url)
         let cloud = GatedCloudStore()
         let library = DropLibrary(
-            localStore: local, cloudStore: cloud, defaults: makeDefaults()
+            localStore: local, cloudStore: cloud, defaults: makeDefaults(),
+            currentUID: { "test-owner" }
         )
         var drop = GeoDrop()
         drop.message = "the last copy"
@@ -1229,7 +1238,7 @@ final class DropLibraryTests: XCTestCase {
         await cloud.setFailAllSaves(with: DropStoreError.notSignedIn) // never acked here
         let library = makeLibrary(cloud: cloud)
         var drop = GeoDrop()
-        drop.ownerUid = "stamped-by-a-previous-session"
+        drop.ownerUid = "test-owner" // server-stamped in an earlier session
         try await library.add(drop)
         try await waitUntil { await cloud.saveAttempts > 0 }
 
@@ -1390,13 +1399,14 @@ final class DropLibraryTests: XCTestCase {
         let drop = GeoDrop() // own drop
         try await library.add(drop)
         try await waitUntil { !library.pendingSyncIDs.contains(drop.id) }
+        let owned = try XCTUnwrap(library.drops.first(where: { $0.id == drop.id }))
         await cloud.setFailDelete(DropStoreError.ackTimedOut, for: drop.id)
-        try await library.remove(drop)
+        try await library.remove(owned)
         try await waitUntil { library.pendingDeleteIDs.contains(drop.id) }
 
         await local.setFailSave(true)
         do {
-            try await library.redeem(drop)
+            try await library.redeem(owned)
             XCTFail("a failed persist must throw")
         } catch {}
         XCTAssertFalse(
@@ -1408,7 +1418,7 @@ final class DropLibraryTests: XCTestCase {
         } // the staged-delete recall ran regardless
 
         await local.setFailSave(false)
-        try await library.redeem(drop)
+        try await library.redeem(owned)
         XCTAssertTrue(library.drops.contains { $0.id == drop.id }, "the retry restores for real")
     }
 
@@ -1647,6 +1657,443 @@ final class DropLibraryTests: XCTestCase {
         XCTAssertTrue(relaunched.lostRowIDs.isEmpty)
         XCTAssertNil(relaunched.storageProblemText)
     }
+
+    // MARK: - Ownership commands and identity transitions
+
+    func testReceivedCopyRejectsForgedUpdateAndShareAndRemovesOnlyLocally() async throws {
+        let cloud = GatedCloudStore()
+        let library = makeLibrary(cloud: cloud)
+        var received = GeoDrop()
+        received.ownerUid = "sender"
+        received.receivedViaLink = true
+        try await library.redeem(received)
+
+        var forged = received
+        forged.ownerUid = "test-owner"
+        forged.receivedViaLink = nil
+        forged.visibility = "link"
+        do {
+            try await library.update(forged)
+            XCTFail("a caller must not strip received metadata to edit")
+        } catch {}
+        do {
+            _ = try await library.share(id: received.id, recipientName: "Someone")
+            XCTFail("a received copy must not become a recipient-authored link")
+        } catch {}
+        let saveAttempts = await cloud.saveAttempts
+        XCTAssertEqual(saveAttempts, 0)
+        XCTAssertEqual(library.drops.first?.visibility, "private")
+
+        try await library.removeLocalCopy(id: received.id)
+        XCTAssertFalse(library.drops.contains { $0.id == received.id })
+        XCTAssertFalse(library.pendingDeleteIDs.contains(received.id))
+        let deleteAttempts = await cloud.deleteAttempts
+        XCTAssertEqual(deleteAttempts, 0)
+    }
+
+    func testPreviousAccountRowIsUnresolvedAndCannotBeLocallyDiscarded() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        var previous = GeoDrop()
+        previous.ownerUid = "previous-account"
+        try await local.save(previous)
+        let library = makeLibrary(local: local, cloud: cloud)
+        await library.refresh(near: nil)
+
+        XCTAssertEqual(library.ownershipRole(id: previous.id), .unresolved)
+        XCTAssertFalse(library.canEditLocally(id: previous.id))
+        XCTAssertFalse(library.canRemoveLocalCopy(id: previous.id))
+        do {
+            try await library.removeLocalCopy(id: previous.id)
+            XCTFail("a prior account's only local copy must stay recoverable")
+        } catch {}
+        XCTAssertTrue(library.drops.contains { $0.id == previous.id })
+        let deleteAttempts = await cloud.deleteAttempts
+        XCTAssertEqual(deleteAttempts, 0)
+    }
+
+    func testLegacyLocalClaimNeedsCloudAckBeforeSharing() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        let legacy = GeoDrop()
+        try await local.save(legacy)
+        let library = makeLibrary(local: local, cloud: cloud)
+        await library.refresh(near: nil)
+
+        XCTAssertEqual(library.ownershipRole(id: legacy.id), .legacyLocal)
+        XCTAssertTrue(library.canEditLocally(id: legacy.id))
+        XCTAssertFalse(library.canShare(id: legacy.id))
+        XCTAssertFalse(library.canRemoveLocalCopy(id: legacy.id))
+        do {
+            _ = try await library.share(id: legacy.id, recipientName: nil)
+            XCTFail("a legacy row must complete its ownership transition")
+        } catch {}
+
+        try library.requestLegacyOwnershipClaim(id: legacy.id)
+        try await waitUntil {
+            library.drops.first(where: { $0.id == legacy.id })?.ownerUid == "test-owner"
+                && !library.pendingSyncIDs.contains(legacy.id)
+        }
+        XCTAssertTrue(library.canShare(id: legacy.id))
+        let saved = await cloud.saved
+        XCTAssertEqual(saved, [legacy.id])
+    }
+
+    func testPreAuthAddStillSyncsWhenAuthReadyRefreshFinishesBeforeDiskSave() async throws {
+        let local = FlakyLocalStore()
+        await local.setGateSaves(true)
+        let cloud = GatedCloudStore()
+        var uid: String?
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        let drop = GeoDrop()
+        let addTask = Task { try await library.add(drop) }
+        try await waitUntil { await local.parkedSaveCount == 1 }
+
+        uid = "new-owner"
+        await library.authDidBecomeReady(uid: "new-owner")
+        await local.setGateSaves(false)
+        await local.releaseAllSaves()
+        try await addTask.value
+        try await waitUntil {
+            library.drops.first(where: { $0.id == drop.id })?.ownerUid == "new-owner"
+                && !library.pendingSyncIDs.contains(drop.id)
+        }
+        let saved = await cloud.saved
+        XCTAssertEqual(saved, [drop.id])
+    }
+
+    func testPreAuthAddInvalidatesRefreshHoldingAnEmptyLocalSnapshot() async throws {
+        let local = FlakyLocalStore()
+        await local.setGateSaves(true)
+        let cloud = GatedCloudStore()
+        await cloud.setGateLoads(true)
+        var uid: String?
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        let drop = GeoDrop()
+        let addTask = Task { try await library.add(drop) }
+        try await waitUntil { await local.parkedSaveCount == 1 }
+
+        uid = "new-owner"
+        let refreshTask = Task { await library.authDidBecomeReady(uid: "new-owner") }
+        try await waitUntil { await cloud.parkedLoadCount == 1 }
+        await local.setGateSaves(false)
+        await local.releaseAllSaves()
+        try await addTask.value
+        await cloud.releaseAllLoads()
+        await refreshTask.value
+
+        try await waitUntil {
+            library.drops.first(where: { $0.id == drop.id })?.ownerUid == "new-owner"
+                && !library.pendingSyncIDs.contains(drop.id)
+        }
+        let saved = await cloud.saved
+        XCTAssertEqual(saved, [drop.id])
+    }
+
+    func testOwnerlessEditDuringAccountSwitchKeepsOriginBoundOutbox() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        var uid: String? = "owner-A"
+        var legacy = GeoDrop()
+        legacy.message = "before"
+        try await local.save(legacy)
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        await library.refresh(near: nil)
+
+        await local.setGateSaves(true)
+        var edited = legacy
+        edited.message = "after"
+        let editTask = Task { try await library.update(edited) }
+        try await waitUntil { await local.parkedSaveCount == 1 }
+        uid = "owner-B"
+        await local.setGateSaves(false)
+        await local.releaseAllSaves()
+        do {
+            try await editTask.value
+            XCTFail("the old account's edit cannot complete under a new UID")
+        } catch {}
+
+        XCTAssertEqual(library.ownershipRole(id: legacy.id), .unresolved)
+        XCTAssertTrue(library.pendingSyncIDs.contains(legacy.id))
+        library.reconcileCloud()
+        let attemptsUnderB = await cloud.saveAttempts
+        XCTAssertEqual(attemptsUnderB, 0)
+        uid = "owner-A"
+        library.reconcileCloud()
+        try await waitUntil {
+            library.drops.first(where: { $0.id == legacy.id })?.ownerUid == "owner-A"
+                && !library.pendingSyncIDs.contains(legacy.id)
+        }
+        XCTAssertEqual(library.drops.first?.message, "after")
+        let saved = await cloud.saved
+        XCTAssertEqual(saved, [legacy.id])
+    }
+
+    func testShareRechecksIdentityAfterDelayedLocalSave() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        var uid: String? = "owner-A"
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        let drop = GeoDrop()
+        try await library.add(drop)
+        try await waitUntil { !library.pendingSyncIDs.contains(drop.id) }
+        let savesBeforeShare = await cloud.saved.count
+
+        await local.setGateSaves(true)
+        let shareTask = Task { try await library.share(id: drop.id, recipientName: "Friend") }
+        try await waitUntil { await local.parkedSaveCount == 1 }
+        uid = "owner-B"
+        await local.setGateSaves(false)
+        await local.releaseAllSaves()
+        do {
+            _ = try await shareTask.value
+            XCTFail("the activity sheet must not open after an account change")
+        } catch {}
+        XCTAssertTrue(library.pendingSyncIDs.contains(drop.id))
+        library.reconcileCloud()
+        let attemptedUnderB = await cloud.saved.count
+        XCTAssertEqual(attemptedUnderB, savesBeforeShare)
+
+        uid = "owner-A"
+        library.reconcileCloud()
+        try await waitUntil { await cloud.saved.count == savesBeforeShare + 1 }
+        XCTAssertFalse(library.pendingSyncIDs.contains(drop.id))
+    }
+
+    func testOwnLinkPromotesReceivedMarkerWithoutLosingLocalPlacement() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        var uid: String? = "viewer"
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        var received = GeoDrop()
+        received.ownerUid = "creator"
+        received.receivedViaLink = true
+        received.heightAboveGround = 7
+        try await library.redeem(received)
+
+        uid = "creator"
+        var fetchedOwn = received
+        fetchedOwn.receivedViaLink = nil
+        fetchedOwn.heightAboveGround = 2 // server copy older than local placement
+        try await library.redeem(fetchedOwn)
+        XCTAssertEqual(library.drops.count, 1)
+        XCTAssertEqual(library.ownershipRole(id: received.id), .owned)
+        XCTAssertNil(library.drops.first?.receivedViaLink)
+        XCTAssertEqual(library.drops.first?.heightAboveGround, 7)
+        let saveAttempts = await cloud.saveAttempts
+        XCTAssertEqual(saveAttempts, 0)
+    }
+
+    func testReceivedLocalRemovalWinsOverRefreshThatReadOldDiskRow() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        let library = makeLibrary(local: local, cloud: cloud)
+        var received = GeoDrop()
+        received.ownerUid = "sender"
+        received.receivedViaLink = true
+        try await library.redeem(received)
+
+        await local.setGateDeletes(true)
+        let removal = Task { try await library.removeLocalCopy(id: received.id) }
+        try await waitUntil { await local.parkedDeleteCount == 1 }
+        await cloud.setGateLoads(true)
+        let refresh = Task { await library.refresh(near: nil) }
+        try await waitUntil { await cloud.parkedLoadCount == 1 }
+
+        await local.releaseAllDeletes()
+        try await removal.value
+        XCTAssertFalse(library.drops.contains { $0.id == received.id })
+        await cloud.releaseAllLoads()
+        await refresh.value
+        XCTAssertFalse(library.drops.contains { $0.id == received.id })
+        let deleteAttempts = await cloud.deleteAttempts
+        XCTAssertEqual(deleteAttempts, 0)
+    }
+
+    func testPendingCloudDeleteReplaysOnlyForItsOriginatingUID() async throws {
+        let cloud = GatedCloudStore()
+        var uid: String? = "owner-A"
+        let library = makeLibrary(cloud: cloud, currentUID: { uid })
+        let drop = GeoDrop()
+        try await library.add(drop)
+        try await waitUntil { !library.pendingSyncIDs.contains(drop.id) }
+        await cloud.setFailDelete(DropStoreError.ackTimedOut, for: drop.id)
+        try await library.removeOwned(id: drop.id)
+        try await waitUntil { await cloud.deleteAttempts == 1 }
+        XCTAssertTrue(library.pendingDeleteIDs.contains(drop.id))
+
+        uid = "owner-B"
+        await cloud.setFailDelete(nil, for: drop.id)
+        library.reconcileCloud()
+        let attemptsUnderB = await cloud.deleteAttempts
+        XCTAssertEqual(attemptsUnderB, 1)
+        XCTAssertTrue(library.pendingDeleteIDs.contains(drop.id))
+
+        uid = "owner-A"
+        library.reconcileCloud()
+        try await waitUntil { await cloud.deleteAttempts == 2 }
+        try await waitUntil { !library.pendingDeleteIDs.contains(drop.id) }
+    }
+
+    func testPendingDeleteOwnerSurvivesRelaunchAndCannotReplayUnderAnotherUID() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        let defaults = makeDefaults()
+        var uid: String? = "owner-A"
+        let first = makeLibrary(
+            local: local, cloud: cloud, defaults: defaults, currentUID: { uid }
+        )
+        let drop = GeoDrop()
+        try await first.add(drop)
+        try await waitUntil { !first.pendingSyncIDs.contains(drop.id) }
+        await cloud.setFailDelete(DropStoreError.ackTimedOut, for: drop.id)
+        try await first.removeOwned(id: drop.id)
+        try await waitUntil { await cloud.deleteAttempts == 1 }
+
+        uid = "owner-B"
+        let relaunched = makeLibrary(
+            local: local, cloud: cloud, defaults: defaults, currentUID: { uid }
+        )
+        await relaunched.refresh(near: nil)
+        await relaunched.waitForCloudDeleteAttempt(id: drop.id)
+        XCTAssertTrue(relaunched.pendingDeleteIDs.contains(drop.id))
+        let attemptsUnderB = await cloud.deleteAttempts
+        XCTAssertEqual(attemptsUnderB, 1)
+
+        uid = "owner-A"
+        await cloud.setFailDelete(nil, for: drop.id)
+        relaunched.reconcileCloud()
+        try await waitUntil { await cloud.deleteAttempts == 2 }
+        try await waitUntil { !relaunched.pendingDeleteIDs.contains(drop.id) }
+    }
+
+    func testDeleteRefusalAfterAccountSwitchDoesNotSpendOriginalOwnersAttempts() async throws {
+        let cloud = GatedCloudStore()
+        var uid: String? = "owner-A"
+        let library = makeLibrary(cloud: cloud, currentUID: { uid })
+        let drop = GeoDrop()
+        try await library.add(drop)
+        try await waitUntil { !library.pendingSyncIDs.contains(drop.id) }
+
+        let refusal = NSError(
+            domain: DropStoreError.firestoreErrorDomain, code: 7,
+            userInfo: [NSLocalizedDescriptionKey: "permission denied"]
+        )
+        await cloud.setFailDelete(refusal, for: drop.id)
+        await cloud.setGateDeletes(true)
+        try await library.removeOwned(id: drop.id)
+        try await waitUntil { await cloud.parkedDeleteCount == 1 }
+        uid = "owner-B"
+        await cloud.setGateDeletes(false)
+        await cloud.releaseAllDeletes()
+        await library.waitForCloudDeleteAttempt(id: drop.id)
+        XCTAssertTrue(library.pendingDeleteIDs.contains(drop.id))
+
+        uid = "owner-A"
+        for attempt in 2...3 {
+            library.reconcileCloud()
+            try await waitUntil { await cloud.deleteAttempts == attempt }
+            await library.waitForCloudDeleteAttempt(id: drop.id)
+            XCTAssertTrue(library.pendingDeleteIDs.contains(drop.id))
+            XCTAssertFalse(library.unresolvedDeleteIDs.contains(drop.id))
+        }
+        library.reconcileCloud()
+        try await waitUntil { await cloud.deleteAttempts == 4 }
+        await library.waitForCloudDeleteAttempt(id: drop.id)
+        XCTAssertFalse(library.pendingDeleteIDs.contains(drop.id))
+        XCTAssertTrue(library.unresolvedDeleteIDs.contains(drop.id))
+    }
+
+    func testOwnLinkReopenDuringAccountSwitchKeepsOriginBoundRecall() async throws {
+        let local = FlakyLocalStore()
+        let cloud = GatedCloudStore()
+        var uid: String? = "owner-A"
+        let library = makeLibrary(local: local, cloud: cloud, currentUID: { uid })
+        let created = GeoDrop()
+        try await library.add(created)
+        try await waitUntil { !library.pendingSyncIDs.contains(created.id) }
+        let owned = try XCTUnwrap(library.drops.first(where: { $0.id == created.id }))
+        await cloud.setFailDelete(DropStoreError.ackTimedOut, for: owned.id)
+        try await library.removeOwned(id: owned.id)
+        try await waitUntil { library.pendingDeleteIDs.contains(owned.id) }
+        let savesBeforeReopen = await cloud.saved.count
+
+        await local.setGateSaves(true)
+        let reopen = Task { try await library.redeem(owned) }
+        try await waitUntil { await local.parkedSaveCount == 1 }
+        uid = "owner-B"
+        await local.setGateSaves(false)
+        await local.releaseAllSaves()
+        try await reopen.value
+        XCTAssertTrue(library.pendingSyncIDs.contains(owned.id))
+        XCTAssertFalse(library.pendingDeleteIDs.contains(owned.id))
+        let savesUnderB = await cloud.saved.count
+        XCTAssertEqual(savesUnderB, savesBeforeReopen)
+
+        uid = "owner-A"
+        library.reconcileCloud()
+        try await waitUntil { await cloud.saved.count == savesBeforeReopen + 1 }
+        XCTAssertFalse(library.pendingSyncIDs.contains(owned.id))
+    }
+
+    func testOldIDOnlyTombstoneNeverIssuesUnattributedRemoteDelete() async throws {
+        let defaults = makeDefaults()
+        let id = UUID()
+        defaults.set([id.uuidString], forKey: "pendingDeleteDropIDs")
+        let cloud = GatedCloudStore()
+        let library = makeLibrary(cloud: cloud, defaults: defaults)
+        library.reconcileCloud()
+        try await waitUntil { library.unresolvedDeleteIDs.contains(id) }
+        XCTAssertFalse(library.pendingDeleteIDs.contains(id))
+        let deleteAttempts = await cloud.deleteAttempts
+        XCTAssertEqual(deleteAttempts, 0)
+    }
+
+    func testDisplayedSectionMultiRowDeletionUsesOnlySelectedIDs() async throws {
+        let cloud = GatedCloudStore()
+        let library = makeLibrary(cloud: cloud)
+        var first = GeoDrop()
+        first.createdAt = Date(timeIntervalSince1970: 1)
+        var second = GeoDrop()
+        second.createdAt = Date(timeIntervalSince1970: 3)
+        var third = GeoDrop()
+        third.createdAt = Date(timeIntervalSince1970: 5)
+        try await library.add(first)
+        try await library.add(second)
+        try await library.add(third)
+        var received = GeoDrop()
+        received.ownerUid = "sender"
+        received.receivedViaLink = true
+        received.createdAt = Date(timeIntervalSince1970: 4)
+        try await library.redeem(received)
+        let displayed = library.drops.filter {
+            library.ownershipRole(id: $0.id) == .owned
+        }.sorted { $0.createdAt > $1.createdAt }
+        let offsets = IndexSet(integer: 0).union(IndexSet(integer: 2))
+        let ids = DropListSelection.ids(in: displayed, at: offsets)
+        XCTAssertEqual(ids, [third.id, first.id])
+        await library.removeOwned(ids: ids)
+        try await waitUntil { await cloud.deleteAttempts == 2 }
+        let deleted = await cloud.deleted
+        XCTAssertEqual(Set(deleted), Set(ids))
+        XCTAssertEqual(Set(library.drops.map(\.id)), [second.id, received.id])
+        XCTAssertFalse(library.pendingDeleteIDs.contains(received.id))
+    }
+
+    func testDisplayedDeleteOffsetsUseRenderedIDsAndIgnoreStaleIndexes() {
+        let rendered = [GeoDrop(), GeoDrop(), GeoDrop()]
+        let laterOrder = Array(rendered.reversed())
+        XCTAssertNotEqual(rendered[0].id, laterOrder[0].id)
+
+        let selected = DropListSelection.ids(
+            in: rendered,
+            at: IndexSet(integer: 0).union(IndexSet(integer: 7))
+        )
+        XCTAssertEqual(selected, [rendered[0].id])
+        XCTAssertNotEqual(selected, DropListSelection.ids(
+            in: laterOrder, at: IndexSet(integer: 0)
+        ))
+    }
 }
 
 /// Round 8 (counsel B1): the refusal taxonomy — driven through the exposed
@@ -1722,6 +2169,7 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
     /// a row is NOT the same fact, and the library must never treat it as one.
     private var serverAbsentIDs: Set<UUID> = []
     private(set) var saved: [UUID] = []
+    private(set) var deleted: [UUID] = []
     private(set) var saveAttempts = 0
     private(set) var deleteAttempts = 0
 
@@ -1811,6 +2259,7 @@ actor GatedCloudStore: DropStore, DropAbsenceVerifying, ProvenancedDropStore {
 
     func delete(_ drop: GeoDrop) async throws {
         deleteAttempts += 1
+        deleted.append(drop.id)
         if gateDeletes {
             await withCheckedContinuation { parkedDeletes.append($0) }
         }
@@ -1832,14 +2281,24 @@ actor FlakyLocalStore: DropStore, LocalStoreDiagnostics {
     /// MODES, not only its isolation — every abort/rollback branch must be
     /// enterable by a test.
     private var failSave = false
+    private var gateSaves = false
+    private var parkedSaves: [CheckedContinuation<Void, Never>] = []
     private var gateDeletes = false
     private var parkedDeletes: [CheckedContinuation<Void, Never>] = []
 
     func setThrowOnLoad(_ on: Bool) { throwOnLoad = on }
     func setFailDelete(_ ids: Set<UUID>) { failDeleteIDs = ids }
     func setFailSave(_ on: Bool) { failSave = on }
+    func setGateSaves(_ on: Bool) { gateSaves = on }
     func setGateDeletes(_ on: Bool) { gateDeletes = on }
+    var parkedSaveCount: Int { parkedSaves.count }
     var parkedDeleteCount: Int { parkedDeletes.count }
+
+    func releaseAllSaves() {
+        let parked = parkedSaves
+        parkedSaves = []
+        parked.forEach { $0.resume() }
+    }
 
     func releaseAllDeletes() {
         let parked = parkedDeletes
@@ -1867,6 +2326,9 @@ actor FlakyLocalStore: DropStore, LocalStoreDiagnostics {
 
     @discardableResult
     func save(_ drop: GeoDrop) async throws -> GeoDrop {
+        if gateSaves {
+            await withCheckedContinuation { parkedSaves.append($0) }
+        }
         if failSave {
             throw NSError(
                 domain: "test", code: 3,

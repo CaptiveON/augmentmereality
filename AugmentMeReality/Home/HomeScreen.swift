@@ -52,13 +52,13 @@ struct HomeScreen: View {
 
     private var receivedDrops: [GeoDrop] {
         library.drops
-            .filter { $0.receivedViaLink == true }
+            .filter { library.ownershipRole(id: $0.id) == .received }
             .sorted { distance(to: $0) < distance(to: $1) }
     }
 
     private var inMotionDrops: [GeoDrop] {
         library.drops.filter {
-            $0.receivedViaLink != true && $0.visibility != "private"
+            library.ownershipRole(id: $0.id) == .owned && $0.visibility != "private"
         }
     }
 

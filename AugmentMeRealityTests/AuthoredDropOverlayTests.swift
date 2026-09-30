@@ -67,4 +67,55 @@ final class AuthoredDropOverlayTests: XCTestCase {
         XCTAssertEqual(overlay.resolve(drops[0]), drops[0])
         XCTAssertEqual(overlay.resolve(drops[128]).heightAboveGround, 138)
     }
+
+    func testPendingGeographicQualityStaysWithTheAuthoredCoordinate() {
+        var overlay = AuthoredDropOverlay()
+        let stored = GeoDrop(latitude: 51.5, longitude: -0.12)
+        var authored = stored
+        authored.latitude = 51.50001
+        authored.geographicQuality = GeographicQuality(
+            source: GeographicQuality.Source.vpsProjection,
+            sensorHorizontalAccuracyMeters: 0.7,
+            cameraHorizontalAccuracyMeters: 0.8,
+            yawAccuracyDegrees: 2,
+            projectionDistanceMeters: 4,
+            measuredAt: Date()
+        )
+        overlay.stage(authored)
+
+        var refreshed = stored
+        refreshed.message = "new metadata"
+        let duringSave = overlay.resolve(refreshed)
+        XCTAssertEqual(duringSave.latitude, authored.latitude)
+        XCTAssertEqual(duringSave.geographicQuality, authored.geographicQuality)
+        XCTAssertEqual(duringSave.message, "new metadata")
+        XCTAssertEqual(overlay.resolve(authored), authored)
+    }
+
+    func testFailedGeographicSaveRetiresOnlyItsOwnPendingPlacement() {
+        var overlay = AuthoredDropOverlay()
+        let stored = GeoDrop(latitude: 51.5, longitude: -0.12)
+        var failed = stored
+        failed.latitude += 0.00001
+        failed.geographicQuality = GeographicQuality(
+            source: GeographicQuality.Source.vpsProjection,
+            sensorHorizontalAccuracyMeters: 0.7,
+            cameraHorizontalAccuracyMeters: 0.8,
+            yawAccuracyDegrees: 2,
+            projectionDistanceMeters: 4,
+            measuredAt: Date()
+        )
+        overlay.stage(failed)
+        overlay.discardIfMatching(failed)
+        XCTAssertEqual(overlay.resolve(stored), stored,
+                       "A failed disk write must not advertise its VPS coordinate on refresh")
+
+        var newer = failed
+        newer.longitude -= 0.00001
+        overlay.stage(failed)
+        overlay.stage(newer)
+        overlay.discardIfMatching(failed)
+        XCTAssertEqual(overlay.resolve(stored), newer,
+                       "A late failure cannot erase a newer authored placement")
+    }
 }
