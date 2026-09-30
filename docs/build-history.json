@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "updatedOn": "2026-09-30",
+  "scope": "Verified implementation candidates since September 29; earlier baseline and release records are linked in BUILD-AND-ISSUE-STATUS.md. Failed/intermediate attempts remain in each phase record, not counted as delivered builds.",
+  "latestValidatedAppCommit": "0210d6ab7d3cbadb087c75766515999f03bd8a19",
+  "latestValidatedAppMainMerge": "49dbaf48078b5dc474ac524ad41ec7584659a2fe",
+  "lastRecordedPhoneInstallCommit": "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10",
+  "hostedCI": "deferred at owner request; no hosted pass claimed; workflows intact",
+  "builds": [
+    {
+      "sourceCommit": "243eed43fa2b9facd9b9dd3f289d36da2f0d4751",
+      "mergedPullRequest": 36,
+      "mergedMainCommit": "a5625924128135a1516a02071ded73a46236bbb8",
+      "summary": "Recovery, fixed scale, geodesic/frame math, bounded preparation, transit freshness, storage incidents and unsupported counters",
+      "issues": [
+        4,
+        5,
+        6,
+        9,
+        19,
+        25,
+        28,
+        29
+      ],
+      "verifiedAt": "2026-09-29T22:20:40.612001+00:00",
+      "statusRecord": "docs/IMPLEMENTATION-STATUS-2026-09-29.md",
+      "verificationRecord": "docs/implementation-evidence/2026-09-29/verification.json",
+      "testedSourceRecord": "docs/implementation-evidence/2026-09-29/tested-source.json",
+      "appTestSourceAggregateSHA256": "de0e6a9a4c3d8d16d10c00f6c01898fb120f643a6829e0d74cd19e5bcc5045fe",
+      "tests": {
+        "currentIOS26_5": {
+          "passed": 246,
+          "failed": 0,
+          "skipped": 0,
+          "nativeEmulatorContract": "passed"
+        },
+        "minimumIOS17_0_1": {
+          "passed": 245,
+          "failed": 0,
+          "skipped": 1,
+          "skipReason": "native emulator contract opt-in only; exercised in current lane"
+        }
+      },
+      "physicalAcceptance": "not established by these local checks",
+      "mergeScope": "PR #36 includes the later eb63a99 runtime batch; its merge is not tree-identical to this intermediate candidate.",
+      "deliveryReceipt": "docs/implementation-evidence/build-deliveries/243eed4.json",
+      "phoneInstallation": "recorded success; no field acceptance"
+    },
+    {
+      "sourceCommit": "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+      "mergedPullRequest": 36,
+      "mergedMainCommit": "a5625924128135a1516a02071ded73a46236bbb8",
+      "summary": "Scene budgets, owned streetscape snapshots, render leases and AR executor boundaries",
+      "issues": [
+        8,
+        9
+      ],
+      "verifiedAt": "2026-09-29T23:12:31.661901+00:00",
+      "statusRecord": "docs/IMPLEMENTATION-STATUS-2026-09-30.md",
+      "verificationRecord": "docs/implementation-evidence/2026-09-30-runtime/verification.json",
+      "testedSourceRecord": "docs/implementation-evidence/2026-09-30-runtime/tested-source.json",
+      "appTestSourceAggregateSHA256": "c1992d3dbc9d483744f1c2c7a00637eba45bb8336c08129b2149c9ef928e1d66",
+      "tests": {
+        "current": {
+          "totalTestCount": 267,
+          "passedTests": 267,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        },
+        "minimum": {
+          "totalTestCount": 267,
+          "passedTests": 266,
+          "failedTests": 0,
+          "skippedTests": 1,
+          "result": "Passed"
+        },
+        "tsan": {
+          "totalTestCount": 30,
+          "passedTests": 30,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        }
+      },
+      "physicalAcceptance": "not established by these local checks",
+      "historicalLimit": "Release passed with 19 app warnings; whole-app Swift 6 SIL had 19 storage errors. Repaired in 684f6b4.",
+      "deliveryReceipt": "docs/implementation-evidence/build-deliveries/eb63a99.json",
+      "phoneInstallation": "recorded success; no field acceptance"
+    },
+    {
+      "sourceCommit": "684f6b40b5da18d44b600e8db88396c85ab81a96",
+      "mergedPullRequest": 37,
+      "mergedMainCommit": "a759033e0ad5348246750fb7d84ff288f35ec752",
+      "summary": "Latest-wins VPS corrections and checked storage ownership",
+      "issues": [
+        7,
+        8
+      ],
+      "verifiedAt": "2026-09-29T23:52:22.660829+00:00",
+      "statusRecord": "docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE2.md",
+      "verificationRecord": "docs/implementation-evidence/2026-09-30-phase2/verification.json",
+      "testedSourceRecord": "docs/implementation-evidence/2026-09-30-phase2/tested-source.json",
+      "appTestSourceAggregateSHA256": "6506ae7890826fb1b0b413e7b924f99e758b5c5e48316ae54248b9ac4f5bf049",
+      "tests": {
+        "current": {
+          "totalTestCount": 283,
+          "passedTests": 283,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        },
+        "minimum": {
+          "totalTestCount": 283,
+          "passedTests": 282,
+          "failedTests": 0,
+          "skippedTests": 1,
+          "result": "Passed"
+        },
+        "tsan": {
+          "totalTestCount": 105,
+          "passedTests": 105,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        }
+      },
+      "physicalAcceptance": "not established by these local checks",
+      "deliveryReceipt": "docs/implementation-evidence/build-deliveries/684f6b4.json",
+      "phoneInstallation": "recorded success; no field acceptance"
+    },
+    {
+      "sourceCommit": "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10",
+      "mergedPullRequest": 38,
+      "mergedMainCommit": "3a26e0b5bc1ae08a0c22e680df7a7f4963a738ed",
+      "summary": "Placement provenance and owner/recipient permissions",
+      "issues": [
+        7,
+        21
+      ],
+      "verifiedAt": "2026-09-30T00:38:03.460249+00:00",
+      "statusRecord": "docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE3.md",
+      "verificationRecord": "docs/implementation-evidence/2026-09-30-phase3/verification.json",
+      "testedSourceRecord": "docs/implementation-evidence/2026-09-30-phase3/tested-source.json",
+      "appTestSourceAggregateSHA256": "3d5a57a5fd357df5ffa1ad10f4784d0394c6ba7998869072edf1672a250abc04",
+      "tests": {
+        "current": {
+          "totalTestCount": 318,
+          "passedTests": 318,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        },
+        "minimum": {
+          "totalTestCount": 318,
+          "passedTests": 317,
+          "failedTests": 0,
+          "skippedTests": 1,
+          "result": "Passed"
+        },
+        "tsan": {
+          "totalTestCount": 128,
+          "passedTests": 128,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        }
+      },
+      "physicalAcceptance": "not established by these local checks",
+      "deliveryReceipt": "docs/implementation-evidence/build-deliveries/1b433e7.json",
+      "phoneInstallation": "recorded success; no field acceptance"
+    },
+    {
+      "sourceCommit": "0210d6ab7d3cbadb087c75766515999f03bd8a19",
+      "mergedPullRequest": 39,
+      "mergedMainCommit": "49dbaf48078b5dc474ac524ad41ec7584659a2fe",
+      "summary": "Vertical support, camera readiness and bounded owner-library paging",
+      "issues": [
+        10,
+        17,
+        26
+      ],
+      "verifiedAt": "2026-09-30T01:32:15.767262+00:00",
+      "statusRecord": "docs/IMPLEMENTATION-STATUS-2026-09-30-PHASE4.md",
+      "verificationRecord": "docs/implementation-evidence/2026-09-30-phase4/verification.json",
+      "testedSourceRecord": "docs/implementation-evidence/2026-09-30-phase4/tested-source.json",
+      "appTestSourceAggregateSHA256": "01215322ddcd7730fc39e134778d7095a7ee6b72d2fc1df83f1159a5e35f1f15",
+      "tests": {
+        "current": {
+          "totalTestCount": 366,
+          "passedTests": 366,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        },
+        "minimum": {
+          "totalTestCount": 366,
+          "passedTests": 364,
+          "failedTests": 0,
+          "skippedTests": 2,
+          "result": "Passed"
+        },
+        "tsan": {
+          "totalTestCount": 174,
+          "passedTests": 174,
+          "failedTests": 0,
+          "skippedTests": 0,
+          "result": "Passed"
+        }
+      },
+      "physicalAcceptance": "not established by these local checks",
+      "phoneInstallation": "not installed in phase 4; last recorded installation is 1b433e7"
+    }
+  ]
+}

@@ -1,0 +1,186 @@
+import ARKit
+import CoreLocation
+import RealityKit
+import XCTest
+@testable import AugmentMeReality
+
+/// Uses unattached RealityKit entities; no ARView or camera session is started.
+@MainActor
+final class PlacedObjectStateTests: XCTestCase {
+    private func visual(
+        under root: AnchorEntity
+    ) -> (PlacedObjectState.Visual, Entity, Entity, ModelEntity, ModelEntity) {
+        let holder = Entity()
+        holder.position = [2, 3, 4]
+        root.addChild(holder)
+        let content = Entity()
+        let marker = ModelEntity()
+        let disc = ModelEntity()
+        holder.addChild(content)
+        holder.addChild(marker)
+        holder.addChild(disc)
+        return (
+            .init(holder: holder, content: content, marker: marker,
+                  groundDisc: disc, contentReady: true, revealed: true),
+            holder, content, marker, disc
+        )
+    }
+
+    func testRoomVisualEvictionKeepsRoomPoseAndDrop() throws {
+        let registry = PlacedObjectRegistry()
+        let drop = GeoDrop(message: "room")
+        let state = registry.upsert(drop, scope: .room)
+        let root = AnchorEntity(world: [0, 0, 0])
+        let (bundle, holder, _, _, _) = visual(under: root)
+        state.attachVisual(bundle)
+        state.groundLockBaseY = 3
+        var invalidated: [UUID] = []
+        let cleanup = PlacedObjectRegistry.Cleanup(
+            removeSceneAnchor: { _ in XCTFail("room visuals have no geo anchor") },
+            removeARGeoAnchor: { _ in XCTFail("room visuals have no geo anchor") },
+            invalidateVPS: { invalidated.append($0) }
+        )
+
+        let pose = try XCTUnwrap(registry.unloadVisual(id: drop.id, cleanup: cleanup))
+        XCTAssertNil(holder.parent)
+        XCTAssertNil(state.visual)
+        XCTAssertEqual(registry.count, 1)
+        XCTAssertEqual(state.drop, drop)
+        XCTAssertEqual(state.groundLockBaseY, 3)
+        XCTAssertEqual(state.roomWorldTransform?.columns.3.y, pose.columns.3.y)
+        XCTAssertEqual(invalidated, [drop.id])
+
+        let replacement = registry.upsert(drop, scope: .room)
+        XCTAssertTrue(replacement === state)
+        let newHolder = Entity()
+        root.addChild(newHolder)
+        replacement.attachVisual(.init(holder: newHolder))
+        XCTAssertTrue(replacement.visual?.holder === newHolder)
+    }
+
+    func testLocalPinAndReadinessSurviveOnlyTheAppropriateBoundary() throws {
+        let registry = PlacedObjectRegistry()
+        let drop = GeoDrop(message: "local")
+        let state = registry.upsert(drop, scope: .geographic)
+        let root = AnchorEntity(world: [0, 0, 0])
+        let (bundle, holder, oldContent, marker, disc) = visual(under: root)
+        state.attachVisual(bundle)
+        state.localPin = .init(
+            placement: AuthoredDropOverlay.Placement(drop),
+            worldTransform: matrix_identity_float4x4
+        )
+        state.groundLockBaseY = 3
+        let newContent = Entity()
+        state.replaceContent(newContent, ready: false)
+        XCTAssertNil(oldContent.parent)
+        XCTAssertTrue(newContent.parent === holder)
+        XCTAssertTrue(state.visual?.marker === marker)
+        XCTAssertTrue(state.visual?.groundDisc === disc)
+        XCTAssertFalse(state.visual?.contentReady ?? true)
+        state.setContentReady(true)
+        XCTAssertTrue(state.visual?.contentReady == true)
+
+        let cleanup = PlacedObjectRegistry.Cleanup(
+            removeSceneAnchor: { _ in }, removeARGeoAnchor: { _ in },
+            invalidateVPS: { _ in }
+        )
+        let pose = try XCTUnwrap(registry.unloadVisual(id: drop.id, cleanup: cleanup))
+        XCTAssertNil(state.visual)
+        XCTAssertEqual(state.localPin?.worldTransform.columns.3.x, pose.columns.3.x)
+        XCTAssertEqual(state.groundLockBaseY, 3,
+                       "a measured local support retains its world lock")
+        XCTAssertEqual(registry.count, 1)
+    }
+
+    func testVisualReplacementKeepsAnchorAndPoseWhileReleasingOldSubtree() {
+        let registry = PlacedObjectRegistry()
+        let drop = GeoDrop(message: "detail")
+        let state = registry.upsert(drop, scope: .geographic)
+        let root = AnchorEntity(world: [0, 0, 0])
+        let (original, oldHolder, _, _, _) = visual(under: root)
+        state.attachVisual(original)
+        let arAnchor = ARGeoAnchor(coordinate: CLLocationCoordinate2D(
+            latitude: 51.5, longitude: -0.12
+        ))
+        state.bindGeoAnchor(entity: root, anchor: arAnchor)
+
+        let newHolder = Entity()
+        let newContent = Entity()
+        let newMarker = ModelEntity()
+        newHolder.addChild(newContent)
+        newHolder.addChild(newMarker)
+        state.replaceVisual(.init(
+            holder: newHolder, content: newContent, marker: newMarker,
+            contentReady: false
+        ))
+
+        XCTAssertNil(oldHolder.parent)
+        XCTAssertTrue(newHolder.parent === root)
+        XCTAssertEqual(newHolder.position, SIMD3<Float>(2, 3, 4))
+        XCTAssertTrue(state.geoAnchor?.entity === root)
+        XCTAssertTrue(state.geoAnchor?.anchor === arAnchor)
+        XCTAssertTrue(registry.visuals[drop.id]?.holder === newHolder)
+        XCTAssertEqual(registry.dropsWithVisuals[drop.id], drop)
+        XCTAssertFalse(state.visual?.contentReady ?? true)
+        XCTAssertFalse(state.visual?.revealed ?? true)
+    }
+
+    func testRemoveAndResetDetachOwnedEntitiesAndAnchors() {
+        let registry = PlacedObjectRegistry()
+        let first = GeoDrop(message: "first")
+        let second = GeoDrop(message: "second")
+        let anchored = registry.upsert(first, scope: .geographic)
+        let room = registry.upsert(second, scope: .room)
+        let geoEntity = AnchorEntity(world: [0, 0, 0])
+        let (geoVisual, geoHolder, _, _, _) = visual(under: geoEntity)
+        anchored.attachVisual(geoVisual)
+        let arAnchor = ARGeoAnchor(coordinate: CLLocationCoordinate2D(
+            latitude: 51.5, longitude: -0.12
+        ))
+        anchored.bindGeoAnchor(entity: geoEntity, anchor: arAnchor)
+        anchored.groundLockBaseY = 3
+        let roomRoot = AnchorEntity(world: [0, 0, 0])
+        let (roomVisual, roomHolder, _, _, _) = visual(under: roomRoot)
+        room.attachVisual(roomVisual)
+        var removedSceneAnchors: [AnchorEntity] = []
+        var removedARAnchors: [ARGeoAnchor] = []
+        var invalidated: [UUID] = []
+        let cleanup = PlacedObjectRegistry.Cleanup(
+            removeSceneAnchor: { removedSceneAnchors.append($0) },
+            removeARGeoAnchor: { removedARAnchors.append($0) },
+            invalidateVPS: { invalidated.append($0) }
+        )
+
+        XCTAssertTrue(registry.remove(id: first.id, cleanup: cleanup) === anchored)
+        XCTAssertNil(geoHolder.parent)
+        XCTAssertNil(anchored.visual)
+        XCTAssertNil(anchored.geoAnchor)
+        XCTAssertNil(anchored.groundLockBaseY)
+        XCTAssertEqual(registry.count, 1)
+        XCTAssertTrue(removedSceneAnchors.first === geoEntity)
+        XCTAssertTrue(removedARAnchors.first === arAnchor)
+
+        registry.reset(cleanup: cleanup)
+        XCTAssertNil(roomHolder.parent)
+        XCTAssertNil(room.visual)
+        XCTAssertEqual(registry.count, 0)
+        XCTAssertEqual(Set(invalidated), Set([first.id, second.id]))
+        XCTAssertEqual(removedSceneAnchors.count, 1)
+        XCTAssertEqual(removedARAnchors.count, 1)
+    }
+
+    func testGenericVisualEvictionReleasesWorldLock() {
+        let registry = PlacedObjectRegistry()
+        let drop = GeoDrop()
+        let state = registry.upsert(drop, scope: .geographic)
+        let root = AnchorEntity(world: [0, 0, 0])
+        state.attachVisual(visual(under: root).0)
+        state.groundLockBaseY = 5
+        let cleanup = PlacedObjectRegistry.Cleanup(
+            removeSceneAnchor: { _ in }, removeARGeoAnchor: { _ in },
+            invalidateVPS: { _ in }
+        )
+        registry.unloadVisual(id: drop.id, cleanup: cleanup)
+        XCTAssertNil(state.groundLockBaseY)
+    }
+}

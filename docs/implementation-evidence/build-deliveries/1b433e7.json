@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "recordKind": "sanitized historical delivery receipt",
+  "archivedOn": "2026-09-30",
+  "build": {
+    "schemaVersion": 1,
+    "bundleIdentifier": "com.adnan.augmentmereality",
+    "configuration": "Release",
+    "createdAt": "2026-09-30T00:39:39.998065+00:00",
+    "deviceMeasurements": "unmeasured; this manifest describes a build, not a field result",
+    "embeddedSourceCommit": "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10",
+    "embeddedSourceHash": "3d2eb79494d12e5e0e8be0df9bb3d460896ee7495d153158dc23ed39370b6f04",
+    "executableSHA256": "fa89623186ad313ca7696ed5e35117c9a8938b35847442a2d9e86aa1ef12cee6",
+    "serviceConfigurationPresent": {
+      "GoogleService-Info.plist": true,
+      "Secrets.plist": true
+    },
+    "sourceCommit": "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10",
+    "sourceDirty": false,
+    "sourceHash": "3d2eb79494d12e5e0e8be0df9bb3d460896ee7495d153158dc23ed39370b6f04",
+    "xcode": "Xcode 26.6\nBuild version 17F113"
+  },
+  "install": {
+    "outcome": "success",
+    "installedAppQueryOutcome": "success",
+    "bundleIdentifier": "com.adnan.augmentmereality",
+    "version": "0.9.0",
+    "bundleVersion": "1"
+  },
+  "provenance": {
+    "originalArtifactSHA256": {
+      "build-manifest.json": "774e1978bc598463c90047156b5d63936a8925e9e14cf70369f3806b9b8f55a7",
+      "install-result.json": "beaef1aa68cae7995e3417a0b063a8b8a33760a18cd0d21df8400edc04719f07",
+      "installed-app.json": "8de2ca6ea5d99f5ee6f2694717218a31085968a810700c5990f537f83cf91894"
+    },
+    "originalDirectoryName": "amr-phone-1b433e7-evidence",
+    "omitted": "Device identifiers, signing or installation identifiers, command arguments, local/device paths and configuration contents are excluded. Raw artifacts may expire; this derived receipt preserves build identity and successful installation evidence.",
+    "limits": "Installation success is not AR launch, thermal, visual or field acceptance. This is an archival record, not a fresh device query."
+  }
+}
