@@ -1,0 +1,394 @@
+{
+  "schemaVersion": 1,
+  "reviewedOn": "2026-09-30",
+  "sourceAppCommit": "0210d6ab7d3cbadb087c75766515999f03bd8a19",
+  "openCount": 27,
+  "closedCount": 5,
+  "additionalClosuresThisReview": 0,
+  "nextImplementationIssue": 11,
+  "issues": [
+    {
+      "number": 1,
+      "title": "Implementation backlog: realistic AR, thermal fixes and Waves A/D/E/F",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/1",
+      "githubState": "OPEN",
+      "status": "Umbrella",
+      "implemented": "Five issues closed; validated work and evidence indexed below.",
+      "remainingWithoutPhone": "Coordinate the remaining implementation and update this ledger after every verified build.",
+      "remainingAcceptance": "All release and physical gates on child issues; umbrella remains open.",
+      "implementationCommits": []
+    },
+    {
+      "number": 2,
+      "title": "Verify deployed Firestore rules and safely release the prepared v3 authorization contract",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/2",
+      "githubState": "OPEN",
+      "status": "Service/client acceptance",
+      "implemented": "Reviewed v3 rules deployed September 8; September 29 read-only export matched the reviewed source.",
+      "remainingWithoutPhone": "Complete next-day live rules/access checks and reconcile the release runbook; local emulator/client regressions can support but cannot replace the physical offline trial.",
+      "remainingAcceptance": "Repeat true-offline receive and deletion/relaunch on a physical phone after cellular fallback invalidated the prior result; controlled live service acceptance also remains open.",
+      "implementationCommits": []
+    },
+    {
+      "number": 3,
+      "title": "Measure Release AR startup and sustained cost with truthful readiness metrics",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/3",
+      "githubState": "CLOSED",
+      "status": "Closed",
+      "implemented": "Baseline instrumentation and measured baseline recorded.",
+      "remainingWithoutPhone": "None within this issue.",
+      "remainingAcceptance": "Later fixes still need fresh final physical acceptance under #32.",
+      "implementationCommits": []
+    },
+    {
+      "number": 4,
+      "title": "Unify perception demand and shed critical or hidden-camera work promptly",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/4",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Unified perception demand, prompt critical/hidden admission controls and room recovery after lost relocalization.",
+      "remainingWithoutPhone": "Maintain the existing policy and recovery regressions; react to field failures.",
+      "remainingAcceptance": "Repeat background/recovery, hidden/critical producer traces and sustained Release thermal/frame pacing. Prior stopped/warmth run is not a pass.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 5,
+      "title": "Keep physical object scale fixed as the viewer walks",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/5",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Fixed authored world scale and grounding footprint; asset replacement preserves physical size.",
+      "remainingWithoutPhone": "Existing scale/edit/projection regressions are available.",
+      "remainingAcceptance": "Measured 5\u201360 m approach/retreat/orbit, scale edit/reopen and second-device size/contact.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 6,
+      "title": "Correct geodesic conversion and compare drift in one coordinate frame",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/6",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Independent WGS84 fixtures, checked conversion/write-back and common-frame drift comparison.",
+      "remainingWithoutPhone": "Keep geodesic and rotated-basis regressions passing.",
+      "remainingAcceptance": "Heading walks, actual tracking displacement and reopened geographic placement checks.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 7,
+      "title": "Make VPS corrections latest-wins and preserve placement accuracy provenance",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/7",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Latest-wins versioned corrections, edit/anchor invalidation, placement provenance and uncertainty-gated geographic save.",
+      "remainingWithoutPhone": "Maintain stale-result, edit and provenance coverage.",
+      "remainingAcceptance": "Physical correction/glide behavior, degraded localization and second-device/reopen placement comparison.",
+      "implementationCommits": [
+        "684f6b40b5da18d44b600e8db88396c85ab81a96",
+        "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10"
+      ]
+    },
+    {
+      "number": 8,
+      "title": "Establish safe AR ownership and migrate concurrency boundaries incrementally",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/8",
+      "githubState": "OPEN",
+      "status": "Mixed: compiler work verified; field/migration open",
+      "implemented": "AR/SDK/render ownership, bounded GPU leases, checked storage isolation; full Swift 6 SIL compile passes.",
+      "remainingWithoutPhone": "Review remaining migration scope, render-history ordering and production/test-target language-mode rollout. Production remains Swift 5.",
+      "remainingAcceptance": "Physical callback/Metal teardown under overlapping work, memory/frame pacing and thermal validation.",
+      "implementationCommits": [
+        "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+        "684f6b40b5da18d44b600e8db88396c85ab81a96"
+      ]
+    },
+    {
+      "number": 9,
+      "title": "Bound AR content preparation and localization submissions with observable failures",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/9",
+      "githubState": "OPEN",
+      "status": "Implemented policies; profiling open",
+      "implemented": "Bounded decoder/cache, scene content admission, owned mesh snapshots and localization submission limits.",
+      "remainingWithoutPhone": "Tune only from measured decoded/GPU costs; current source-file/work budgets are proxies.",
+      "remainingAcceptance": "Heavy assets/dense scenes, decoded RAM/GPU residency, memory pressure, startup and sustained heat/frame pacing.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751",
+        "eb63a99325a34ff453c320748d8c31d6aaf80ea4"
+      ]
+    },
+    {
+      "number": 10,
+      "title": "Persist vertical reference and ground objects on their actual support surface",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/10",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Persisted vertical reference, WGS84 datum gates, measured bounded support, atomic pose/contact-cue updates and unresolved fallback.",
+      "remainingWithoutPhone": "Keep codec, invalid-metadata, support and anchor-intent regressions passing.",
+      "remainingAcceptance": "Slopes, steps, multiple floors/roofs and second-device/reopen heights.",
+      "implementationCommits": [
+        "0210d6ab7d3cbadb087c75766515999f03bd8a19"
+      ]
+    },
+    {
+      "number": 11,
+      "title": "Give every occlusion sample an explicit synchronized frame and depth contract",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/11",
+      "githubState": "OPEN",
+      "status": "Next phone-free implementation",
+      "implemented": "Not implemented as a complete synchronized sample contract; existing ownership seams can be reused.",
+      "remainingWithoutPhone": "Build immutable capture/session/calibration envelopes, unit adapters, association/rejection policy and asymmetric synthetic mapping/lifetime tests.",
+      "remainingAcceptance": "Physical capture/render alignment during pans, viewport changes, resume, thermal changes and delayed inference. Keep open until these pass.",
+      "implementationCommits": []
+    },
+    {
+      "number": 12,
+      "title": "Occlude with general live foreground depth and reconcile every static mesh stage",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/12",
+      "githubState": "OPEN",
+      "status": "Implementation pending",
+      "implemented": "Foreground/static-mesh arbitration remains open.",
+      "remainingWithoutPhone": "After #11, implement live foreground depth and reconcile every static mesh stage; synthetic ordering and fallback tests.",
+      "remainingAcceptance": "Real hands/people/vehicles and moving/static edge occlusion on the final device build.",
+      "implementationCommits": []
+    },
+    {
+      "number": 13,
+      "title": "Make occlusion history motion-aware and separate confidence from edge coverage",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/13",
+      "githubState": "OPEN",
+      "status": "Implementation pending",
+      "implemented": "Motion-aware temporal history and confidence/coverage separation remain open.",
+      "remainingWithoutPhone": "Use #11 capture contract and dependent occlusion work to implement reset/reprojection/history and distinct confidence versus edge coverage.",
+      "remainingAcceptance": "Fast pans, moving foreground, disocclusion, ghosting and thermal/lifecycle transitions.",
+      "implementationCommits": []
+    },
+    {
+      "number": 14,
+      "title": "Fit relative depth with confidence, robust statistics, and positive disparity ordering",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/14",
+      "githubState": "OPEN",
+      "status": "Implementation pending",
+      "implemented": "Robust relative-to-metric fit remains open.",
+      "remainingWithoutPhone": "Implement confidence-qualified robust positive-disparity fitting and deterministic outlier/degenerate fixtures after its sample dependencies.",
+      "remainingAcceptance": "Real metric-depth agreement, failure behavior and edge ordering across supported ranges.",
+      "implementationCommits": []
+    },
+    {
+      "number": 15,
+      "title": "Optimize representative AR assets and define physical content behavior",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/15",
+      "githubState": "OPEN",
+      "status": "Implementation and asset work pending",
+      "implemented": "Preparation budgets exist; representative asset optimization/physical behavior not complete.",
+      "remainingWithoutPhone": "Audit/optimize representative assets and define behavior/geometry/animation budgets with automated checks.",
+      "remainingAcceptance": "Device appearance, animation behavior, decoded residency and sustained performance comparison.",
+      "implementationCommits": []
+    },
+    {
+      "number": 16,
+      "title": "Match object lighting, reflections, contact shadows and camera color",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/16",
+      "githubState": "OPEN",
+      "status": "Implementation and appearance work pending",
+      "implemented": "Contact-cue relocation fixes are present; full lighting/color/shadow work remains.",
+      "remainingWithoutPhone": "Implement lighting/reflection/contact-shadow/color policies and bounded asset behavior.",
+      "remainingAcceptance": "Compare real lighting/materials, camera color and contact across representative scenes.",
+      "implementationCommits": []
+    },
+    {
+      "number": 17,
+      "title": "Make hero readiness and camera recovery visible without misleading reveal timing",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/17",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Epoch/selection readiness with distinct capture, asset and hero scene-update proxy; honest wait/retry/recovery and stale liveness revocation.",
+      "remainingWithoutPhone": "Maintain readiness, failure, epoch and bounds-sampling regressions.",
+      "remainingAcceptance": "Actually presented hero on cold/cached opens, interruption/resume, return-to-camera and usable controls. A scene-update proxy is not presented pixels.",
+      "implementationCommits": [
+        "0210d6ab7d3cbadb087c75766515999f03bd8a19"
+      ]
+    },
+    {
+      "number": 18,
+      "title": "Consolidate placed-object state and exercise real AR lifecycle transitions",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/18",
+      "githubState": "OPEN",
+      "status": "Draft only; integration pending",
+      "implemented": "Registry/lifecycle draft archived outside app/test targets; parser check only, no Xcode build or integration.",
+      "remainingWithoutPhone": "Complete after #11 contract is established; migrate all seven maps together and test actual manager/holder transitions. Fix idempotent cleanup and stale completions.",
+      "remainingAcceptance": "Ground snap, two-finger edit, late VPS correction and return-to-camera field cases.",
+      "implementationCommits": []
+    },
+    {
+      "number": 19,
+      "title": "Resolve minimum-iOS launch compatibility and add explicit minimum/current CI coverage",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/19",
+      "githubState": "OPEN",
+      "status": "Local repair verified; CI/device gates open",
+      "implemented": "Minimum-iOS loader repair and minimum/current lanes; both simulator roots and unsupported-camera launches pass.",
+      "remainingWithoutPhone": "Retain local minimum/current checks; resume hosted matrix when credits return. No hosted pass is claimed.",
+      "remainingAcceptance": "Physical minimum-supported OS, clean first launch and signed Release launch acceptance.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 20,
+      "title": "Verify shipping 3D asset rights, remove unverified content and gate catalog additions in CI",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/20",
+      "githubState": "OPEN",
+      "status": "Release implementation pending",
+      "implemented": "Asset rights/catalog release gate remains open.",
+      "remainingWithoutPhone": "Verify rights for each shipping asset, remove unverified assets, record licenses and implement local/CI catalog checks.",
+      "remainingAcceptance": "Rights evidence and final shipping catalog; no phone required for the rights/gate implementation.",
+      "implementationCommits": []
+    },
+    {
+      "number": 21,
+      "title": "Separate owned and received drops and enforce share/delete permissions across UI and storage",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/21",
+      "githubState": "CLOSED",
+      "status": "Closed",
+      "implemented": "Owned/received UI and direct-command/storage authorization, filtered deletion and legacy ownership covered.",
+      "remainingWithoutPhone": "None within the resolved ownership scope.",
+      "remainingAcceptance": "Separate live rollout/account lifecycle issues remain open.",
+      "implementationCommits": [
+        "1b433e7ba86741d0a2a3c059dc62f95e4f2e0f10"
+      ]
+    },
+    {
+      "number": 22,
+      "title": "Add report/block controls and authoritative reaction cleanup that survives parent deletion",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/22",
+      "githubState": "OPEN",
+      "status": "Release implementation pending",
+      "implemented": "Moderation and authoritative reaction cleanup remain open.",
+      "remainingWithoutPhone": "Implement report/block and durable cleanup with emulator/service tests.",
+      "remainingAcceptance": "Deploy and verify authoritative behavior, retries and orphan cleanup; service access required.",
+      "implementationCommits": []
+    },
+    {
+      "number": 23,
+      "title": "Implement verifiable account/data deletion and decide recoverable identity without losing existing drops",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/23",
+      "githubState": "OPEN",
+      "status": "Release implementation/product decision pending",
+      "implemented": "Account deletion and recoverable identity remain open.",
+      "remainingWithoutPhone": "Implement verifiable deletion/retry and settle recoverable identity versus an explicit device-bound anonymous policy; add safe linking/migration only if that option is chosen.",
+      "remainingAcceptance": "Controlled service/end-to-end account lifecycle acceptance; product/service decisions may be needed.",
+      "implementationCommits": []
+    },
+    {
+      "number": 24,
+      "title": "Build a verified data inventory and accurate privacy declarations and sharing copy",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/24",
+      "githubState": "OPEN",
+      "status": "Release inventory/declarations pending",
+      "implemented": "Verified data inventory and privacy/sharing copy remain open.",
+      "remainingWithoutPhone": "Trace actual SDK/data behavior, inventory retention/recipients and update declarations/copy.",
+      "remainingAcceptance": "Confirm final service configuration and distribution declarations; phone is not needed for the inventory work.",
+      "implementationCommits": []
+    },
+    {
+      "number": 25,
+      "title": "Make loss acknowledgements durable and keep unreadable-data problems visible above sync progress",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/25",
+      "githubState": "CLOSED",
+      "status": "Closed",
+      "implemented": "Durable incident acknowledgement, unreadable-byte preservation, unknown/count-only incidents and warning precedence covered.",
+      "remainingWithoutPhone": "None within the resolved storage-incident scope.",
+      "remainingAcceptance": "Broader release acceptance remains tracked separately.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 26,
+      "title": "Make cloud query scope explicit and bound owner-library reads safely",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/26",
+      "githubState": "CLOSED",
+      "status": "Closed",
+      "implemented": "Explicit owner-library API, 64-document paging, immutable cursor, pending-owner/outbox and account guards; native emulator coverage.",
+      "remainingWithoutPhone": "None within the resolved bounded owner-query scope.",
+      "remainingAcceptance": "Loopback timings do not claim production latency; separate live rollout gates remain open.",
+      "implementationCommits": [
+        "0210d6ab7d3cbadb087c75766515999f03bd8a19"
+      ]
+    },
+    {
+      "number": 27,
+      "title": "Complete invite links, install fallback and truthful access/revocation behavior",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/27",
+      "githubState": "OPEN",
+      "status": "Release implementation and service work pending",
+      "implemented": "Invite/install/access-revocation flow remains open.",
+      "remainingWithoutPhone": "Implement link routing, fallback/AASA/hosting behavior and truthful revocation; add route/authorization tests.",
+      "remainingAcceptance": "Installed/uninstalled end-to-end links, hosting verification and device access/revocation behavior.",
+      "implementationCommits": []
+    },
+    {
+      "number": 28,
+      "title": "Make profile delivery/reaction counters authoritative or hide unsupported totals",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/28",
+      "githubState": "CLOSED",
+      "status": "Closed via supported alternative",
+      "implemented": "Unsupported delivery/reaction totals removed from Profile; legacy fields remain compatible.",
+      "remainingWithoutPhone": "No aggregate producer required while unsupported totals stay hidden.",
+      "remainingAcceptance": "Any future authoritative totals need their own producer/security/reconciliation work.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 29,
+      "title": "Filter transit location and make stale fixes and heading provenance explicit",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/29",
+      "githubState": "OPEN",
+      "status": "Implemented; field acceptance open",
+      "implemented": "Filtered transit, timestamped/fresh location and heading, explicit unknown/stale motion and provisional magnetic guidance.",
+      "remainingWithoutPhone": "Keep noise, stale fix, recovery and heading-provenance regressions passing.",
+      "remainingAcceptance": "Real passenger route, tunnel/recovery, heading source transitions and measured latency/uncertainty.",
+      "implementationCommits": [
+        "243eed43fa2b9facd9b9dd3f289d36da2f0d4751"
+      ]
+    },
+    {
+      "number": 30,
+      "title": "Compare native NSDK and compact metric depth against the repaired ARKit baseline",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/30",
+      "githubState": "OPEN",
+      "status": "Experiment deferred",
+      "implemented": "No replacement SDK/model has been selected.",
+      "remainingWithoutPhone": "Prepare comparison criteria/fixtures after dependencies #3, #11\u2013#13 and #15; #14 is related depth-fit work, not a listed prerequisite. Do not migrate from assumptions.",
+      "remainingAcceptance": "Native NSDK/compact metric depth comparison on target phone with quality/cost/thermal measurements.",
+      "implementationCommits": []
+    },
+    {
+      "number": 31,
+      "title": "Evaluate prepared-site localization for repeatable high-quality AR placement",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/31",
+      "githubState": "OPEN",
+      "status": "Experiment deferred",
+      "implemented": "Prepared-site localization not evaluated.",
+      "remainingWithoutPhone": "Prepare candidate/site comparison after baseline placement work.",
+      "remainingAcceptance": "Site capture/provider access and repeatable real-world placement comparisons; phone/site work required.",
+      "implementationCommits": []
+    },
+    {
+      "number": 32,
+      "title": "Validate the final iPhone build and close measured realism, thermal and release gates",
+      "url": "https://github.com/CaptiveON/augmentmereality/issues/32",
+      "githubState": "OPEN",
+      "status": "Final release gate open",
+      "implemented": "Local builds/tests and older physical baselines exist; final app acceptance is incomplete.",
+      "remainingWithoutPhone": "Assemble final artifact/evidence checklist after implementation and service gates.",
+      "remainingAcceptance": "Final signed iPhone build: thermal/frame pacing, startup, placement, occlusion, interactions and release gates. Overheating is not certified solved.",
+      "implementationCommits": []
+    }
+  ]
+}

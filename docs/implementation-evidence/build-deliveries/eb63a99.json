@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "recordKind": "sanitized historical delivery receipt",
+  "archivedOn": "2026-09-30",
+  "build": {
+    "schemaVersion": 1,
+    "bundleIdentifier": "com.adnan.augmentmereality",
+    "configuration": "Release",
+    "createdAt": "2026-09-29T23:22:51.133466+00:00",
+    "deviceMeasurements": "unmeasured; this manifest describes a build, not a field result",
+    "embeddedSourceCommit": "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+    "embeddedSourceHash": "eb4565c5ef5f21d16e78818045611a6fb5e8ad35b788aa4fbf07903b69305a15",
+    "executableSHA256": "56359aa9a0f75b3888c585d015831d0c0956a4a047bf5bdd8d6894d484689498",
+    "serviceConfigurationPresent": {
+      "GoogleService-Info.plist": true,
+      "Secrets.plist": true
+    },
+    "sourceCommit": "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+    "sourceDirty": false,
+    "sourceHash": "eb4565c5ef5f21d16e78818045611a6fb5e8ad35b788aa4fbf07903b69305a15",
+    "xcode": "Xcode 26.6\nBuild version 17F113"
+  },
+  "install": {
+    "outcome": "success",
+    "installedAppQueryOutcome": "success",
+    "bundleIdentifier": "com.adnan.augmentmereality",
+    "version": "0.9.0",
+    "bundleVersion": "1"
+  },
+  "provenance": {
+    "originalArtifactSHA256": {
+      "build-manifest.json": "6db1d145a6e5d591bdefa2d8b34ca87291d56b96f9e6cea406d6b1195fee0789",
+      "install-result.json": "b263dfdf51e1e54bbf876c0245775b2449d96789468d387ef9fb47fe8bf1ad81",
+      "installed-app.json": "8cedd5b649954ade7058b04bdd1ed8bed9da5eb617e2f0932e30d8f6ae5c4af1"
+    },
+    "originalDirectoryName": "amr-phone-eb63a993-evidence",
+    "omitted": "Device identifiers, signing or installation identifiers, command arguments, local/device paths and configuration contents are excluded. Raw artifacts may expire; this derived receipt preserves build identity and successful installation evidence.",
+    "limits": "Installation success is not AR launch, thermal, visual or field acceptance. This is an archival record, not a fresh device query."
+  }
+}

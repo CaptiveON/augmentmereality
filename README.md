@@ -7,6 +7,10 @@ in the real world.
 See [MASTERPLAN.md](MASTERPLAN.md) for the research, architecture, and the full feature
 roadmap (Waves 1–6). Waves 1–3 are implemented in this repo.
 
+For the current repair status, verified builds, phone installation history and
+remaining issue gates, start with the [build and issue handoff](docs/BUILD-AND-ISSUE-STATUS.md).
+This record also identifies the next work that can proceed without a phone.
+
 ## Run it
 
 1. Open `AugmentMeReality.xcodeproj` in Xcode 16 or newer.

@@ -1,0 +1,212 @@
+import ARKit
+import Foundation
+import RealityKit
+import simd
+
+/// One main-actor owner for a drop's live scene objects and session-local
+/// placement. A visual may be evicted by the scene budget while its room pose
+/// or local pin remains in this record. Save tickets stay with the manager.
+@MainActor
+final class PlacedObjectState {
+    enum Scope: Equatable { case geographic, room, demo }
+
+    struct Visual {
+        let holder: Entity
+        var content: Entity?
+        var marker: ModelEntity?
+        var groundDisc: ModelEntity?
+        var contentReady: Bool
+        var revealed: Bool
+
+        init(
+            holder: Entity, content: Entity? = nil, marker: ModelEntity? = nil,
+            groundDisc: ModelEntity? = nil, contentReady: Bool = false,
+            revealed: Bool = false
+        ) {
+            self.holder = holder
+            self.content = content
+            self.marker = marker
+            self.groundDisc = groundDisc
+            self.contentReady = contentReady
+            self.revealed = revealed
+        }
+    }
+
+    struct LocalPin {
+        var placement: AuthoredDropOverlay.Placement
+        var worldTransform: simd_float4x4
+    }
+
+    struct GeoAnchorLease {
+        let entity: AnchorEntity
+        let anchor: ARGeoAnchor
+    }
+
+    /// The manager supplies its scene/session and VPS owners. Tests can record
+    /// these calls without constructing an ARView or starting a camera.
+    struct Cleanup {
+        let removeSceneAnchor: @MainActor (AnchorEntity) -> Void
+        let removeARGeoAnchor: @MainActor (ARGeoAnchor) -> Void
+        let invalidateVPS: @MainActor (UUID) -> Void
+
+        init(
+            removeSceneAnchor: @escaping @MainActor (AnchorEntity) -> Void,
+            removeARGeoAnchor: @escaping @MainActor (ARGeoAnchor) -> Void,
+            invalidateVPS: @escaping @MainActor (UUID) -> Void
+        ) {
+            self.removeSceneAnchor = removeSceneAnchor
+            self.removeARGeoAnchor = removeARGeoAnchor
+            self.invalidateVPS = invalidateVPS
+        }
+    }
+
+    let id: UUID
+    let scope: Scope
+    var drop: GeoDrop
+    private(set) var visual: Visual?
+    private(set) var geoAnchor: GeoAnchorLease?
+    var roomWorldTransform: simd_float4x4?
+    var localPin: LocalPin?
+    var groundLockBaseY: Float?
+    var appliedAnchorIntent: GeographicAnchorIntent?
+
+    init(drop: GeoDrop, scope: Scope) {
+        id = drop.id
+        self.drop = drop
+        self.scope = scope
+    }
+
+    func attachVisual(_ visual: Visual) {
+        precondition(self.visual == nil, "Unload the old holder before attaching a replacement")
+        self.visual = visual
+    }
+
+    /// Scene-budget detail changes replace the complete holder under the same
+    /// parent. The ARGeo anchor stays bound, and the authored local transform
+    /// survives while the old model, cue and marker subtree leaves the scene.
+    func replaceVisual(_ replacement: Visual) {
+        guard let previous = visual else {
+            attachVisual(replacement)
+            return
+        }
+        let parent = previous.holder.parent
+        let transform = previous.holder.transform
+        previous.holder.removeFromParent()
+        replacement.holder.transform = transform
+        parent?.addChild(replacement.holder)
+        visual = replacement
+    }
+
+    func setContentReady(_ ready: Bool) {
+        visual?.contentReady = ready
+    }
+
+    func markRevealed() {
+        visual?.revealed = true
+    }
+
+    /// A decoded asset replaces only the content child. The holder, marker and
+    /// contact cue keep their world pose.
+    func replaceContent(_ content: Entity?, ready: Bool) {
+        guard visual != nil else { return }
+        visual?.content?.removeFromParent()
+        if let content, let holder = visual?.holder { holder.addChild(content) }
+        visual?.content = content
+        visual?.contentReady = ready
+    }
+
+    func bindGeoAnchor(entity: AnchorEntity, anchor: ARGeoAnchor) {
+        precondition(geoAnchor == nil, "Release the old ARGeo anchor before rebinding")
+        geoAnchor = GeoAnchorLease(entity: entity, anchor: anchor)
+    }
+
+    /// Detach the holder and anchor, releasing all content/marker/disc references.
+    /// Preserve a room or local-pin world pose so scene-budget eviction does not
+    /// silently change its authored position when the visual returns.
+    @discardableResult
+    func unloadVisual(cleanup: Cleanup) -> simd_float4x4? {
+        let world = visual?.holder.transformMatrix(relativeTo: nil)
+        if let world {
+            if scope == .room { roomWorldTransform = world }
+            if var local = localPin {
+                local.worldTransform = world
+                localPin = local
+            }
+        }
+        visual?.holder.removeFromParent()
+        visual = nil
+        releaseGeoAnchor(cleanup: cleanup)
+        cleanup.invalidateVPS(id)
+        appliedAnchorIntent = nil
+        // A world-Y lock only survives while its measured AR-world position is
+        // retained. A later generic geo placement must resolve support again.
+        if scope != .room && localPin == nil {
+            groundLockBaseY = nil
+        }
+        return world
+    }
+
+    func releaseGeoAnchor(cleanup: Cleanup) {
+        guard let geoAnchor else { return }
+        self.geoAnchor = nil
+        cleanup.removeSceneAnchor(geoAnchor.entity)
+        cleanup.removeARGeoAnchor(geoAnchor.anchor)
+    }
+
+    fileprivate func retire(cleanup: Cleanup) {
+        unloadVisual(cleanup: cleanup)
+        roomWorldTransform = nil
+        localPin = nil
+        groundLockBaseY = nil
+        appliedAnchorIntent = nil
+    }
+}
+
+/// Registry removal is the one path that forgets a drop. Scene-budget eviction
+/// uses `unloadVisual` and retains the record; a tracking reset uses `reset`
+/// after the manager has captured any room recovery snapshots it needs.
+@MainActor
+final class PlacedObjectRegistry {
+    typealias Cleanup = PlacedObjectState.Cleanup
+
+    private var records: [UUID: PlacedObjectState] = [:]
+
+    var ids: Set<UUID> { Set(records.keys) }
+    var count: Int { records.count }
+    var visuals: [UUID: PlacedObjectState.Visual] {
+        records.compactMapValues { $0.visual }
+    }
+    var dropsWithVisuals: [UUID: GeoDrop] {
+        records.compactMapValues { $0.visual == nil ? nil : $0.drop }
+    }
+
+    func state(for id: UUID) -> PlacedObjectState? { records[id] }
+
+    @discardableResult
+    func upsert(_ drop: GeoDrop, scope: PlacedObjectState.Scope) -> PlacedObjectState {
+        if let existing = records[drop.id] {
+            precondition(existing.scope == scope, "A drop cannot change room/geographic ownership")
+            existing.drop = drop
+            return existing
+        }
+        let state = PlacedObjectState(drop: drop, scope: scope)
+        records[drop.id] = state
+        return state
+    }
+
+    @discardableResult
+    func unloadVisual(id: UUID, cleanup: Cleanup) -> simd_float4x4? {
+        records[id]?.unloadVisual(cleanup: cleanup)
+    }
+
+    @discardableResult
+    func remove(id: UUID, cleanup: Cleanup) -> PlacedObjectState? {
+        guard let state = records.removeValue(forKey: id) else { return nil }
+        state.retire(cleanup: cleanup)
+        return state
+    }
+
+    func reset(cleanup: Cleanup) {
+        for id in Array(records.keys) { remove(id: id, cleanup: cleanup) }
+    }
+}
