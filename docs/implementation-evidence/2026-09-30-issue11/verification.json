@@ -1,0 +1,144 @@
+{
+  "checkedAt": "2026-09-30T02:21:39.488540+00:00",
+  "baseCommit": "822a947f9f54d73b4cb866b7992bf50860ac6b44",
+  "sourceState": "uncommitted working tree",
+  "sourceAggregateSHA256": "1042543e313b1f8c191ea572b2201b9b3e004c999bb12a7b94eeb3e53435a1d3",
+  "sourceFileCount": 120,
+  "sourceFingerprintVerified": true,
+  "buildInputSHA256": {
+    ".github/workflows/ci.yml": "4e678f7c1b14f082db6bd73d221852a5c77cccf1a80d4fbcc5ca4f9c0ad66dcc",
+    "scripts/swift-diagnostics.py": "e7f8b8527183dc713077539d71680a64a8bfff90df26e9d606c58a00b3fb2156",
+    "AugmentMeReality.xcodeproj/project.pbxproj": "2f2a799f6644ce1b86d67c51d0ebd1c684d6a6c347b63045fbad3e5042fd22c4",
+    "AugmentMeReality.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved": "899220de4469827ceb4c268f40e5e773afdde71769a9a83a664d0de85df9977e"
+  },
+  "xcode": "Xcode 26.6\nBuild version 17F113",
+  "sdk": "26.5",
+  "tests": {
+    "current": {
+      "totalTestCount": 392,
+      "passedTests": 392,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    },
+    "minimum": {
+      "totalTestCount": 392,
+      "passedTests": 390,
+      "failedTests": 0,
+      "skippedTests": 2,
+      "result": "Passed"
+    },
+    "tsan": {
+      "totalTestCount": 200,
+      "passedTests": 200,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    }
+  },
+  "minimumSkipReason": "Two opt-in native Firebase emulator contracts; both passed on current iOS",
+  "debugBuild": "passed, incremental test-host compile; zero app diagnostics",
+  "unsignedReleaseBuild": "passed, complete app compile; zero app diagnostics",
+  "releaseCompiledOwnershipBoundaries": 20,
+  "swift6": {
+    "wholeAppSILCompile": "passed",
+    "errors": 0,
+    "warnings": 0,
+    "productionLanguageMode": 5,
+    "usesRealSDKAndDependencies": true,
+    "sourceFileCountIncludingGenerated": 71,
+    "commandSHA256": "a8528a004957b8ec6cf028db7edd78abfbe65696a723bf33334f73d4e2745fab",
+    "sourceListSHA256": "6333beb57c3ca58890d93854a6651eed2744b6727886f037cc94b3d92a2cf94d"
+  },
+  "threadSanitizer": {
+    "runtimeLinked": true,
+    "reportedRaces": 0,
+    "scope": "200 selected AR/storage/capture-contract and actual Metal buffer/shader tests; not physical RealityKit scheduling proof"
+  },
+  "newContractTests": 26,
+  "gpuSyntheticEvidence": [
+    "Production semanticMatte kernel with real depth32Float virtual plane and asymmetric rotated capture/semantic edge",
+    "Known camera restoration pixels and outside-coverage rejection",
+    "Real non-planar CoreVideo wrapping and app-owned half-depth copy readback through command completion"
+  ],
+  "renderAssociation": {
+    "kind": "bounded approximate; RealityKit provides no rendered capture identity or camera pose",
+    "maximumCaptureAndViewportAgeSeconds": 0.05,
+    "maximumCaptureGapSeconds": 0.075,
+    "minimumCaptureHistorySpanSeconds": 0.03,
+    "maximumHistoryEntries": 4,
+    "maximumTranslationMeters": 0.0015,
+    "maximumRotationRadians": 0.003,
+    "projectionToleranceTargetPixels": 1,
+    "semanticSubmittedFrameMaxAgeSeconds": 0.15,
+    "neuralSourceMaxAgeSeconds": 0.3,
+    "sceneClockComparedToCaptureClock": false,
+    "garSemanticInternalTimestamp": "not exposed; SDK-opaque submitted-frame association",
+    "physicalRegistrationVerified": false
+  },
+  "launchSmoke": {
+    "current": true,
+    "minimum": true,
+    "allFourScreenshotsInspected": true,
+    "scope": "Root and unsupported-camera screens only"
+  },
+  "otherChecks": {
+    "diagnosticGateTests": 6,
+    "ciYAML": "parsed",
+    "gitDiffCheck": "passed"
+  },
+  "githubCI": {
+    "status": "deferred at owner request because credits are exhausted",
+    "hostedPassClaimed": false,
+    "workflowChanges": "new capture/shader suites added to existing TSan lane; no workflow/check disabled"
+  },
+  "phoneUsedForValidation": false,
+  "phoneBuildInstalled": false,
+  "lastRecordedPhoneRevision": "1b433e7",
+  "realServiceConfiguration": "excluded from simulator and unsigned Release builds",
+  "liveFirebaseIntegrationTests": "excluded; native contracts use disposable emulator",
+  "rulesOrIndexesDeployed": false,
+  "startupEnvironmentNote": "Initial test runner stopped before tests because Java was absent from PATH; rerun used installed Homebrew OpenJDK. No test failure is hidden.",
+  "logs": {
+    "build.log": {
+      "path": "/tmp/amr-issue11-sep30/build.log",
+      "sha256": "724bcab3820775e860ec7bb85f0165b4b152c98979c2b04e69be5cc2067d2410"
+    },
+    "native-tests.log": {
+      "path": "/tmp/amr-issue11-sep30/native-tests.log",
+      "sha256": "d2fcb9b03e8ca340fe8f7ebc04530a8282fbc3c4c6e9f8d08887a21530d99dfb"
+    },
+    "minimum.log": {
+      "path": "/tmp/amr-issue11-sep30/minimum.log",
+      "sha256": "bacf346b165fa000e2aa7bf488ff61be64876e8967d7062650988fdecfb08f93"
+    },
+    "release.log": {
+      "path": "/tmp/amr-issue11-sep30/release.log",
+      "sha256": "042b87f8f3f0d3ab8865eb6acf0087d35ff999e37458e3276cc2b4f5bc167d8c"
+    },
+    "tsan.log": {
+      "path": "/tmp/amr-issue11-sep30/tsan.log",
+      "sha256": "def5b7640b0b460933336ff3af55740aef55e9a4cd04c89da1fb44176a2a86ba"
+    },
+    "swift6.log": {
+      "path": "/tmp/amr-issue11-sep30/swift6.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "current-launch.log": {
+      "path": "/tmp/amr-issue11-sep30/current-launch.log",
+      "sha256": "ed5a42d27417d9b54c63a58c04aa006b387d1b3d83277ea74b6a4d3ee2226195"
+    },
+    "minimum-launch.log": {
+      "path": "/tmp/amr-issue11-sep30/minimum-launch.log",
+      "sha256": "ed5a42d27417d9b54c63a58c04aa006b387d1b3d83277ea74b6a4d3ee2226195"
+    }
+  },
+  "remaining": [
+    "#11 physical capture/render/semantic/depth alignment during pans, resize, resume and thermal reconfiguration",
+    "#11 moving foreground and delayed inference behavior; camera low-motion limits do not prove scene objects are static",
+    "#11 real-device buffer pressure, Metal scheduling and sustained thermal/frame pacing",
+    "#12 general foreground/static-mesh arbitration, #13 temporal history and #14 robust depth fitting",
+    "#18 production object-state and lifecycle integration",
+    "Other service, privacy, assets and physical release gates remain open"
+  ]
+}

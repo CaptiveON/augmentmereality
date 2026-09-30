@@ -13,6 +13,11 @@ using namespace metal;
 
 struct MatteUniforms {
     float3x3 viewToCapture;   // normalized view UV -> normalized capture UV
+    float3x3 captureToSemantic;
+    float3x3 captureToPerson;
+    float3x3 personToCapture;
+    float3x3 captureToDepth;
+    float3x3 captureToMid;
     float attackAlpha;        // temporal response, matte appearing (occluder arrives)
     float releaseAlpha;       // …matte clearing (occluder leaves) — fast, no trail
     float debugTint;          // >0.5 tints matte red instead of restoring camera
@@ -50,6 +55,10 @@ struct MatteUniforms {
 constexpr sampler bilinearSampler(filter::linear, address::clamp_to_edge);
 constexpr sampler nearestSampler(filter::nearest, address::clamp_to_edge);
 
+static inline bool covered(float2 uv) {
+    return all(isfinite(uv)) && all(uv >= 0.0) && all(uv <= 1.0);
+}
+
 // Camera YCbCr -> RGB (video-range matrix, per Apple's ARKit Metal sample).
 static inline float3 cameraRGB(float y, float2 cbcr) {
     const float4x4 transform = float4x4(
@@ -85,7 +94,17 @@ kernel void semanticMatte(
 
     float2 viewUV = (float2(gid) + 0.5) / float2(width, height);
     float3 mapped = uniforms.viewToCapture * float3(viewUV, 1.0);
-    float2 captureUV = clamp(mapped.xy, 0.0, 1.0);
+    float2 captureUV = mapped.xy / mapped.z;
+    // Unknown coverage is no matte, never a border pixel expanded by clamping.
+    if (!covered(captureUV)) {
+        nextMatte.write(float4(0.0), gid);
+        targetColor.write(color, gid);
+        return;
+    }
+    float2 semanticUV = (uniforms.captureToSemantic * float3(captureUV, 1.0)).xy;
+    float2 personUV = (uniforms.captureToPerson * float3(captureUV, 1.0)).xy;
+    float2 sceneUV = (uniforms.captureToDepth * float3(captureUV, 1.0)).xy;
+    float2 midUV = (uniforms.captureToMid * float3(captureUV, 1.0)).xy;
 
     // Content presence + metric eye depth (shared by both occluders).
     // Counsel MATH-2: the old test was a fixed 1e-6 epsilon in nonlinear NDC,
@@ -107,10 +126,9 @@ kernel void semanticMatte(
     float matte = 0.0;
 
     // --- (1) VPS semantic building/tree matte (ADR-018) ---
-    if (uniforms.semanticEnabled > 0.5 && distanceValid) {
-        uint2 labelPixel = uint2(
-            captureUV * float2(semanticLabels.get_width() - 1,
-                               semanticLabels.get_height() - 1));
+    if (uniforms.semanticEnabled > 0.5 && distanceValid && covered(semanticUV)) {
+        uint2 labelSize = uint2(semanticLabels.get_width(), semanticLabels.get_height());
+        uint2 labelPixel = min(uint2(semanticUV * float2(labelSize)), labelSize - 1);
         uint label = semanticLabels.read(labelPixel).r;
         // Per-pixel distance gate: a labeled real surface occludes only content
         // far enough behind it to be near-certainly farther than the surface.
@@ -123,12 +141,12 @@ kernel void semanticMatte(
             occluding = contentDistance > uniforms.distBuilding;
         }
         if (occluding) {
-            matte = semanticConf.sample(bilinearSampler, captureUV).r;
+            matte = semanticConf.sample(bilinearSampler, semanticUV).r;
         }
     }
 
     // --- (2) Person occlusion with guided-filter edge refinement (ADR-030) ---
-    if (uniforms.personEnabled > 0.5 && distanceValid) {
+    if (uniforms.personEnabled > 0.5 && distanceValid && covered(personUV) && covered(sceneUV)) {
         // Conservative far-depth test (FT-27 round 2, "holes between fingers"):
         // bilinear sampling of the 256×192 depth blended finger-gap pixels toward
         // finger depth, so gaps occluded the object and showed background. Take
@@ -138,21 +156,24 @@ kernel void semanticMatte(
         float2 dTexel = 1.0 / float2(sceneDepthTex.get_width(),
                                      sceneDepthTex.get_height());
         float sceneFar = 0.0;
+        bool sceneCovered = true;
         for (int oy = -1; oy <= 1; oy += 2) {
             for (int ox = -1; ox <= 1; ox += 2) {
-                float d = sceneDepthTex.sample(
-                    nearestSampler, captureUV + float2(ox, oy) * 0.5 * dTexel).r;
+                float2 uv = sceneUV + float2(ox, oy) * 0.5 * dTexel;
+                if (!covered(uv)) { sceneCovered = false; continue; }
+                float d = sceneDepthTex.sample(nearestSampler, uv).r;
+                if (!isfinite(d) || d <= 0.0) { sceneCovered = false; continue; }
                 sceneFar = max(sceneFar, d);
             }
         }
-        if (sceneFar > 0.05 && sceneFar < contentDistance - uniforms.depthBias) {
+        if (sceneCovered && sceneFar > 0.05 && sceneFar < contentDistance - uniforms.depthBias) {
             float personMatte;
             int R = uniforms.refineRadius;
             // ADR-034 early-out: the 50-taps-per-pixel guided filter only earns
             // its cost at the silhouette. Deep inside/outside the stencil the
             // answer is already known — with large content on screen this skips
             // ~95% of pixels and most of the pass's GPU wattage.
-            float centreStencil = personStencil.sample(bilinearSampler, captureUV).r;
+            float centreStencil = personStencil.sample(bilinearSampler, personUV).r;
             if (R <= 0) {
                 personMatte = centreStencil;
             } else if (centreStencil < 0.02) {
@@ -160,13 +181,16 @@ kernel void semanticMatte(
             } else if (centreStencil > 0.98) {
                 float2 corner = float2(R) / float2(personStencil.get_width(),
                                                    personStencil.get_height());
-                float c0 = personStencil.sample(bilinearSampler, captureUV + corner).r;
-                float c1 = personStencil.sample(bilinearSampler, captureUV - corner).r;
+                float c0 = personStencil.sample(bilinearSampler, personUV + corner).r;
+                float c1 = personStencil.sample(bilinearSampler, personUV - corner).r;
                 float c2 = personStencil.sample(bilinearSampler,
-                                                captureUV + float2(corner.x, -corner.y)).r;
+                                                personUV + float2(corner.x, -corner.y)).r;
                 float c3 = personStencil.sample(bilinearSampler,
-                                                captureUV + float2(-corner.x, corner.y)).r;
-                if (min(min(c0, c1), min(c2, c3)) > 0.98) {
+                                                personUV + float2(-corner.x, corner.y)).r;
+                bool cornersCovered = covered(personUV + corner) && covered(personUV - corner)
+                    && covered(personUV + float2(corner.x, -corner.y))
+                    && covered(personUV + float2(-corner.x, corner.y));
+                if (cornersCovered && min(min(c0, c1), min(c2, c3)) > 0.98) {
                     personMatte = 1.0;
                 } else {
                     personMatte = -1.0; // sentinel: edge band, run the filter
@@ -184,9 +208,11 @@ kernel void semanticMatte(
                 float msum = 0.0, wsum = 0.0;
                 for (int dy = -R; dy <= R; dy++) {
                     for (int dx = -R; dx <= R; dx++) {
-                        float2 uv = captureUV + float2(dx, dy) * step;
+                        float2 uv = personUV + float2(dx, dy) * step;
+                        float2 imageUV = (uniforms.personToCapture * float3(uv, 1.0)).xy;
+                        if (!covered(uv) || !covered(imageUV)) { continue; }
                         float s = personStencil.sample(bilinearSampler, uv).r;
-                        float luma = capturedY.sample(bilinearSampler, uv).r;
+                        float luma = capturedY.sample(bilinearSampler, imageUV).r;
                         float dl = luma - centreLuma;
                         float wl = exp(-dl * dl * 30.0);           // luma range term
                         float ws = exp(-float(dx*dx + dy*dy)
@@ -208,10 +234,10 @@ kernel void semanticMatte(
         }
     }
 
-    // --- (3) Mid-field neural depth (ADR-031): real depth ordering 4–60 m ---
-    if (uniforms.midEnabled > 0.5 && distanceValid
+    // --- (3) LiDAR-aligned neural depth: ordering only within per-fit support ---
+    if (uniforms.midEnabled > 0.5 && distanceValid && covered(midUV)
         && contentDistance > uniforms.midMinContent) {
-        float rel = midDepthTex.sample(bilinearSampler, captureUV).r;
+        float rel = midDepthTex.sample(bilinearSampler, midUV).r;
         float inv = uniforms.midA * rel + uniforms.midB;
         // MATH-1: only interpolate. A model output outside the band the LiDAR
         // reference spanned was never calibrated — decoding it is extrapolation

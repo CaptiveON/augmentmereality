@@ -13,60 +13,100 @@ final class SemanticFeed: @unchecked Sendable {
     struct Sample {
         let labels: CVPixelBuffer
         let confidence: CVPixelBuffer
-        let sessionGeneration: UInt64
+        let labelRaster: OcclusionRaster
+        let confidenceRaster: OcclusionRaster
+        var capture: OcclusionCapture { labelRaster.capture }
+        var sessionGeneration: UInt64 { capture.sessionGeneration }
     }
 
     private let lock = NSLock()
-    private var labels: CVPixelBuffer?
-    private var confidence: CVPixelBuffer?
+    private var sample: Sample?
     private var enabled = false
     private var workAdmission = PerceptionWorkAdmission()
+    private var streamRevision: UInt64 = 0
+
+    func setStreamRevision(_ revision: UInt64) {
+        lock.lock()
+        if streamRevision != revision { sample = nil }
+        streamRevision = revision
+        lock.unlock()
+    }
 
     func setWorkAdmission(_ allowed: Bool, generation: UInt64) {
         lock.lock()
         if workAdmission.setAllowed(allowed, generation: generation) {
-            labels = nil
-            confidence = nil
+            sample = nil
             enabled = false
         }
         lock.unlock()
     }
 
-    func update(labels: CVPixelBuffer?, confidence: CVPixelBuffer?, generation: UInt64) {
+    /// GAR associates these buffers with its submitted ARFrame. The SDK does
+    /// not expose the internal semantic capture timestamp; retain that limit.
+    @discardableResult
+    func update(labels: CVPixelBuffer?, confidence: CVPixelBuffer?,
+                capture: OcclusionCapture) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard workAdmission.allowed, workAdmission.sessionGeneration == generation else { return }
-        self.labels = labels
-        self.confidence = confidence
+        guard workAdmission.allowed,
+              workAdmission.sessionGeneration == capture.sessionGeneration,
+              streamRevision == capture.streamRevision else { return false }
+        guard let labels, let confidence else { sample = nil; return false }
+        let labelRaster = OcclusionRaster.captureAligned(
+            labels, capture: capture, encoding: .categoricalUInt8,
+            provenance: .garSubmittedFrameOpaque, ownership: .frameworkPoolRetained)
+        let confidenceRaster = OcclusionRaster.captureAligned(
+            confidence, capture: capture, encoding: .confidenceUNorm8,
+            confidence: .classProbability, provenance: .garSubmittedFrameOpaque,
+            ownership: .frameworkPoolRetained)
+        guard labelRaster.matches(labels), confidenceRaster.matches(confidence),
+              labelRaster.resolution == confidenceRaster.resolution,
+              labelRaster.hasCompatibleCaptureAspect else {
+            sample = nil
+            ARBaselineMetrics.shared.event("Semantic format rejected")
+            return false
+        }
+        if let old = sample, old.capture.streamRevision == capture.streamRevision,
+           old.capture.timestamp > capture.timestamp { return false }
+        sample = Sample(labels: labels, confidence: confidence,
+                        labelRaster: labelRaster, confidenceRaster: confidenceRaster)
+        return true
     }
 
-    /// Far-mode gate, set by the session manager (ADR-011: the matte only applies
-    /// when every rendered drop is beyond the far threshold).
     func setEnabled(_ value: Bool) {
         lock.lock()
         enabled = value && workAdmission.allowed
         lock.unlock()
     }
 
-    func snapshot(generation: UInt64) -> Sample? {
+    func snapshot(for capture: OcclusionCapture, framesAfter: TimeInterval,
+                  maxAge: TimeInterval = 0.15) -> Sample? {
         lock.lock()
         defer { lock.unlock() }
-        guard workAdmission.allowed, workAdmission.sessionGeneration == generation,
-              enabled, let labels, let confidence else { return nil }
-        return Sample(labels: labels, confidence: confidence, sessionGeneration: generation)
+        guard workAdmission.allowed,
+              workAdmission.sessionGeneration == capture.sessionGeneration,
+              enabled, let sample else { return nil }
+        if let reason = RenderFrameAssociation.sampleRejection(
+            sample.capture, relativeTo: capture, framesAfter: framesAfter, maxAge: maxAge) {
+            ARBaselineMetrics.shared.observe("Semantic rejected " + reason.rawValue)
+            return nil
+        }
+        return sample
     }
 
-    /// Round 2 (counsel RSCH-2): shedding the matte RELEASES the producer's
-    /// buffers on the same edge that stops consuming them — ARCore's semantic
-    /// images are pool-managed like ARKit's, and `setEnabled(false)` alone
-    /// pinned the last pair across every detach and the whole suspension.
+    var hasEnabledSample: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return workAdmission.allowed && enabled && sample != nil
+    }
+
     func clear() {
         lock.lock()
-        labels = nil
-        confidence = nil
+        sample = nil
         enabled = false
         lock.unlock()
     }
+
 }
 
 /// Wave 4.5 SilhouetteRefiner (ADR-011): a RealityKit post-process that restores the
@@ -97,6 +137,11 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     private let lifecycle = RenderCallbackLifecycle()
     private var workAdmission = PerceptionWorkAdmission()
     private var admittedSince: TimeInterval = .infinity
+    private var streamRevision: UInt64 = 0
+    private var streamFramesAfter: TimeInterval = .infinity
+    private var viewport: RenderFrameAssociation.Viewport?
+    private var frameAssociation = RenderFrameAssociation()
+    private var lastAssociationDiagnostic: String?
     private var personAdmitted = false
     private var depthAdmitted = false
     private var device: MTLDevice?
@@ -106,6 +151,7 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// releasing the wrapper early is the classic cause of intermittent texture
     /// corruption. Collected per frame, released on command-buffer completion.
     private var inFlightTextures: [CVMetalTexture] = []
+    private var inFlightBuffers: [CVPixelBuffer] = []
     private var matteTextures: [MTLTexture] = []
     private var matteIndex = 0
     // 1×1 placeholders so every kernel texture slot is always bound even when a
@@ -121,8 +167,13 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     private let labelStructure: UInt32
 
     /// Layout mirrored by `MatteUniforms` in SemanticMatte.metal — keep in sync.
-    private struct MatteUniforms {
+    struct MatteUniforms {
         var viewToCapture: simd_float3x3
+        var captureToSemantic: simd_float3x3
+        var captureToPerson: simd_float3x3
+        var personToCapture: simd_float3x3
+        var captureToDepth: simd_float3x3
+        var captureToMid: simd_float3x3
         var attackAlpha: Float
         var releaseAlpha: Float
         var debugTint: Float
@@ -195,6 +246,24 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         lifecycle.snapshot.active
     }
 
+    func setCaptureStream(revision: UInt64, framesAfter: TimeInterval) {
+        stateLock.lock()
+        streamRevision = revision
+        streamFramesAfter = framesAfter
+        frameAssociation.reset()
+        matteHistoryValid = false
+        releaseCaptureResources()
+        stateLock.unlock()
+    }
+
+    @MainActor func updateViewport(size: CGSize, orientation: UIInterfaceOrientation) {
+        stateLock.lock()
+        viewport = .init(size: SIMD2(Float(size.width), Float(size.height)),
+                         orientation: orientation.rawValue,
+                         observedAt: ProcessInfo.processInfo.systemUptime)
+        stateLock.unlock()
+    }
+
     /// Callback attachment may dwell; source consumption must still stop at
     /// the policy edge. A retained pre-pause ARFrame cannot satisfy a new run.
     func setWorkAdmission(_ allowed: Bool, generation: UInt64, person: Bool, depth: Bool) {
@@ -207,10 +276,11 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         if changed {
             admittedSince = allowed ? ProcessInfo.processInfo.systemUptime : .infinity
             releaseCaptureResources()
+            frameAssociation.reset()
         }
         if changed || sourcesChanged { matteHistoryValid = false }
         let metrics = ARBaselineMetrics.shared
-        if !allowed || feed.snapshot(generation: generation) == nil {
+        if !allowed || !feed.hasEnabledSample {
             metrics.setWorkload("Semantic matte consuming", enabled: false)
         }
         if !personAdmitted { metrics.setWorkload("Person matte consuming", enabled: false) }
@@ -386,29 +456,70 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             blit(context: context)
             return
         }
-        // Fresh frame: anything left from a bailed-out frame is safe to drop.
         inFlightTextures.removeAll()
-        // The contract with RealityKit: once postProcess is set, EVERY frame must
-        // write target. Fall back to a plain blit when nothing to composite.
-        guard
-            workAdmission.allowed,
-            let pipeline,
-            let textureCache,
-            let dummyUint, let dummyUnorm, let dummyFloat,
-            let frame = session?.currentFrame,
-            frame.timestamp > admittedSince,
-            let yTexture = makeTexture(frame.capturedImage, format: .r8Unorm, plane: 0, cache: textureCache),
-            let cbcrTexture = makeTexture(frame.capturedImage, format: .rg8Unorm, plane: 1, cache: textureCache)
-        else {
-            // Round 2 (counsel RENDER-7): EVERY exit releases this frame's
-            // wrappers — a partially-created set (one plane wrapped, the
-            // other failed) must not survive to the next encode.
+        inFlightBuffers.removeAll()
+        // Once installed, every callback must write its target, even if no
+        // capture/render correspondence can be admitted.
+        guard workAdmission.allowed, let pipeline, let textureCache,
+              let dummyUint, let dummyUnorm, let dummyFloat,
+              let frame = session?.currentFrame, let viewport,
+              (1...4).contains(viewport.orientation),
+              viewport.size.x.isFinite, viewport.size.y.isFinite,
+              viewport.size.x > 0, viewport.size.y > 0,
+              let orientation = UIInterfaceOrientation(rawValue: viewport.orientation) else {
             bailOut(context: context)
             return
         }
+        let capture = OcclusionCapture(frame: frame,
+                                       generation: workAdmission.sessionGeneration,
+                                       streamRevision: streamRevision)
+        guard capture.matchesCameraBuffer(frame.capturedImage),
+              context.sourceColorTexture.width == context.targetColorTexture.width,
+              context.sourceColorTexture.height == context.targetColorTexture.height,
+              context.sourceDepthTexture.width == context.targetColorTexture.width,
+              context.sourceDepthTexture.height == context.targetColorTexture.height else {
+            frameAssociation.reset()
+            metrics.observe("Occlusion capture or target format rejected")
+            bailOut(context: context)
+            return
+        }
+        let framesAfter = max(admittedSince, streamFramesAfter)
+        let viewportSize = CGSize(width: CGFloat(viewport.size.x), height: CGFloat(viewport.size.y))
+        let display = frame.displayTransform(for: orientation, viewportSize: viewportSize).inverted()
+        let viewToCapture = simd_float3x3(columns: (
+            SIMD3(Float(display.a), Float(display.b), 0),
+            SIMD3(Float(display.c), Float(display.d), 0),
+            SIMD3(Float(display.tx), Float(display.ty), 1)
+        ))
+        let association = frameAssociation.evaluate(
+            capture: capture,
+            context: .init(observedAt: ProcessInfo.processInfo.systemUptime,
+                           sceneElapsedTime: context.time, viewport: viewport,
+                           targetSize: SIMD2(Float(context.targetColorTexture.width),
+                                             Float(context.targetColorTexture.height)),
+                           renderProjection: context.projection,
+                           captureProjection: frame.camera.projectionMatrix(
+                            for: orientation, viewportSize: viewportSize, zNear: 0.01, zFar: 10_000),
+                           viewToCapture: viewToCapture),
+            generation: workAdmission.sessionGeneration, streamRevision: streamRevision,
+            framesAfter: framesAfter)
+        recordAssociation(association, capture: capture)
+        guard association == .approximate,
+              lifecycle.snapshot.gpuCommands == 0,
+              let yTexture = makeTexture(frame.capturedImage, format: .r8Unorm, plane: 0, cache: textureCache),
+              let cbcrTexture = makeTexture(frame.capturedImage, format: .rg8Unorm, plane: 1, cache: textureCache)
+        else {
+            if lifecycle.snapshot.gpuCommands > 0 { metrics.observe("Occlusion GPU busy fallback") }
+            bailOut(context: context)
+            return
+        }
+        metrics.sample("Occlusion capture age", milliseconds:
+                        (ProcessInfo.processInfo.systemUptime - capture.timestamp) * 1000)
 
-        // Semantic (building/tree) matte — only when VPS armed it (far mode).
-        let semantic = feed.snapshot(generation: workAdmission.sessionGeneration)
+        // Google supports semantics quality in portrait. Its timing is SDK-
+        // opaque; never describe a submitted-frame association as exact capture.
+        let semantic = orientation == .portrait
+            ? feed.snapshot(for: capture, framesAfter: framesAfter) : nil
         let labelsTexture = semantic.flatMap {
             makeTexture($0.labels, format: .r8Uint, cache: textureCache)
         }
@@ -416,43 +527,61 @@ final class SemanticOcclusionPass: @unchecked Sendable {
             makeTexture($0.confidence, format: .r8Unorm, cache: textureCache)
         }
         let semanticEnabled = labelsTexture != nil && confidenceTexture != nil
+        if let semantic {
+            metrics.sample("Semantic associated capture age", milliseconds:
+                            (capture.timestamp - semantic.capture.timestamp) * 1000)
+        }
 
-        // Person occlusion — stencil (high-res) + LiDAR scene depth (metric).
+        // Stencil and optical-axis scene depth describe this ARKit capture;
+        // foreground coverage is not LiDAR's discrete confidence measurement.
         var stencilTexture: MTLTexture?
         var sceneDepthTexture: MTLTexture?
+        var personMapping = matrix_identity_float3x3
+        var depthMapping = matrix_identity_float3x3
         if personAdmitted, personOcclusionEnabled,
            let stencil = frame.segmentationBuffer,
            let depthMap = frame.sceneDepth?.depthMap {
-            stencilTexture = makeTexture(stencil, format: .r8Unorm, cache: textureCache)
-            sceneDepthTexture = makeTexture(depthMap, format: .r32Float, cache: textureCache)
+            let person = OcclusionRaster.captureAligned(
+                stencil, capture: capture, encoding: .confidenceUNorm8,
+                confidence: .foregroundCoverage, provenance: .arkitFrame,
+                ownership: .frameworkPoolRetained)
+            let depth = OcclusionRaster.captureAligned(
+                depthMap, capture: capture, encoding: .opticalAxisMetersFloat32,
+                provenance: .arkitFrame, ownership: .frameworkPoolRetained)
+            if person.matches(stencil), depth.matches(depthMap),
+               person.hasCompatibleCaptureAspect, depth.hasCompatibleCaptureAspect {
+                personMapping = person.captureToSample
+                depthMapping = depth.captureToSample
+                stencilTexture = makeTexture(stencil, format: .r8Unorm, cache: textureCache)
+                sceneDepthTexture = makeTexture(depthMap, format: .r32Float, cache: textureCache)
+            } else {
+                metrics.observe("Person depth format rejected")
+            }
         }
         let personEnabled = stencilTexture != nil && sceneDepthTexture != nil
 
-        // Mid-field depth (ADR-031) — discard stale samples (camera moved on).
         var midTexture: MTLTexture?
+        var midMapping = matrix_identity_float3x3
         var midA: Float = 0, midB: Float = 0
         var midRelMin: Float = 0, midRelMax: Float = 0
         var midMaxDepth = AppConfig.midDepthMaxDistance
         if depthAdmitted, let midSample = midDepthFeed?.snapshot(
-            forFrameAt: frame.timestamp, maxAge: AppConfig.midDepthMaxSampleAge,
-            generation: workAdmission.sessionGeneration
+            for: capture, framesAfter: framesAfter, maxAge: AppConfig.midDepthMaxSampleAge
         ) {
-            metrics.sample(
-                "Depth sample age", milliseconds:
-                    max(0, frame.timestamp - midSample.frameTimestamp) * 1000
-            )
-            midTexture = makeTexture(
-                midSample.relativeDepth, format: .r16Float, cache: textureCache
-            )
+            metrics.sample("Depth sample age", milliseconds:
+                            (capture.timestamp - midSample.frameTimestamp) * 1000)
+            midTexture = makeTexture(midSample.relativeDepth, format: .r16Float, cache: textureCache)
+            midMapping = midSample.raster.captureToSample
             midA = midSample.a
             midB = midSample.b
             midRelMin = midSample.relMin
             midRelMax = midSample.relMax
-            // MATH-1: the trusted ceiling is per-fit (reference band + margin),
-            // never the static config maximum.
             midMaxDepth = min(midMaxDepth, midSample.maxTrustedDepth)
         }
         let midEnabled = midTexture != nil
+        let sourceBits: UInt8 = (semanticEnabled ? 1 : 0) | (personEnabled ? 2 : 0) | (midEnabled ? 4 : 0)
+        if sourceBits != lastSourceBits { matteHistoryValid = false }
+        lastSourceBits = sourceBits
 
         guard semanticEnabled || personEnabled || midEnabled,
               let encoder = context.commandBuffer.makeComputeCommandEncoder()
@@ -472,15 +601,6 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         let nextMatte = matteTextures[1 - matteIndex]
         matteIndex = 1 - matteIndex
 
-        // Map view UVs into capture-image UVs (inverse of ARKit's display transform).
-        let viewport = CGSize(width: target.width, height: target.height)
-        let display = frame.displayTransform(for: .portrait, viewportSize: viewport).inverted()
-        let viewToCapture = simd_float3x3(columns: (
-            SIMD3(Float(display.a), Float(display.b), 0),
-            SIMD3(Float(display.c), Float(display.d), 0),
-            SIMD3(Float(display.tx), Float(display.ty), 1)
-        ))
-
         // Depth decode constants from RealityKit's own projection for this frame:
         // clip.z = zz·z_eye + zw, clip.w = wSign·z_eye ⇒ d = zw / (zz − depth·wSign)
         // (holds for forward/reverse and finite/infinite Z alike).
@@ -494,6 +614,11 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         logDepthBoundsIfChanged(farPlane: contentFarPlane)
         var uniforms = MatteUniforms(
             viewToCapture: viewToCapture,
+            captureToSemantic: semantic?.labelRaster.captureToSample ?? matrix_identity_float3x3,
+            captureToPerson: personMapping,
+            personToCapture: simd_inverse(personMapping),
+            captureToDepth: depthMapping,
+            captureToMid: midMapping,
             attackAlpha: AppConfig.matteAttackAlpha,
             releaseAlpha: AppConfig.matteReleaseAlpha,
             debugTint: AppConfig.semanticMatteDebugTint ? 1 : 0,
@@ -560,12 +685,18 @@ final class SemanticOcclusionPass: @unchecked Sendable {
                        confidenceTexture ?? dummyUnorm, previousMatte, nextMatte,
                        stencilTexture ?? dummyUnorm, sceneDepthTexture ?? dummyFloat,
                        midTexture ?? dummyFloat],
-            pipeline: pipeline, cache: textureCache
+            pipeline: pipeline, cache: textureCache, pixelBuffers: inFlightBuffers
         )
         inFlightTextures.removeAll()
+        inFlightBuffers.removeAll()
         let tracked = lifecycle.submitGPU(epoch: epoch)
         assert(tracked, "stateLock must exclude detach while submitting GPU work")
-        context.commandBuffer.addCompletedHandler { [lifecycle] _ in
+        context.commandBuffer.addCompletedHandler { [lifecycle, weak self] command in
+            if command.status != .completed {
+                // Keep GPU admission closed until undefined history has been
+                // retired. No completion-side cache/lifecycle lock is held here.
+                self?.invalidateFailedHistory()
+            }
             if retained.complete(), tracked { lifecycle.finishGPU() }
         }
         // Counsel ARP-12: flush ONCE PER FRAME after encoding — a non-zero
@@ -578,13 +709,38 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         matteHistoryValid = true
     }
 
+    /// Fixed-size counters and transition-only details avoid a per-frame log.
+    private func recordAssociation(_ decision: RenderFrameAssociation.Decision, capture: OcclusionCapture) {
+        let value: String
+        switch decision {
+        case .approximate: value = "approximate"
+        case .rejected(let reason): value = reason.rawValue
+        }
+        let metrics = ARBaselineMetrics.shared
+        metrics.observe("Occlusion association " + value)
+        if value != lastAssociationDiagnostic {
+            lastAssociationDiagnostic = value
+            metrics.event("Occlusion association", details:
+                            "decision=\(value) generation=\(capture.sessionGeneration) stream=\(capture.streamRevision) capture=\(capture.timestamp)")
+        }
+    }
+
+    private func invalidateFailedHistory() {
+        stateLock.lock()
+        matteHistoryValid = false
+        stateLock.unlock()
+        ARBaselineMetrics.shared.observe("Occlusion GPU failed history rejected")
+    }
+
     /// Round 2 (counsel RENDER-7): the ONE exit helper — no bail path can be
     /// added without releasing the frame's wrappers and flushing the cache.
     /// Caller holds `stateLock`.
     private func bailOut(context: ARView.PostProcessContext) {
         ARBaselineMetrics.shared.observe("Postprocess blit fallback")
         recordConsumption()
+        matteHistoryValid = false
         inFlightTextures.removeAll()
+        inFlightBuffers.removeAll()
         if let textureCache {
             textureCache.flush()
         }
@@ -606,6 +762,8 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// indefinitely. Caller holds `stateLock`.
     private func releaseCaptureResources() {
         inFlightTextures.removeAll()
+        inFlightBuffers.removeAll()
+        matteHistoryValid = false
         if let textureCache {
             textureCache.flushAfterGPU()
         }
@@ -654,9 +812,11 @@ final class SemanticOcclusionPass: @unchecked Sendable {
     /// (re)allocation has WRITTEN both textures — the shader gates its EMA
     /// seed on this so undefined `.private` contents are never read.
     private var matteHistoryValid = false
+    private var lastSourceBits: UInt8 = 0
 
     private func ensureMatteTextures(width: Int, height: Int) {
-        if let first = matteTextures.first, first.width == width, first.height == height {
+        if matteTextures.count == 2, let first = matteTextures.first,
+           first.width == width, first.height == height {
             return
         }
         guard let device else {
@@ -683,12 +843,10 @@ final class SemanticOcclusionPass: @unchecked Sendable {
         plane: Int = 0,
         cache: RenderTextureCache
     ) -> MTLTexture? {
-        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
-        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
-        guard let cvTexture = cache.makeTexture(
-            pixelBuffer, format: format, width: width, height: height, plane: plane
-        ) else { return nil }
+        guard let cvTexture = cache.makeTexture(pixelBuffer, format: format, plane: plane)
+        else { return nil }
         inFlightTextures.append(cvTexture)
+        inFlightBuffers.append(pixelBuffer)
         return CVMetalTextureGetTexture(cvTexture)
     }
 }

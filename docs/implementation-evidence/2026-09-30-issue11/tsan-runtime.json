@@ -1,0 +1,6 @@
+{
+  "runtimeLinked": true,
+  "libraries": [
+    "@rpath/libclang_rt.tsan_iossim_dynamic.dylib (compatibility version 0.0.0, current version 0.0.0)"
+  ]
+}
