@@ -1,0 +1,46 @@
+{
+  "devicesAndConfigurations" : [
+    {
+      "device" : {
+        "architecture" : "arm64",
+        "deviceId" : "BFFE4491-8DF9-4C89-9E95-7D43CE4D95CC",
+        "deviceName" : "iPhone 15 Pro Max",
+        "modelName" : "iPhone 15 Pro Max",
+        "osBuildNumber" : "21A342",
+        "osVersion" : "17.0.1",
+        "platform" : "iOS Simulator"
+      },
+      "expectedFailures" : 0,
+      "failedTests" : 0,
+      "passedTests" : 364,
+      "skippedTests" : 2,
+      "testPlanConfiguration" : {
+        "configurationId" : "1",
+        "configurationName" : "Test Scheme Action"
+      }
+    }
+  ],
+  "environmentDescription" : "AugmentMeReality · Built with macOS 27.0",
+  "expectedFailures" : 0,
+  "failedTests" : 0,
+  "finishTime" : 1790731778.69,
+  "passedTests" : 364,
+  "result" : "Passed",
+  "skippedTests" : 2,
+  "startTime" : 1790731763.748,
+  "statistics" : [
+
+  ],
+  "testFailures" : [
+
+  ],
+  "title" : "Test - AugmentMeReality",
+  "topInsights" : [
+    {
+      "category" : "Longest Test Runs",
+      "impact" : "42% of duration",
+      "text" : "3 longest test runs with outlier durations exceeding 0.36s (three standard deviations)"
+    }
+  ],
+  "totalTestCount" : 366
+}

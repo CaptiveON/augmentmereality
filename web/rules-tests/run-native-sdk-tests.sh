@@ -64,7 +64,8 @@ if [[ "${AMR_ALL_LOCAL_TESTS:-0}" == 1 ]]; then
 else
   for amr_suite in FirestoreAckedTests LocalDropStoreTests DropLibraryTests \
     RefusalTaxonomyTests ReactionShapeTests ReactionSessionTests ReactionListenKeyTests \
-    GeoDropCompatibilityTests GeoDropTests FirestoreServerReadTests FirestoreServerReadEmulatorTests; do
+    GeoDropCompatibilityTests GeoDropTests FirestoreServerReadTests FirestoreServerReadEmulatorTests \
+    FirestoreOwnerPagingEmulatorTests; do
     amr_child+=("-only-testing:AugmentMeRealityTests/$amr_suite")
   done
 fi

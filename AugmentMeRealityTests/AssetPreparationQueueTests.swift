@@ -148,6 +148,86 @@ final class AssetPreparationQueueTests: XCTestCase {
         XCTAssertEqual(loader.starts, ["bad"])
     }
 
+    func testManualRetryWhileHiddenWaitsForActiveDemand() async {
+        let loader = Loader()
+        let queue = AssetPreparationQueue<String>(cost: { _ in 1 }, load: loader.load)
+        var completions: [(String, Bool)] = []
+        queue.onCompletion = { completions.append(($0, $1)) }
+        let first = loader.expect("bad")
+        queue.setDemand(["bad"], active: true)
+        await fulfillment(of: [first], timeout: 2)
+        loader.finish("bad", success: false)
+        await waitUntilIdle(queue)
+        XCTAssertTrue(queue.failed.contains("bad"))
+
+        queue.setDemand([], active: false)
+        XCTAssertFalse(queue.retryFailed("unrelated"))
+        XCTAssertTrue(queue.retryFailed("bad"))
+        XCTAssertFalse(queue.retryFailed("bad"), "one button press arms one retry")
+        XCTAssertEqual(loader.starts, ["bad"])
+        XCTAssertNil(queue.inFlight)
+
+        let retried = loader.expect("bad")
+        queue.setDemand(["bad"], active: true)
+        await fulfillment(of: [retried], timeout: 2)
+        XCTAssertFalse(queue.retryFailed("bad"), "an active decoder cannot be duplicated")
+        loader.finish("bad")
+        await waitUntilIdle(queue)
+        XCTAssertEqual(loader.starts, ["bad", "bad"])
+        XCTAssertEqual(completions.map { $0.1 }, [false, true])
+        XCTAssertFalse(queue.failed.contains("bad"))
+    }
+
+    func testSecondFailureRestoresNegativeCacheWithoutAutomaticLoop() async {
+        let loader = Loader()
+        let queue = AssetPreparationQueue<String>(cost: { _ in 1 }, load: loader.load)
+        let first = loader.expect("bad")
+        queue.setDemand(["bad"], active: true)
+        await fulfillment(of: [first], timeout: 2)
+        loader.finish("bad", success: false)
+        await waitUntilIdle(queue)
+
+        let retried = loader.expect("bad")
+        XCTAssertTrue(queue.retryFailed("bad"))
+        await fulfillment(of: [retried], timeout: 2)
+        XCTAssertFalse(queue.retryFailed("bad"))
+        loader.finish("bad", success: false)
+        await waitUntilIdle(queue)
+        XCTAssertTrue(queue.failed.contains("bad"))
+        queue.setDemand(["bad"], active: true)
+        queue.request("bad")
+        XCTAssertNil(queue.inFlight)
+        XCTAssertTrue(queue.queued.isEmpty)
+        XCTAssertEqual(loader.starts, ["bad", "bad"])
+    }
+
+    func testRetryQueuesBehindAnotherDecoder() async {
+        let loader = Loader()
+        let queue = AssetPreparationQueue<String>(limits: .init(queued: 1, cached: 1,
+                                                                 cacheCost: 10),
+                                                  cost: { _ in 1 }, load: loader.load)
+        let first = loader.expect("bad")
+        queue.setDemand(["bad"], active: true)
+        await fulfillment(of: [first], timeout: 2)
+        loader.finish("bad", success: false)
+        await waitUntilIdle(queue)
+
+        let other = loader.expect("other")
+        queue.setDemand(["bad", "other"], active: true)
+        await fulfillment(of: [other], timeout: 2)
+        XCTAssertTrue(queue.retryFailed("bad"))
+        XCTAssertEqual(queue.inFlight, "other")
+        XCTAssertEqual(queue.queued, ["bad"])
+        XCTAssertEqual(loader.starts, ["bad", "other"])
+
+        let retry = loader.expect("bad")
+        loader.finish("other")
+        await fulfillment(of: [retry], timeout: 2)
+        XCTAssertEqual(loader.starts, ["bad", "other", "bad"])
+        loader.finish("bad")
+        await waitUntilIdle(queue)
+    }
+
     func testSelectedHeroMovesAheadOfFullQueueWithoutStartingSecondDecoder() async {
         let loader = Loader()
         let queue = AssetPreparationQueue<String>(limits: .init(queued: 2, cached: 2, cacheCost: 20),

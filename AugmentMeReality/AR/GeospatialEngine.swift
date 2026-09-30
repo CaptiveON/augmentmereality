@@ -258,7 +258,7 @@ final class GeospatialEngine {
         of worldPosition: SIMD3<Float>
     ) -> (coordinate: CLLocationCoordinate2D, targetHorizontalAccuracy: Double,
           cameraHorizontalAccuracy: Double, yawAccuracyDegrees: Double,
-          measuredAt: Date)? {
+          altitudeWGS84: Double, verticalAccuracy: Double, measuredAt: Date)? {
         guard let garSession, workAdmission.allowed,
               case .localized = state,
               let sample = cameraLocalizationSample else { return nil }
@@ -269,7 +269,7 @@ final class GeospatialEngine {
             return (
                 geo.coordinate, geo.horizontalAccuracy,
                 sample.horizontalAccuracy, sample.yawAccuracyDegrees,
-                sample.measuredAt
+                geo.altitude, geo.verticalAccuracy, sample.measuredAt
             )
         } catch {
             recordRuntimeFailure(.transform, error: error)
@@ -316,6 +316,7 @@ final class GeospatialEngine {
         anchorBindings.removeAll()
         activeAnchorGeneration.removeAll()
         requestedDrops.removeAll()
+        requestedAnchorIntents.removeAll()
         resolvedDrops.removeAll()
         garAnchorsByDropID.removeAll()
         inFlightAnchorTokens.removeAll()
@@ -495,9 +496,17 @@ final class GeospatialEngine {
 
     /// Pin a drop to the terrain at its exact coordinate; Google resolves the
     /// ground elevation, `heightAboveGround` rides on top of it.
+    private var requestedAnchorIntents: [UUID: GeographicAnchorIntent] = [:]
+
     func requestAnchor(for drop: GeoDrop, viewer: CLLocation?) {
+        let intent = GeographicAnchorIntent(drop)
+        if let previous = requestedAnchorIntents[drop.id], previous != intent {
+            invalidateAnchor(for: drop.id)
+        }
         guard let workToken = workAdmission.token, let garSession, isAccuratelyLocalized,
-              !requestedDrops.contains(drop.id) else { return }
+              !requestedDrops.contains(drop.id), drop.heightAboveGround.isFinite,
+              intent.canRequestVPSAnchor else { return }
+        requestedAnchorIntents[drop.id] = intent
         requestedDrops.insert(drop.id)
         nextAnchorGeneration &+= 1
         let binding = AnchorBinding(
@@ -521,7 +530,20 @@ final class GeospatialEngine {
         }
 
         do {
-            if drop.isRooftop {
+            if let altitude = intent.absoluteAltitudeMeters {
+                let anchor = try garSession.createAnchor(
+                    coordinate: drop.coordinate,
+                    altitude: altitude,
+                    eastUpSouthQAnchor: rotation
+                )
+                inFlightAnchorTokens[drop.id] = nil
+                anchorBindings[anchor.identifier] = binding
+                garAnchorsByDropID[drop.id] = anchor
+                if anchor.hasValidTransform {
+                    deliver(binding: binding, transform: anchor.transform,
+                            capturedAt: ProcessInfo.processInfo.systemUptime)
+                }
+            } else if drop.preferredAnchorMode == "rooftop" {
                 // ADR-042: resolved against Google's 3D building model — the
                 // anchor lands ON the roof at that coordinate.
                 try garSession.createAnchorOnRooftop(
@@ -608,6 +630,7 @@ final class GeospatialEngine {
         anchorBindings.removeAll()
         activeAnchorGeneration.removeAll()
         requestedDrops.removeAll()
+        requestedAnchorIntents.removeAll()
         resolvedDrops.removeAll()
         inFlightAnchorTokens.removeAll() // in-flight completions become stale
         headingErrorSample = nil
@@ -617,6 +640,7 @@ final class GeospatialEngine {
     /// `requestAnchor` re-pins with fresh values — used when the creator live-edits
     /// `heightAboveGround`, which terrain anchors bake in at creation.
     func invalidateAnchor(for dropID: UUID) {
+        requestedAnchorIntents[dropID] = nil
         activeAnchorGeneration[dropID] = nil
         requestedDrops.remove(dropID)
         resolvedDrops.remove(dropID)

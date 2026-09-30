@@ -83,6 +83,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     @Published private(set) var readinessEpochKind = ARReadinessEpoch.Kind.coldStart
     private(set) var readiness: ARReadinessEpoch?
     private var readinessActive = false
+    private var cameraReadinessState = CameraReadiness(timeoutSeconds: AppConfig.revealMaxSeconds)
+    @Published private(set) var cameraReadiness = CameraReadiness(timeoutSeconds: AppConfig.revealMaxSeconds).snapshot
     private var sessionGeneration = 0
     private var hasRunSession = false
     private var readyContentIDs: Set<UUID> = []
@@ -188,7 +190,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var fpsWindowStart = Date()
     private var frameIntervalsMs: [Double] = []
     private var lastFrameAt: Date?
-    private var lastFrameUpdateAt = Date.distantPast
+    private var lastFrameUpdateAt: TimeInterval?
+    private var readinessVisibilitySample: (generation: Int, id: UUID,
+        content: ObjectIdentifier, at: TimeInterval, center: SIMD3<Float>, drawable: Bool)?
     private var lastGARFeedAt = Date.distantPast
 
 
@@ -248,6 +252,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private var deferredTargets: [UUID: SIMD3<Float>] = [:]
     private var vpsCorrections = VPSCorrectionAdmission()
     private var localPinOverrides = LocalPinOverrides()
+    private var appliedAnchorIntents: [UUID: GeographicAnchorIntent] = [:]
 
     /// ADR-046: drops that already played their close-range reveal burst.
     private var revealedDrops: Set<UUID> = []
@@ -260,6 +265,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Ground-contact cue sized to the content's physical footprint. It changes
     /// with authored edits or asset replacement, never with viewer distance.
     private var groundDiscs: [UUID: ModelEntity] = [:]
+    /// Discovery positions with no measured vertical reference have no contact cue.
+    @Published private var provisionalVerticalIDs: Set<UUID> = []
     /// Drops being live-edited from the HUD sliders right now: every automatic
     /// positioner (compass re-sync, VPS anchor updates) keeps its hands off them
     /// so the object never fights the user's finger.
@@ -787,6 +794,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         cameraVisible = false
         invalidatePerceptionWork(reason: "cameraHidden")
         readinessActive = false
+        cameraReadinessState.hide(generation: sessionGeneration)
+        publishCameraReadiness()
         // Keep the selected identity for the next warm epoch. Its milestones
         // are inactive here and beginReadinessEpoch creates fresh ones on return.
         ARBaselineMetrics.shared.setWorkload("cameraVisible", enabled: false)
@@ -817,6 +826,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
         if let heroID, readiness?.heroID == nil {
             readiness?.selectHero(heroID)
+            cameraReadinessState.selectHero(heroID, generation: sessionGeneration,
+                                             at: ProcessInfo.processInfo.systemUptime)
+            publishCameraReadiness()
             ARBaselineMetrics.shared.event("selectedHero", details: "id=\(heroID) source=receivedDrop")
         }
     }
@@ -831,12 +843,18 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
     private func beginReadinessEpoch(_ kind: ARReadinessEpoch.Kind) {
         sessionGeneration += 1
+        lastFrameUpdateAt = nil
+        readinessVisibilitySample = nil
         readinessActive = true
         readinessEpochKind = kind
         let retainedHero = kind != .coldStart ? readiness?.heroID : nil
         readiness = ARReadinessEpoch(kind: kind, generation: sessionGeneration,
                                      startedAt: ProcessInfo.processInfo.systemUptime)
         if let retainedHero { readiness?.selectHero(retainedHero) }
+        cameraReadinessState.begin(generation: sessionGeneration, kind: kind,
+                                   heroID: readiness?.heroID,
+                                   at: readiness?.startedAt ?? ProcessInfo.processInfo.systemUptime)
+        publishCameraReadiness()
         timeToFirstHeroProxyMs = nil
         baselineHealthMilestones.removeAll()
         lastBaselineExportAt = ProcessInfo.processInfo.systemUptime
@@ -1169,6 +1187,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     }
 
     private func resetPlacements() {
+        if cameraVisible, !localPinOverrides.ids.isEmpty {
+            showPersistError("Camera tracking restarted · place session-only pins again", critical: false)
+        }
         if let arView {
             for anchor in geoAnchors {
                 arView.scene.removeAnchor(anchor)
@@ -1192,10 +1213,12 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         markers.removeAll()
         contentEntities.removeAll()
         groundDiscs.removeAll()
+        provisionalVerticalIDs.removeAll()
         groundLockBaseY.removeAll()
         deferredTargets.removeAll()
         vpsCorrections.resetGeneration()
         localPinOverrides.reset()
+        appliedAnchorIntents.removeAll()
         pendingGeographicSaves.removeAll()
         unconfirmedGeographicSaves.removeAll()
         liveEditingDrops.removeAll()
@@ -1347,7 +1370,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         vpsOwnedDrops.insert(dropID)
         deferredTargets[dropID] = nil
         switch decision {
-        case .reject, .ignore, .deferUntilOffscreen, .holdForEdit:
+        case .ignore:
+            setVerticalProvisional(false, for: dropID)
+        case .reject, .deferUntilOffscreen, .holdForEdit:
             break
         case .interruptGlide:
             // The older animation is already on screen. Stop it at its current
@@ -1356,6 +1381,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         case .snap:
             recordAppliedVPSCorrection(id: dropID, from: currentPose, to: targetPose)
             holder.setTransformMatrix(transform, relativeTo: nil)
+            setVerticalProvisional(false, for: dropID)
         case .glide:
             if !isFirst {
                 recordAppliedVPSCorrection(id: dropID, from: currentPose, to: targetPose)
@@ -1429,6 +1455,13 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// Per render frame: apply queued corrections the moment their drop leaves the
     /// view (or grows past the forced threshold).
     private func drainDeferredCorrections(arView: ARView) {
+        for (id, end) in vpsGlideUntil where Date() >= end {
+            if vpsOwnedDrops.contains(id), !vpsCorrections.pendingIDs.contains(id),
+               !liveEditingDrops.contains(id), placedHolders[id] != nil {
+                setVerticalProvisional(false, for: id)
+            }
+            vpsGlideUntil[id] = nil
+        }
         for (id, target) in deferredTargets {
             if localPinOverrides.contains(id) {
                 deferredTargets[id] = nil
@@ -1490,13 +1523,16 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             case .snap:
                 recordAppliedVPSCorrection(id: id, from: currentPose, to: targetPose)
                 holder.setTransformMatrix(transform, relativeTo: nil)
+                setVerticalProvisional(false, for: id)
             case .glide:
                 recordAppliedVPSCorrection(id: id, from: currentPose, to: targetPose)
                 holder.move(to: target, relativeTo: nil, duration: 0.5,
                             timingFunction: .easeInOut)
                 vpsGlideUntil[id] = Date().addingTimeInterval(0.55)
                 metricsLog.log("ADR-028: deferred VPS correction applied")
-            case .none, .reject, .ignore, .deferUntilOffscreen,
+            case .ignore:
+                setVerticalProvisional(false, for: id)
+            case .none, .reject, .deferUntilOffscreen,
                  .holdForEdit, .interruptGlide:
                 break
             }
@@ -1516,6 +1552,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     }
 
     private func tick() {
+        if cameraVisible, readinessActive, sessionRunning, !isInterrupted, !sessionFailed {
+            cameraReadinessState.revokeStaleCamera(generation: sessionGeneration,
+                latestCapturedAt: arView?.session.currentFrame?.timestamp,
+                lastSceneUpdateAt: lastFrameUpdateAt,
+                observedAt: ProcessInfo.processInfo.systemUptime,
+                sessionRunAt: sessionRunSince)
+        }
+        expireCameraReadinessDeadline(generation: sessionGeneration)
         // Deferred session-failure recovery (Wave B review C6/C13/C18):
         // consumed here so a pending retry dies naturally with the tick loop
         // when the camera surface goes away (suspend cancels the deadline).
@@ -1969,7 +2013,14 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         case .transit:
             // Transit deliberately abandons the pedestrian world frame. A
             // session-local raycast cannot survive transit's GPS repositioning.
+            if !localPinOverrides.ids.isEmpty {
+                showPersistError("Vehicle mode · place session-only pins again when walking", critical: false)
+            }
             localPinOverrides.reset()
+            groundLockBaseY = groundLockBaseY.filter { roomDrops[$0.key] != nil }
+            for id in placedHolders.keys where roomDrops[id] == nil {
+                setVerticalProvisional(true, for: id)
+            }
             pendingGeographicSaves.removeAll()
             unconfirmedGeographicSaves.removeAll()
             // §6.3: LiDAR/scene-mesh occlusion is unreliable through vehicle glass
@@ -2172,6 +2223,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         contentEntities[id] = nil
         readyContentIDs.remove(id)
         groundDiscs[id] = nil
+        appliedAnchorIntents[id] = nil
+        provisionalVerticalIDs.remove(id)
         groundLockBaseY[id] = nil
         deferredTargets[id] = nil
         vpsCorrections.remove(id)
@@ -2343,6 +2396,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
 
         let drops = admittedGeoDrops
+        for drop in drops { reconcileAnchorIntent(for: drop) }
         let dropIDs = Set(drops.map(\.id))
         let placedGeoIDs = Set(placedHolders.keys).subtracting(roomDrops.keys)
 
@@ -2454,17 +2508,20 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
 
     /// Creates/moves one holder entity per drop at its world position. Existing
     /// holders slide smoothly to corrected positions instead of popping.
-    private func syncGPSPlacements(drops: [GeoDrop], fix: CLLocation, frame: ARFrame, animated: Bool) {
+    private func syncGPSPlacements(
+        drops: [GeoDrop], fix: CLLocation, frame: ARFrame, animated: Bool,
+        retireMissing: Bool = true
+    ) {
         guard let arView else { return }
         let root = ensureWorldRoot(in: arView)
 
         // The GPS fix describes where the camera is *right now*.
         let cam = frame.camera.transform.columns.3
-        let groundY = estimatedGroundY(frame: frame) ?? (cam.y - 1.5)
 
         var seen: Set<UUID> = []
         var placedUsingValidOffset = false
         for drop in drops {
+            reconcileAnchorIntent(for: drop)
             if let localWorld = localPinOverrides.worldTransform(for: drop.id) {
                 seen.insert(drop.id)
                 if placedHolders[drop.id] != nil {
@@ -2510,14 +2567,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             let east = horizontal.x
             let north = horizontal.y
             placedUsingValidOffset = true
-            // Whatever the ground estimate did, content must stay in the band the
-            // viewer can actually see: never below their feet, never in the clouds.
-            // A ground lock (ADR-027) wins outright — it's a real measurement.
-            // Rooftop drops (ADR-042) get a nominal building height until the
-            // rooftop anchor resolves and glides them onto the real roof.
-            let rooftopNominal: Float = drop.isRooftop ? 8 : 0
-            let y = groundLockBaseY[drop.id]
-                ?? min(max(groundY + rooftopNominal + Float(drop.heightAboveGround), cam.y - 5), cam.y + 40)
+            let vertical = VerticalPresentationPolicy.placement(
+                vertical: drop.verticalPlacement, offset: drop.heightAboveGround,
+                cameraWorldY: cam.y, cameraEllipsoidalAltitude: fix.ellipsoidalAltitude,
+                cameraVerticalAccuracy: fix.verticalAccuracy,
+                cameraMeasuredAt: fix.timestamp, now: Date()
+            )
+            let y = groundLockBaseY[drop.id] ?? vertical.worldY
+            setVerticalProvisional(vertical.isProvisional && groundLockBaseY[drop.id] == nil,
+                                   for: drop.id)
             let target = SIMD3<Float>(
                 cam.x + Float(east),
                 y,
@@ -2569,7 +2627,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
 
-        for (id, _) in placedHolders where !seen.contains(id) && roomDrops[id] == nil {
+        for (id, _) in placedHolders where retireMissing && !seen.contains(id) && roomDrops[id] == nil {
             removePerDropState(id)
         }
 
@@ -2635,8 +2693,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         let disc = ModelEntity(mesh: .generateSphere(radius: 1), materials: [shadowMaterial])
         let radius = Self.groundDiscRadius(for: content, relativeTo: holder)
         disc.scale = [radius, 0.01, radius]
-        disc.position = [0, -Float(drop.heightAboveGround) + 0.04, 0]
+        disc.position = [0, -Float(drop.presentationHeightAboveGround) + 0.04, 0]
         holder.addChild(disc)
+        disc.isEnabled = !provisionalVerticalIDs.contains(drop.id)
         groundDiscs[drop.id] = disc
 
         // Way-point orb above the content: the only thing allowed to break
@@ -2794,7 +2853,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             stopPlacementMotion(for: id)
         }
         var drop = resolved
-        let oldHeight = drop.heightAboveGround
+        let oldHeight = drop.presentationHeightAboveGround
         if let height { drop.heightAboveGround = height }
         if let scale { drop.scale = scale }
         if let rotation { drop.facingDegrees = rotation }
@@ -2803,10 +2862,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         if nearestDrop == nil || nearestDrop?.id == id { nearestDrop = drop }
 
         if let holder = placedHolders[id] {
-            if let height {
-                holder.position.y += Float(height - oldHeight)
+            if height != nil {
+                holder.position.y += Float(drop.presentationHeightAboveGround - oldHeight)
                 // Keep the grounding disc on the ground under the moved content.
-                groundDiscs[id]?.position.y = -Float(drop.heightAboveGround) + 0.04
+                groundDiscs[id]?.position.y = -Float(drop.presentationHeightAboveGround) + 0.04
             }
             if let rotation {
                 // Same convention as placement: facing bearing β ⇒ AR yaw π − (β − corr).
@@ -2877,70 +2936,65 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             .truncatingRemainder(dividingBy: 360)
     }
 
-    /// "Literally on the ground" (ADR-027): measure the real surface under the drop
-    /// through a truth chain — ARKit plane raycast → LiDAR mesh raycast → sane-band
-    /// plane estimate → standing height — then GROUND-LOCK the result so GPS
-    /// re-syncs and VPS terrain anchors can't re-float it (field report 2026-07-07:
-    /// snap landed, then the geo pipeline lifted it again).
+    /// Copy only measured plane geometry into the support contract. Estimated
+    /// infinite planes cannot establish that a surface exists beneath the object.
+    func supportHit(from result: ARRaycastResult) -> SupportSurfaceHit? {
+        guard let frame = arView?.session.currentFrame,
+              frame.camera.trackingState == .normal,
+              let plane = result.anchor as? ARPlaneAnchor,
+              plane.alignment == .horizontal else { return nil }
+        let boundary = plane.geometry.boundaryVertices
+        guard boundary.count <= 128 else { return nil }
+        let footprint = boundary.map { vertex -> SIMD2<Float> in
+            let world = plane.transform * SIMD4(vertex.x, vertex.y, vertex.z, 1)
+            return SIMD2(world.x, world.z)
+        }
+        let position = result.worldTransform.columns.3
+        let normal = plane.transform.columns.1
+        return SupportSurfaceHit(
+            worldPosition: SIMD3(position.x, position.y, position.z),
+            worldNormal: SIMD3(normal.x, normal.y, normal.z),
+            source: .planeGeometry, surfaceID: plane.identifier,
+            footprintXZ: footprint, frameTimestamp: frame.timestamp,
+            sessionGeneration: sessionGeneration
+        )
+    }
+
+    /// Ground snap needs measured geometry at the object's world X/Z. A camera-
+    /// area plane or assumed eye height never establishes a committed support.
     func snapNearestDropToGround() {
         guard let arView, let drop = nearestDrop,
-              let holder = placedHolders[drop.id],
-              canEditDrop(drop.id) else { return }
-        let base = holder.position
-        var groundY: Float?
-
-        let query = ARRaycastQuery(
-            origin: SIMD3(base.x, base.y + 3, base.z),
-            direction: SIMD3(0, -1, 0),
-            allowing: .estimatedPlane,
-            alignment: .horizontal
-        )
-        if let hit = arView.session.raycast(query).first {
-            groundY = hit.worldTransform.columns.3.y
+              let holder = placedHolders[drop.id], canEditDrop(drop.id),
+              let frame = arView.session.currentFrame,
+              frame.camera.trackingState == .normal else { return }
+        let matrix = holder.transformMatrix(relativeTo: nil)
+        let base = SIMD3(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z)
+        let origin = base + SIMD3<Float>(0, 0.05, 0)
+        let query = ARRaycastQuery(origin: origin, direction: [0, -1, 0],
+                                   allowing: .existingPlaneGeometry, alignment: .horizontal)
+        var hits = arView.session.raycast(query).compactMap { supportHit(from: $0) }
+        if appliedPerception.reconstruction,
+           let hit = arView.scene.raycast(origin: origin, direction: [0, -1, 0],
+                                         length: 20, query: .nearest,
+                                         mask: .sceneUnderstanding, relativeTo: nil).first {
+            hits.append(SupportSurfaceHit(
+                worldPosition: hit.position, worldNormal: hit.normal,
+                source: .meshRaycast, isDirectMeshRayHit: true,
+                frameTimestamp: frame.timestamp, sessionGeneration: sessionGeneration
+            ))
         }
-        // Round 2 (counsel ARPCFG-6): the mesh rung states its dependency —
-        // with reconstruction shed (transit/thermal/camera-grace) the mesh is
-        // gone and this raycast can only miss; skipping it makes the
-        // degradation explicit instead of discovered as an empty result.
-        if groundY == nil, appliedPerception.reconstruction {
-            // LiDAR reconstruction mesh (collision shapes enabled at session setup).
-            groundY = arView.scene.raycast(
-                origin: SIMD3(base.x, base.y + 3, base.z),
-                direction: SIMD3(0, -1, 0),
-                length: 30,
-                query: .nearest,
-                mask: .sceneUnderstanding,
-                relativeTo: nil
-            ).first?.position.y
-        }
-        if groundY == nil, let frame = arView.session.currentFrame {
-            groundY = estimatedGroundY(frame: frame)
-        }
-        // Round 2 (counsel ARPCFG-6): a GUESS is not a measurement. The old
-        // chain fell through to camera.y − 1.65 and then ground-LOCKED and
-        // PERSISTED it — overriding VPS terrain truth for the session with an
-        // assumed eye height. Without a real surface, the snap declines
-        // honestly instead of committing fiction.
-        guard let groundY else {
-            // Round 3 (counsel UX-3): a declined snap is ADVICE, not a data
-            // emergency — the critical slot is reserved for persistence
-            // failures and must never be evicted by a convenience feature.
-            showPersistError(
-                "Couldn't find the ground here — move closer and try again",
-                critical: false
-            )
+        guard let support = SupportSurfacePolicy.bestHit(
+            for: base, from: hits, sessionGeneration: sessionGeneration,
+            now: ProcessInfo.processInfo.systemUptime
+        ) else {
+            showPersistError("Couldn't identify a supporting surface here — move closer and try again",
+                             critical: false)
             return
         }
-
-        let currentHeight = (placedDrops[drop.id] ?? drop).heightAboveGround
-        // Round 4 (counsel F-D3-01): an AUTHORED edit — binds to the drop this
-        // function already resolved, with no gesture state involved. Routing
-        // through the gesture entry point made this a silent no-op while the
-        // ground-lock write below still landed (tap-does-nothing, then
-        // moves-by-itself, then reverts on relaunch).
-        applyEdit(to: drop.id, height: min(max(currentHeight + Double(groundY + 0.005 - base.y), -2), 20), commit: true)
-        // Set AFTER the commit (which clears locks as a manual-override signal).
-        groundLockBaseY[drop.id] = groundY + 0.005
+        if relocateNearestDrop(to: support) == .localOnly {
+            showPersistError("Placed on this surface for this camera session · shared position unchanged",
+                             critical: false)
+        }
     }
 
     /// ADR-032: a background-decoded model just landed — replace the placeholder
@@ -2982,18 +3036,28 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     /// shared-placement tolerance; GPS/compass cannot quantify the current
     /// AR-frame heading error well enough to write this point back honestly.
     @discardableResult
-    func relocateNearestDrop(to worldPoint: SIMD3<Float>) -> RelocationResult {
+    func relocateNearestDrop(to support: SupportSurfaceHit) -> RelocationResult {
         guard let drop = nearestDrop, let holder = placedHolders[drop.id],
-              let arView, canEditDrop(drop.id),
-              worldPoint.x.isFinite, worldPoint.y.isFinite, worldPoint.z.isFinite
-        else { return .rejected }
+              let arView, canEditDrop(drop.id), cameraVisible, sessionRunning,
+              !isInterrupted, !sessionFailed,
+              arView.session.currentFrame?.camera.trackingState == .normal,
+              SupportSurfacePolicy.bestHit(
+                for: support.worldPosition, from: [support],
+                sessionGeneration: sessionGeneration,
+                now: ProcessInfo.processInfo.systemUptime,
+                expectedSupportY: support.worldPosition.y
+              ) != nil else { return .rejected }
+        let worldPoint = support.worldPosition
         let id = drop.id
         // A later tap supersedes an in-flight geographic save for this view.
         nextGeographicSaveTicket &+= 1
         let saveTicket = nextGeographicSaveTicket
         pendingGeographicSaves[id] = nil
         unconfirmedGeographicSaves.remove(id)
-        var updated = placedDrops[id] ?? drop
+        guard let measured = GroundedSupportPlacement(
+            drop: placedDrops[id] ?? drop, support: support, measuredAt: Date()
+        ) else { return .rejected }
+        var updated = measured.drop
         let camera = arView.cameraTransform.translation
         let horizontalDistance = Double(simd_length(SIMD2(
             worldPoint.x - camera.x, worldPoint.z - camera.z
@@ -3011,42 +3075,41 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
         let persistent = roomDrops[id] == nil
             && !demoDrops.contains(where: { $0.id == id })
+        let vertical = projected.flatMap {
+            VerticalPresentationPolicy.publishableSupport(
+                altitudeWGS84: $0.altitudeWGS84, uncertainty: $0.verticalAccuracy,
+                measuredAt: $0.measuredAt, now: now
+            )
+        }
         let publish = persistent && GeographicWritebackPolicy.mayPublish(quality, at: now)
-            && projected.map { GeoMath.isValid($0.coordinate) } == true
+            && projected.map { GeoMath.isValid($0.coordinate) } == true && vertical != nil
         if publish, let geo = projected {
             updated.latitude = geo.coordinate.latitude
             updated.longitude = geo.coordinate.longitude
             updated.geographicQuality = quality
+            updated.verticalPlacement = vertical
             metricsLog.log("Relocate via VPS with a publishable geographic estimate")
         }
-
-        // Height above ground at the tapped point (snap small values to 0).
-        var groundY: Float?
-        if let frame = arView.session.currentFrame {
-            groundY = estimatedGroundY(frame: frame)
-        }
-        let reference = groundY ?? (arView.cameraTransform.translation.y - 1.65)
-        var height = Double(worldPoint.y - reference)
-        if abs(height) < 0.3 { height = 0 }
-        updated.heightAboveGround = min(max(height, -2), 20)
 
         // The holder belongs to the current world frame. Detach an ARGeoAnchor
         // before moving it, then let a published coordinate acquire a new one.
         releaseGeoAnchor(for: id)
         placedDrops[id] = updated
+        appliedAnchorIntents[id] = GeographicAnchorIntent(updated)
         nearestDrop = updated
         stopPlacementMotion(for: id)
         let worldRotation = Transform(matrix: holder.transformMatrix(relativeTo: nil)).rotation
         let targetWorld = Transform(
             scale: .one, rotation: worldRotation,
-            translation: SIMD3(worldPoint.x, worldPoint.y + 0.005, worldPoint.z)
+            translation: measured.holderWorldPosition
         )
-        holder.move(
-            to: targetWorld,
-            relativeTo: nil, duration: 0.3, timingFunction: .easeInOut
-        )
-        groundLockBaseY[id] = worldPoint.y + 0.005
-        groundDiscs[id]?.position.y = -Float(updated.heightAboveGround) + 0.04
+        // One actor turn commits the pose, lock and contact cue. A separate
+        // animation would leave a cue at the destination while the object moves.
+        holder.setTransformMatrix(targetWorld.matrix, relativeTo: nil)
+        groundLockBaseY[id] = measured.groundLockBaseY
+        groundDiscs[id]?.position.y = measured.groundingDiscLocalY
+        provisionalVerticalIDs.remove(id)
+        groundDiscs[id]?.isEnabled = true
         deferredTargets[id] = nil
         vpsCorrections.remove(id)
         vpsOwnedDrops.remove(id)
@@ -3058,6 +3121,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             demoDrops[index] = updated
         } else if roomDrops[id] != nil {
             roomDrops[id] = updated
+            roomWorldTransforms[id] = targetWorld.matrix
         }
         if !publish, roomDrops[id] == nil {
             localPinOverrides.stage(updated, worldTransform: targetWorld.matrix)
@@ -3095,6 +3159,9 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                     local.latitude = shared.latitude
                     local.longitude = shared.longitude
                     local.geographicQuality = shared.geographicQuality
+                    // The rejected geographic save cannot leave its altitude
+                    // attached to the restored shared coordinate.
+                    local.verticalPlacement = measured.drop.verticalPlacement
                     let pose = self.placedHolders[id]?.transformMatrix(relativeTo: nil)
                         ?? targetWorld.matrix
                     self.localPinOverrides.stage(local, worldTransform: pose)
@@ -3184,20 +3251,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         readiness = epoch
     }
 
-    private func observeHeroSceneUpdate(arView: ARView) {
+    private func observeHeroSceneUpdate(arView: ARView, heroID: UUID, visible: Bool) {
         guard cameraVisible, readinessActive, !isInterrupted, !sessionFailed,
               var epoch = readiness, epoch.heroSceneUpdateProxyAt == nil,
               let frame = arView.session.currentFrame else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        if let id = epoch.heroID, readyContentIDs.contains(id),
+        if let id = epoch.heroID, id == heroID, readyContentIDs.contains(id),
+           frame.camera.trackingState == .normal,
+           placedHolders[id]?.isEnabled == true, sceneSelection.full.contains(id),
            let content = contentEntities[id], content.isActive {
-            let bounds = content.visualBounds(relativeTo: nil)
-            guard bounds.extents.x.isFinite, bounds.extents.y.isFinite, bounds.extents.z.isFinite,
-                  simd_length(bounds.extents) > 0.0001 else { return }
-            let center = bounds.center
-            let point = arView.project(center)
-            let visible = isInView(center, arView: arView)
-                && point.map { arView.bounds.contains($0) } == true
             epoch.observeSceneUpdate(id: id, contentReady: readyContentIDs.contains(id),
                 inViewport: visible,
                 freshCamera: frame.timestamp > max(epoch.startedAt, sessionRunSince)
@@ -3210,6 +3272,145 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
         }
         readiness = epoch
+    }
+
+    private func publishCameraReadiness() {
+        let next = cameraReadinessState.snapshot
+        if next != cameraReadiness { cameraReadiness = next }
+    }
+
+    /// Both readiness consumers share one bounded visibility sample. A loaded
+    /// entity without drawable geometry cannot earn a hero scene-update proxy.
+    private func readinessHeroIsVisible(id: UUID, content: Entity?, arView: ARView,
+                                        now: TimeInterval) -> Bool {
+        guard readyContentIDs.contains(id), sceneSelection.full.contains(id),
+              placedHolders[id]?.isEnabled == true,
+              let content, content.isActive else {
+            readinessVisibilitySample = nil
+            return false
+        }
+        let identity = ObjectIdentifier(content)
+        let center: SIMD3<Float>
+        let drawable: Bool
+        if let sample = readinessVisibilitySample,
+           sample.generation == sessionGeneration, sample.id == id,
+           sample.content == identity, now >= sample.at, now - sample.at < 0.2 {
+            center = sample.center
+            drawable = sample.drawable
+        } else {
+            let bounds = content.visualBounds(relativeTo: content)
+            center = bounds.center
+            drawable = bounds.extents.x.isFinite && bounds.extents.y.isFinite
+                && bounds.extents.z.isFinite && simd_length(bounds.extents) > 0.0001
+            readinessVisibilitySample = (sessionGeneration, id, identity, now, center, drawable)
+        }
+        // Bounds are sampled in content space; current transforms and camera
+        // projection are checked every scene update so a pan cannot reuse an
+        // old positive visibility decision.
+        let world = content.transformMatrix(relativeTo: nil) * SIMD4<Float>(center, 1)
+        let worldCenter = SIMD3<Float>(world.x, world.y, world.z)
+        return drawable && isInView(worldCenter, arView: arView)
+            && arView.project(worldCenter).map { arView.bounds.contains($0) } == true
+    }
+
+    /// Called by the view's cancellable task as well as the manager tick. A
+    /// timeout reveals guidance, never successful camera or hero evidence.
+    func expireCameraReadinessDeadline(generation: Int) {
+        cameraReadinessState.expireDeadline(generation: generation,
+                                             at: ProcessInfo.processInfo.systemUptime)
+        publishCameraReadiness()
+    }
+
+    private func observeCameraReadiness(arView: ARView, sceneUpdate: Bool) {
+        guard cameraVisible, readinessActive, sessionRunning,
+              !isInterrupted, !sessionFailed, let frame = arView.session.currentFrame else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        cameraReadinessState.observeCamera(generation: sessionGeneration,
+            capturedAt: frame.timestamp, observedAt: now, sessionRunAt: sessionRunSince)
+        let tracking: CameraReadiness.Tracking
+        switch frame.camera.trackingState {
+        case .normal: tracking = .normal
+        case .limited: tracking = .limited
+        case .notAvailable: tracking = .unavailable
+        }
+        cameraReadinessState.observeTracking(tracking, generation: sessionGeneration, at: now)
+        let intendedID = readiness?.heroID
+        let token = cameraReadinessState.selectHero(intendedID,
+            generation: sessionGeneration, at: now)
+        if let token {
+            let id = token.heroID
+            let drop = placedDrops[id] ?? roomDrops[id]
+                ?? library?.drops.first(where: { $0.id == id })
+            let failed = drop.map {
+                $0.content == .animated && ($0.assetName == nil
+                    || $0.assetName.map { DropEntityFactory.isAssetFailed($0) } == true)
+            } ?? false
+            let asset: CameraReadiness.Asset = failed ? .failed
+                : (readyContentIDs.contains(id) ? .ready : .loading)
+            cameraReadinessState.observeAsset(asset, for: token, at: now)
+            if sceneUpdate {
+                let holder = placedHolders[id]
+                let content = contentEntities[id]
+                let visible = readinessHeroIsVisible(id: id, content: content,
+                    arView: arView, now: now)
+                observeHeroSceneUpdate(arView: arView, heroID: id, visible: visible)
+                cameraReadinessState.observeHeroSceneUpdate(for: token, evidence: .init(
+                    capturedAt: frame.timestamp, observedAt: now,
+                    sessionRunAt: sessionRunSince, trackingNormal: tracking == .normal,
+                    holderEnabled: holder?.isEnabled == true,
+                    fullContent: sceneSelection.full.contains(id),
+                    contentActive: content?.isActive == true,
+                    assetReady: readyContentIDs.contains(id), inViewport: visible
+                ))
+            }
+        }
+        cameraReadinessState.expireDeadline(generation: sessionGeneration, at: now)
+        publishCameraReadiness()
+    }
+
+    var cameraReadinessMessage: String? {
+        if isInterrupted { return "Camera interrupted — waiting to resume" }
+        switch cameraReadiness.phase {
+        case .hidden, .ready: return nil
+        case .opening: return "Starting the camera…"
+        case .discovering: return "Camera ready · look around for nearby drops"
+        case .loading: return "Camera ready · loading the selected object…"
+        case .recovering: return "Restoring camera tracking and content…"
+        case .degraded(.cameraUnavailable): return "The camera hasn't produced a fresh frame · retry or return to the map"
+        case .degraded(.viewfinderStalled): return "The camera view has stopped updating · retry or return to the map"
+        case .degraded(.trackingLimited): return "Tracking is limited · scan your surroundings slowly"
+        case .degraded(.assetDelayed): return "The selected object is still loading · wait here or return to the map"
+        case .degraded(.heroNotVisible): return "Object loaded · turn toward its marker"
+        case .failed(.selectedAssetFailed): return "The selected object couldn't load"
+        case .failed(.sessionFailed): return "Camera recovery needed"
+        case .failed(.cameraPermissionDenied): return "Allow camera access in Settings to continue"
+        }
+    }
+
+    var canRetryCameraReadiness: Bool {
+        cameraVisible && !isInterrupted && cameraReadiness.suggestedAction == .retry
+    }
+
+    func retryCameraReadiness() {
+        guard canRetryCameraReadiness else { return }
+        let needsCameraRestart = sessionFailed || !sessionRunning
+            || cameraReadiness.firstFreshCameraAt == nil
+            || cameraReadiness.phase == .degraded(.cameraUnavailable)
+            || cameraReadiness.phase == .degraded(.viewfinderStalled)
+        if let id = cameraReadiness.selection?.heroID,
+           let drop = placedDrops[id] ?? roomDrops[id]
+            ?? library?.drops.first(where: { $0.id == id }),
+           let name = drop.assetName, DropEntityFactory.retryFailedAsset(name) {
+            announcedFailedAssets.remove(name)
+            readyContentIDs.remove(id)
+        }
+        beginReadinessEpoch(.recovery)
+        if needsCameraRestart {
+            runGPSCompass()
+            startTicking()
+        } else if let arView {
+            observeCameraReadiness(arView: arView, sceneUpdate: false)
+        }
     }
 
     /// Record the configuration actually passed to ARKit, not feature-flag intent.
@@ -3243,6 +3444,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
     private func recordSessionPaused() {
         sessionRunning = false
         readinessActive = false
+        cameraReadinessState.hide(generation: sessionGeneration)
+        publishCameraReadiness()
         let metrics = ARBaselineMetrics.shared
         for name in ["cameraVisible", "cameraSessionRunning", "reconstructionRequested",
                      "personSegmentationRequested", "sceneDepthRequested"] {
@@ -3416,6 +3619,8 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
         let camPos = arView.cameraTransform.translation
         let device = estimate.coordinate
+        let now = Date()
+        let fix = locationService?.currentLocation(at: now)
 
         for (id, holder) in placedHolders {
             guard roomDrops[id] == nil else { continue } // AR-space anchored (ADR-025)
@@ -3431,10 +3636,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             }
             let x = camPos.x + Float(horizontal.x)
             let z = camPos.z - Float(horizontal.y)
-            // Flat-earth vertical over ≤2 km: viewer's eye ≈ 1.5 m above local ground.
-            // Rooftop drops carry the nominal building height in transit too.
-            let y = camPos.y - 1.5 + Float(drop.heightAboveGround)
-                + (drop.isRooftop ? 8 : 0)
+            let vertical = VerticalPresentationPolicy.placement(
+                vertical: drop.verticalPlacement, offset: drop.heightAboveGround,
+                cameraWorldY: camPos.y,
+                cameraEllipsoidalAltitude: fix?.ellipsoidalAltitude,
+                cameraVerticalAccuracy: fix?.verticalAccuracy,
+                cameraMeasuredAt: fix?.timestamp, now: now
+            )
+            let y = vertical.worldY
+            setVerticalProvisional(vertical.isProvisional, for: id)
             holder.position = SIMD3(x, y, z)
             // §6.2: far-field transit giants may yaw-billboard (exempt from ADR-008).
             holder.orientation = simd_quatf(
@@ -3458,13 +3668,15 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         ARBaselineMetrics.shared.observe("sceneUpdateProxy")
         let trace = ARBaselineMetrics.shared.measure("Scene update elapsed")
         defer { ARBaselineMetrics.shared.end(trace) }
-        if let arView { observeFreshCamera(arView: arView) }
+        if let arView {
+            observeFreshCamera(arView: arView)
+        }
         // RealityKit keeps rendering (and firing SceneEvents) on a frozen or
         // dead camera — render callbacks are NOT proof of session health, so
         // hold all per-frame work while interrupted/failed (Wave B review C19).
-        guard mode == .gpsCompass, let arView, cameraVisible, sessionRunning,
-              !isInterrupted, !sessionFailed
-        else { return }
+        guard let arView, cameraVisible, sessionRunning,
+              !isInterrupted, !sessionFailed else { return }
+        lastFrameUpdateAt = ProcessInfo.processInfo.systemUptime
         if !sessionFrameReady,
            let frame = arView.session.currentFrame,
            frame.timestamp > max(sessionRunSince, readiness?.startedAt ?? sessionRunSince) {
@@ -3473,10 +3685,10 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             sessionFrameReady = true
         }
         observeSelectedContentReadiness()
-        observeHeroSceneUpdate(arView: arView)
+        observeCameraReadiness(arView: arView, sceneUpdate: true)
+        guard mode == .gpsCompass else { return }
         frameCounter += 1
         let now = Date()
-        lastFrameUpdateAt = now
         if let last = lastFrameAt {
             frameIntervalsMs.append(now.timeIntervalSince(last) * 1000)
             if frameIntervalsMs.count > 240 {
@@ -3552,21 +3764,47 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
         }
     }
 
-    /// Lowest *plausible* horizontal plane ≈ the ground. Night-time depth noise
-    /// (reflective roads, headlights) can produce planes tens of meters off, and one
-    /// bad plane would sink every drop underground — so only planes within a sane
-    /// band below the camera (held at standing height) are trusted.
-    private func estimatedGroundY(frame: ARFrame) -> Float? {
-        let camY = frame.camera.transform.columns.3.y
-        let planeYs = frame.anchors.compactMap { anchor -> Float? in
-            guard let plane = anchor as? ARPlaneAnchor, plane.alignment == .horizontal else {
-                return nil
-            }
-            let y = plane.transform.columns.3.y
-            guard y > camY - 4, y < camY - 0.5 else { return nil }
-            return y
+    /// A remote edit can change the reference while a previously resolved
+    /// anchor still exists. Retire that authority before accepting the new row.
+    private func reconcileAnchorIntent(for drop: GeoDrop) {
+        guard !localPinOverrides.contains(drop.id), !liveEditingDrops.contains(drop.id) else { return }
+        let intent = GeographicAnchorIntent(drop)
+        if let previous = appliedAnchorIntents[drop.id], previous != intent {
+            stopPlacementMotion(for: drop.id)
+            geospatial.invalidateAnchor(for: drop.id)
+            vpsOwnedDrops.remove(drop.id)
+            vpsCorrections.remove(drop.id)
+            vpsGlideUntil[drop.id] = nil
+            deferredTargets[drop.id] = nil
+            groundLockBaseY[drop.id] = nil
+            if geoAnchoredDropIDs.contains(drop.id) { releaseGeoAnchor(for: drop.id) }
+            setVerticalProvisional(true, for: drop.id)
+            geoAdmissionNeedsSync = true
         }
-        return planeYs.min()
+        appliedAnchorIntents[drop.id] = intent
+    }
+
+    private func setVerticalProvisional(_ provisional: Bool, for id: UUID) {
+        if provisional, !provisionalVerticalIDs.contains(id) { provisionalVerticalIDs.insert(id) }
+        else if !provisional, provisionalVerticalIDs.contains(id) { provisionalVerticalIDs.remove(id) }
+        groundDiscs[id]?.isEnabled = !provisional
+    }
+
+    var nearestVerticalDisclosure: String? {
+        guard let drop = nearestDrop else { return nil }
+        if provisionalVerticalIDs.contains(drop.id) {
+            return drop.preferredAnchorMode == "rooftop"
+                ? "Roof height unresolved · showing a provisional discovery position"
+                : "Support height unresolved · showing a provisional discovery position"
+        }
+        if groundLockBaseY[drop.id] != nil || localPinOverrides.contains(drop.id) {
+            return "Measured surface in this camera session"
+        }
+        if let uncertainty = drop.verticalPlacement?.verticalUncertaintyMeters,
+           drop.verticalPlacement?.usableResolvedSupportAltitudeMeters != nil {
+            return String(format: "Saved support altitude estimated ±%.1f m", uncertainty)
+        }
+        return nil
     }
 
     // MARK: - Tier B: ARGeoAnchors
@@ -3595,6 +3833,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             removePerDropState(id)
         }
         for drop in drops {
+            reconcileAnchorIntent(for: drop)
             if let localWorld = localPinOverrides.worldTransform(for: drop.id) {
                 if placedHolders[drop.id] == nil {
                     let holder = makeHolder(
@@ -3618,6 +3857,18 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
                 }
                 continue
             }
+            // ARGeoAnchor without altitude resolves terrain, never roofs or a
+            // saved WGS84 local support. Keep those as discovery-only until a
+            // compatible provider resolves their vertical reference.
+            guard GeographicAnchorIntent(drop).allowsTerrainGeoAnchor else {
+                if let frame = arView.session.currentFrame,
+                   let fix = locationService?.currentLocation() {
+                    syncGPSPlacements(drops: [drop], fix: fix, frame: frame, animated: false,
+                                      retireMissing: false)
+                }
+                continue
+            }
+            setVerticalProvisional(false, for: drop.id)
             // Altitude omitted on purpose: ARKit resolves the ground elevation itself.
             let geoAnchor = ARGeoAnchor(coordinate: drop.coordinate)
             arView.session.add(anchor: geoAnchor)
@@ -3628,7 +3879,7 @@ final class GeoARSessionManager: NSObject, ObservableObject, PerceptionSubsystem
             let entity = placedHolders[drop.id]
                 ?? makeHolder(for: drop, fullContent: sceneSelection.full.contains(drop.id))
             entity.removeFromParent()
-            entity.position.y = Float(drop.heightAboveGround)
+            entity.position = [0, Float(drop.presentationHeightAboveGround), 0]
             // Geo anchor local frame: +X east, −Z north. Face the viewer's position.
             if let viewer = locationService?.location {
                 let bearing = GeoMath.bearing(from: drop.coordinate, to: viewer.coordinate)
@@ -3673,6 +3924,8 @@ extension GeoARSessionManager: ARSessionDelegate {
             ARBaselineMetrics.shared.event("sessionInterrupted")
             ARBaselineMetrics.shared.setWorkload("cameraSessionRunning", enabled: false)
             self.readinessActive = false
+            self.cameraReadinessState.failSession(.sessionFailed, generation: self.sessionGeneration)
+            self.publishCameraReadiness()
             ARBaselineMetrics.shared.endEpoch(reason: "sessionInterrupted")
             self.isInterrupted = true
             self.invalidatePerceptionWork(reason: "interruption")
@@ -3709,6 +3962,13 @@ extension GeoARSessionManager: ARSessionDelegate {
             self.invalidatePerceptionWork(reason: "failure")
             ARBaselineMetrics.shared.setWorkload("cameraSessionRunning", enabled: false)
             self.readinessActive = false
+            self.cameraReadinessState.failSession(
+                nsError.domain == ARError.errorDomain
+                    && nsError.code == ARError.Code.cameraUnauthorized.rawValue
+                    ? .cameraPermissionDenied : .sessionFailed,
+                generation: self.sessionGeneration
+            )
+            self.publishCameraReadiness()
             ARBaselineMetrics.shared.event("sessionFailed", details: "code=\(nsError.code)")
             ARBaselineMetrics.shared.endEpoch(reason: "sessionFailed")
             self.disarmSemanticMatte() // arui-4

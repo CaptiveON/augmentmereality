@@ -118,4 +118,24 @@ final class AuthoredDropOverlayTests: XCTestCase {
         XCTAssertEqual(overlay.resolve(stored), newer,
                        "A late failure cannot erase a newer authored placement")
     }
+
+    func testVerticalMetadataMovesWithPendingAuthoredPlacement() {
+        var overlay = AuthoredDropOverlay()
+        let stored = GeoDrop(latitude: 51.5, longitude: -0.12)
+        var authored = stored
+        authored.heightAboveGround = 0.005
+        authored.verticalPlacement = VerticalPlacement(
+            reference: VerticalPlacement.Reference.localSupport,
+            measuredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            provenance: VerticalPlacement.Provenance.localARRaycast
+        )
+        overlay.stage(authored)
+        var publishedMetadata = stored
+        publishedMetadata.message = "edited elsewhere"
+        let resolved = overlay.resolve(publishedMetadata)
+        XCTAssertEqual(resolved.heightAboveGround, authored.heightAboveGround)
+        XCTAssertEqual(resolved.verticalPlacement, authored.verticalPlacement)
+        XCTAssertEqual(resolved.message, "edited elsewhere")
+        XCTAssertEqual(overlay.resolve(authored), authored)
+    }
 }

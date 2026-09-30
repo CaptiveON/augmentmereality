@@ -5,6 +5,15 @@ rules_version = '2';
 // no Firebase Auth, real credentials or production Firebase configuration.
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /drops/{id} {
+      // Native owner-page fixture only. Admin REST seeds both owner and
+      // foreign documents; the SDK query must prove this owner constraint.
+      allow list: if resource.data.ownerUid in ['fixture-owner', 'fixture-small'];
+      allow get: if resource.data.ownerUid == 'fixture-owner';
+      allow update: if resource.data.ownerUid == 'fixture-owner'
+        && request.resource.data.ownerUid == 'fixture-owner';
+      allow create, delete: if false;
+    }
     match /probe/{id} {
       allow get: if resource == null || resource.data.readable == true;
       allow delete: if resource == null || resource.data.allowDelete == true;

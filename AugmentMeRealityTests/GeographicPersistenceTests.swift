@@ -16,6 +16,14 @@ final class GeographicPersistenceTests: XCTestCase {
             projectionDistanceMeters: 5,
             measuredAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
+        drop.verticalPlacement = VerticalPlacement(
+            reference: VerticalPlacement.Reference.localSupport,
+            resolvedSupportAltitudeMeters: 103.25,
+            verticalDatum: VerticalPlacement.Datum.wgs84Ellipsoid,
+            verticalUncertaintyMeters: 1.2,
+            measuredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            provenance: VerticalPlacement.Provenance.vpsProjection
+        )
         // Exercise the real SDK value codec, whose timestamp representation
         // differs from JSON. This makes no network request or Firebase app.
         let fields = try Firestore.Encoder().encode(drop)
@@ -23,6 +31,16 @@ final class GeographicPersistenceTests: XCTestCase {
         XCTAssertEqual(restored.geographicQuality, drop.geographicQuality)
         XCTAssertEqual(restored, drop)
         XCTAssertEqual(restored.geographicQuality?.measuredAt, drop.geographicQuality?.measuredAt)
+    }
+
+    func testFirestoreMalformedVerticalValueRemainsReadableButUnresolved() throws {
+        let drop = GeoDrop(latitude: 51.5, longitude: -0.12, anchorMode: "ground")
+        var fields = try Firestore.Encoder().encode(drop)
+        fields["verticalPlacement"] = "damaged"
+        let restored = try Firestore.Decoder().decode(GeoDrop.self, from: fields)
+        XCTAssertEqual(restored.id, drop.id)
+        XCTAssertTrue(restored.requiresVerticalResolutionBeforeAnchor)
+        XCTAssertFalse(GeographicAnchorIntent(restored).allowsTerrainGeoAnchor)
     }
 
     func testLocalRelaunchPreservesQualityAndManualEditReplacesClaim() async throws {
@@ -39,14 +57,23 @@ final class GeographicPersistenceTests: XCTestCase {
             projectionDistanceMeters: 5,
             measuredAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
+        drop.verticalPlacement = VerticalPlacement(
+            reference: VerticalPlacement.Reference.rooftop,
+            resolvedSupportAltitudeMeters: 118.5,
+            verticalDatum: VerticalPlacement.Datum.wgs84Ellipsoid,
+            verticalUncertaintyMeters: 1,
+            measuredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            provenance: VerticalPlacement.Provenance.vpsProjection
+        )
         try await LocalDropStore(fileURL: url).save(drop)
-        let restored = try await LocalDropStore(fileURL: url).loadDrops(near: nil, radius: 0)
+        let restored = try await LocalDropStore(fileURL: url).loadLibraryDrops()
         XCTAssertEqual(restored, [drop])
 
         drop.latitude += 0.001
         drop.geographicQuality = GeographicQuality(source: GeographicQuality.Source.mapSelection)
+        drop.verticalPlacement = VerticalPlacement(reference: VerticalPlacement.Reference.terrain)
         try await LocalDropStore(fileURL: url).save(drop)
-        let moved = try await LocalDropStore(fileURL: url).loadDrops(near: nil, radius: 0)
+        let moved = try await LocalDropStore(fileURL: url).loadLibraryDrops()
         XCTAssertEqual(moved, [drop])
         XCTAssertNil(moved.first?.geographicQuality?.horizontalEstimateMeters)
     }
@@ -59,13 +86,17 @@ final class GeographicPersistenceTests: XCTestCase {
         let id = UUID()
         try Data("""
         [{"id":"\(id.uuidString)","message":"Still readable",
-          "latitude":51.5,"longitude":-0.12,"geographicQuality":"damaged"}]
+          "latitude":51.5,"longitude":-0.12,"geographicQuality":"damaged","verticalPlacement":"damaged"}]
         """.utf8).write(to: url)
         let store = LocalDropStore(fileURL: url)
-        let drops = try await store.loadDrops(near: nil, radius: 0)
+        let drops = try await store.loadLibraryDrops()
         XCTAssertEqual(drops.map(\.id), [id])
         XCTAssertEqual(drops.first?.message, "Still readable")
         XCTAssertNil(drops.first?.geographicQuality)
+        XCTAssertNotNil(drops.first?.verticalPlacement)
+        XCTAssertEqual(drops.first?.verticalReference, VerticalPlacement.Reference.unresolved)
+        XCTAssertTrue(drops.first?.requiresVerticalResolutionBeforeAnchor ?? false)
+        XCTAssertFalse(drops.first.map { GeographicAnchorIntent($0).canRequestVPSAnchor } ?? true)
         let incident = await store.lastStorageIncident()
         XCTAssertNil(incident)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))

@@ -37,7 +37,7 @@ struct AugmentMeRealityApp: App {
                     arSessionHolder.configure(
                         locationService: locationService, library: dropLibrary
                     )
-                    await dropLibrary.refresh(near: locationService.location)
+                    await dropLibrary.refreshLibrary()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
@@ -55,7 +55,7 @@ struct AugmentMeRealityApp: App {
                         // background re-runs the sync pass so the evidence
                         // ladder reflects the world that may have changed
                         // while the app was suspended.
-                        Task { await dropLibrary.refresh(near: locationService.location) }
+                        Task { await dropLibrary.refreshLibrary() }
                     default:
                         break
                     }

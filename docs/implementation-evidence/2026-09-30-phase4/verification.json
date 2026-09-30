@@ -1,0 +1,143 @@
+{
+  "checkedAt": "2026-09-30T01:32:15.767262+00:00",
+  "baseCommit": "3a26e0b5bc1ae08a0c22e680df7a7f4963a738ed",
+  "sourceState": "uncommitted working tree",
+  "sourceAggregateSHA256": "01215322ddcd7730fc39e134778d7095a7ee6b72d2fc1df83f1159a5e35f1f15",
+  "sourceFileCount": 112,
+  "sourceFingerprintVerified": true,
+  "xcode": "Xcode 26.6\nBuild version 17F113",
+  "sdk": "26.5",
+  "tests": {
+    "current": {
+      "totalTestCount": 366,
+      "passedTests": 366,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    },
+    "minimum": {
+      "totalTestCount": 366,
+      "passedTests": 364,
+      "failedTests": 0,
+      "skippedTests": 2,
+      "result": "Passed"
+    },
+    "tsan": {
+      "totalTestCount": 174,
+      "passedTests": 174,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "result": "Passed"
+    }
+  },
+  "minimumSkipReason": "Two opt-in native Firestore emulator contracts; both passed in current-iOS lane",
+  "debugBuild": "passed, incremental test-host build; zero app diagnostics",
+  "unsignedReleaseBuild": "passed, complete compile; zero app diagnostics",
+  "releaseCompiledOwnershipBoundaries": 16,
+  "swift6": {
+    "wholeAppSILCompile": "passed",
+    "errors": 0,
+    "warnings": 0,
+    "productionLanguageMode": 5,
+    "usesRealSDKAndDependencies": true,
+    "commandSHA256": "910d2873c841d5d7b484ef94fe1deac4bb266e7b26d6a371e3749e1622facb0f"
+  },
+  "threadSanitizer": {
+    "runtimeLinked": true,
+    "reportedRaces": 0,
+    "scope": "174 selected simulator AR, storage, placement, readiness and asset-preparation tests; not physical renderer-safety proof"
+  },
+  "rulesTests": {
+    "drift": 8,
+    "current": 60,
+    "historical": 6
+  },
+  "nativeOwnerPaging": {
+    "smallDocumentCount": 10,
+    "smallMilliseconds": 235.9677916392684,
+    "largePageCounts": [
+      64,
+      64,
+      2
+    ],
+    "largePageMilliseconds": [
+      20.06120834266767,
+      16.082708374597132,
+      7.642208365723491
+    ],
+    "pendingDeletePageCount": 63,
+    "pendingDeleteRowOmitted": true,
+    "pendingDeleteReachedEnd": true,
+    "pendingDeleteMetadataPending": false,
+    "ownerBoundGuardBlockedFalseCompletion": true,
+    "timingScope": "Loopback emulator, not production latency"
+  },
+  "nativeSDKGateCounters": {
+    "heldWrites": 3,
+    "heldReads": 1,
+    "readyRequests": 7,
+    "seedRequests": 3,
+    "ownerPageSeeds": 1,
+    "startupListens": 1
+  },
+  "nativeFixtureSHA256": {
+    "web/rules-tests/native-sdk-emulator.mjs": "116f68153d2ec28011c1ee11d9ed667880f7d345b7b44eef8cb67c0802b456a6",
+    "web/rules-tests/native-sdk-fixture.rules": "802a9006b3d0bc04020057000c998c8e24318144001e40fd573e65349d31d016",
+    "web/rules-tests/run-native-sdk-tests.sh": "3a9050d97b27b09ab98d1f2a18c068f5db7fa52b0e370706c5f982004c4ef924",
+    "web/rules-tests/rules.test.mjs": "8feb4a3a913a94c91693857cf1019fa798e760769fcc4e3fc9888c59b4efbe15"
+  },
+  "launchSmoke": {
+    "current": true,
+    "minimum": true,
+    "allFourScreenshotsInspected": true,
+    "scope": "Root and unsupported-camera screens; no physical AR/readiness UI proof"
+  },
+  "githubCI": {
+    "status": "deferred at explicit owner request because Actions credits are exhausted",
+    "hostedPassClaimed": false,
+    "workflowDefinitionsUnchanged": true
+  },
+  "phoneUsedForValidation": false,
+  "phoneBuildInstalled": false,
+  "realServiceConfiguration": "excluded from simulator and unsigned Release builds",
+  "liveFirebaseIntegrationTests": "excluded; native SDK contracts use disposable emulator",
+  "cloudKit": "codec tested; backend disabled, no schema deployment",
+  "rulesOrIndexesDeployed": false,
+  "logs": {
+    "build.log": {
+      "path": "/tmp/amr-phase4-sep30/build.log",
+      "sha256": "d53d86e43b14e4a6ded99056439b3956c826375b2674d4bc65901dda157333d8"
+    },
+    "native-tests.log": {
+      "path": "/tmp/amr-phase4-sep30/native-tests.log",
+      "sha256": "eccbb49ac986db1221ab32fe975d2d3ceca4959a49b96fabf51a6d68dff4c311"
+    },
+    "minimum.log": {
+      "path": "/tmp/amr-phase4-sep30/minimum.log",
+      "sha256": "9fa1133fc5a71a199acdbc33f3269c4b3fb5bce145babb97e9051dd6b2d19908"
+    },
+    "tsan.log": {
+      "path": "/tmp/amr-phase4-sep30/tsan.log",
+      "sha256": "3300ef6056d7a0794d2360953ffd2b1740ac329cfc6ad707102cfb5c0624fbf5"
+    },
+    "release.log": {
+      "path": "/tmp/amr-phase4-sep30/release.log",
+      "sha256": "d03c11bb73fb7dd84a245e1a1b19a6c27c61133b93df64fc4f053aa9848d2d26"
+    },
+    "swift6.log": {
+      "path": "/tmp/amr-phase4-sep30/swift6.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rules-tests.log": {
+      "path": "/tmp/amr-phase4-sep30/rules-tests.log",
+      "sha256": "bce30aa7f4213f631fe4fdf7261b39e83d3081dcbf7c282a193d3078316b6754"
+    }
+  },
+  "remaining": [
+    "#10 slopes, steps, multiple floors, roof and second-device/reopen acceptance",
+    "#17 physical cold/cached hero appearance, interrupted/resumed interaction and presentation",
+    "#18 production object-state consolidation and manager lifecycle tests, then #11\u2013#14 depth/occlusion",
+    "Physical sustained Release thermal/frame pacing and other release gates",
+    "Hosted CI when credits are available"
+  ]
+}

@@ -9,14 +9,18 @@ import os
 /// Calls cross the main-actor library boundary, so implementations must own
 /// mutable state in an actor or be immutable and safe to share between tasks.
 protocol DropStore: Sendable {
-    /// `near` is a hint for backends that support geo queries; local storage ignores it.
-    func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop]
     /// Returns the CANONICAL stored form — a backend that stamps fields during
     /// the write (Firebase stamps `ownerUid`, round 8 counsel B1) reports them
     /// back so the caller can persist server truth instead of guessing it.
     @discardableResult
     func save(_ drop: GeoDrop) async throws -> GeoDrop
     func delete(_ drop: GeoDrop) async throws
+}
+
+/// Complete unpaged reads for local storage and legacy cloud backends. A
+/// location is deliberately absent: this is a library sync, not discovery.
+protocol LibraryDropLoading: DropStore {
+    func loadLibraryDrops() async throws -> [GeoDrop]
 }
 
 /// Round 8 (counsel B3/state-1/state-2): a NEGATIVE fact ("the server no
@@ -63,12 +67,73 @@ struct CloudRead: Sendable {
     var serverConfirmedIDs: Set<UUID>
 }
 
-/// Adopted by cloud stores that can report read provenance. The plain
-/// `loadDrops` stays for display merging; THIS is what evidence keys on.
-protocol ProvenancedDropStore: Sendable {
-    func loadDropsWithProvenance(
-        near location: CLLocation?, radius: CLLocationDistance
-    ) async throws -> CloudRead
+/// Adopted by unpaged cloud stores that can report read provenance. The plain
+/// library read stays for display merging; THIS is what evidence keys on.
+protocol ProvenancedDropStore: LibraryDropLoading {
+    func loadLibraryDropsWithProvenance() async throws -> CloudRead
+}
+
+/// A bounded owner collection read. The IDs describe every query document,
+/// including a row whose payload could not decode; they form the cursor and
+/// are not absence evidence for any other document.
+struct OwnerLibraryPage: Sendable {
+    let read: CloudRead
+    let documentIDs: [String]
+    let reachedEnd: Bool
+    /// A local pending create/delete can change page membership or length;
+    /// no cursor or completion fact is earned from that overlaid result.
+    let containsPendingWrites: Bool
+    let unreadableDocumentCount: Int
+}
+
+protocol OwnerLibraryPaging: DropStore {
+    func loadOwnerPage(after documentID: String?, limit: Int) async throws -> OwnerLibraryPage
+}
+
+struct OwnerSyncProgress: Equatable, Sendable {
+    let loadedRows: Int
+    let pagesRead: Int
+    let documentsRead: Int
+    let lastPageLatencyMilliseconds: Double
+    let isComplete: Bool
+}
+
+/// Firestore reads at most this many owner documents in one refresh. Document
+/// IDs are immutable, so a cursor survives edits that change drop content or
+/// geographic position. A completed sweep starts again at the first ID on
+/// the next refresh, eventually picking up inserts behind the old cursor.
+enum OwnerLibraryPagingPolicy {
+    static let pageSize = 64
+
+    static func mayAdvance(_ page: OwnerLibraryPage, pendingLocalOperations: Bool) -> Bool {
+        !page.read.servedFromCache && !page.containsPendingWrites && !pendingLocalOperations
+    }
+
+    enum PageError: LocalizedError {
+        case invalidOrder
+        case tooManyDocuments
+        case noForwardProgress
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidOrder: return "The owner library page was out of order — retry sync"
+            case .tooManyDocuments: return "The owner library page exceeded its limit — retry sync"
+            case .noForwardProgress: return "The owner library page could not advance — retry sync"
+            }
+        }
+    }
+
+    static func nextCursor(after cursor: String?, page: OwnerLibraryPage) throws -> String? {
+        guard page.documentIDs.count <= pageSize else { throw PageError.tooManyDocuments }
+        guard page.documentIDs == page.documentIDs.sorted() else {
+            throw PageError.invalidOrder
+        }
+        let forward = page.documentIDs.last { id in cursor.map { id > $0 } ?? true }
+        if forward == nil && (!page.reachedEnd || !page.documentIDs.isEmpty) {
+            throw PageError.noForwardProgress
+        }
+        return page.reachedEnd ? nil : forward
+    }
 }
 
 /// Errors the sync layer must distinguish (Wave C, counsel SWE-3): "no account
@@ -157,7 +222,7 @@ struct StorageIncidentObservation: Sendable {
 /// cooperative pool from independent Tasks — two slider releases within ~ms
 /// could clobber each other's write (an edit that "didn't stick", or a freshly
 /// created drop vanishing from disk).
-actor LocalDropStore: DropStore, LocalStoreDiagnostics {
+actor LocalDropStore: LibraryDropLoading, LocalStoreDiagnostics {
     private let fileURL: URL
     nonisolated let lossLedgerURL: URL
     private let log = Logger(subsystem: "com.adnan.augmentmereality", category: "store")
@@ -218,7 +283,7 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
         }
     }
 
-    func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop] {
+    func loadLibraryDrops() async throws -> [GeoDrop] {
         try readDropsFromDisk()
     }
 
@@ -631,6 +696,10 @@ final class DropLibrary: ObservableObject {
     /// read answered. Until this is true every surface reports "checking",
     /// never "Synced" — the good state is earned, not a fallthrough.
     @Published private(set) var hasCompletedCleanRefresh = false
+    /// A Firebase owner sweep advances by one bounded document-ID page per
+    /// refresh. The count is unique decoded rows seen in this sweep, not a
+    /// server total; the UI can offer an explicit continuation while incomplete.
+    @Published private(set) var ownerSyncProgress: OwnerSyncProgress?
     /// Compatibility projection of IDs named by unresolved storage incidents.
     /// A whole-file incident may include previously saved candidates; these
     /// IDs do not assert irreversible loss. The file-backed ledger also keeps
@@ -660,7 +729,7 @@ final class DropLibrary: ObservableObject {
         return "\(records.count) unresolved saved-data incident\(records.count == 1 ? "" : "s")"
     }
 
-    private let local: DropStore
+    private let local: LibraryDropLoading
     private let cloud: DropStore?
     private let defaults: UserDefaults
     /// Read on every command, including when a sheet has been open through an
@@ -683,6 +752,19 @@ final class DropLibrary: ObservableObject {
     private var deleteAttempts: [UUID: Int] = [:]
     /// Round 4 (sync-4/concurrency-4/flows-1): publish-path generation.
     private var refreshGeneration: UInt64 = 0
+    private var ownerPageCursor: String?
+    private var ownerPageUID: String?
+    private var ownerSweepSeenIDs: Set<UUID> = []
+    private var ownerSweepPages = 0
+    private var ownerSweepDocumentsRead = 0
+    private var ownerSweepHadUnreadableRows = false
+    private var ownerHasUnresolvedUnreadableRows = false
+    /// Cloud-only rows fetched under an earlier UID must leave the in-memory
+    /// view on account change; rows also on disk remain visible with their
+    /// existing ownership markers.
+    private var ownerCloudPublishedIDs: Set<UUID> = []
+    private var staleOwnerCloudIDs: Set<UUID> = []
+    private var lastSuccessfulLocalIDs: Set<UUID> = []
     /// Round 14 (counsel state-1/flows-lens-1 — CRITICAL): PER-ROW mutation
     /// epochs. remove()'s round-12 post-await guard keyed on the GLOBAL
     /// publish counter, so any concurrent refresh (including the round-12
@@ -752,7 +834,7 @@ final class DropLibrary: ObservableObject {
     /// test suite must NEVER touch the shipping app's persisted state);
     /// production picks the cloud store by configuration.
     init(
-        localStore: DropStore = LocalDropStore(),
+        localStore: LibraryDropLoading = LocalDropStore(),
         cloudStore: DropStore? = AppConfig.firebaseConfigured
             ? FirebaseDropStore()
             : (AppConfig.cloudKitEnabled ? CloudKitDropStore() : nil),
@@ -839,21 +921,46 @@ final class DropLibrary: ObservableObject {
         pendingSyncIDs.count - uploadingCount
     }
 
-    func refresh(near location: CLLocation?) async {
+    func refreshLibrary() async {
         // Round 4 (sync-4): every mutator bumps the generation; this refresh
         // re-checks after EVERY await and aborts if it was superseded — a
         // stale snapshot must never be published over newer state.
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        let requestUID = activeUID
+        if cloud is OwnerLibraryPaging {
+            if ownerPageUID != requestUID {
+                staleOwnerCloudIDs.formUnion(ownerCloudPublishedIDs)
+                // Hide known cloud-only rows BEFORE the local read awaits. If
+                // that read fails, the previous account's rows must still
+                // leave this account's in-memory view. Keep known local rows
+                // and pending local edits until disk can be read again.
+                let cloudOnly = ownerCloudPublishedIDs
+                    .subtracting(lastSuccessfulLocalIDs)
+                    .subtracting(pendingSyncIDs)
+                drops.removeAll { cloudOnly.contains($0.id) }
+                ownerCloudPublishedIDs = []
+                ownerPageUID = requestUID
+                hasCompletedCleanRefresh = false
+                ownerHasUnresolvedUnreadableRows = false
+                resetOwnerSweep()
+            } else if ownerSyncProgress?.isComplete == true {
+                // The next refresh starts another pass. New IDs inserted
+                // behind the previous cursor are then reachable.
+                resetOwnerSweep()
+                hasCompletedCleanRefresh = false
+            }
+        }
 
         var merged: [UUID: GeoDrop] = [:]
         var localOutcome: LocalLoadOutcome?
         var localLoadedIDs: Set<UUID> = []
         do {
-            let localDrops = try await local.loadDrops(near: nil, radius: 0)
+            let localDrops = try await local.loadLibraryDrops()
             guard refreshGeneration == generation else { return }
             for drop in localDrops { merged[drop.id] = drop }
             localLoadedIDs = Set(localDrops.map(\.id))
+            lastSuccessfulLocalIDs = localLoadedIDs
         } catch {
             // Round 4 (sync-3): a sync pass that cannot read local truth must
             // ABORT, not proceed. Round 6 (counsel :281 ×3): the failure
@@ -893,15 +1000,26 @@ final class DropLibrary: ObservableObject {
                 quarantine: outcome == .quarantinedWholeFile
             )
         }
+        guard refreshGeneration == generation, activeUID == requestUID else { return }
         // Round 10 (counsel own-2) + round 12 (counsel STATE-lens-4/FLOWS-
         // lens-4): TWO-PHASE PUBLISH, and phase 1 is ADDITIVE — it seeds from
         // what is already published (keeping cloud-contributed rows) and
         // overlays the fresh local load. A partial or superseded pass can
         // therefore never blink cloud rows out, tear down their AR entities,
-        // or strand the library on "No drops yet"; phase 2 (after a
-        // SUCCESSFUL cloud read) remains the authoritative replace.
+        // or strand the library on "No drops yet". An owner page also preserves
+        // values learned on earlier pages when local disk has an older copy.
         var phase1 = Dictionary(uniqueKeysWithValues: drops.map { ($0.id, $0) })
-        for (id, drop) in merged { phase1[id] = drop }
+        for id in staleOwnerCloudIDs where !localLoadedIDs.contains(id) { phase1[id] = nil }
+        staleOwnerCloudIDs = []
+        for (id, drop) in merged {
+            // A server edit learned on an earlier owner page remains newer
+            // than its stale local disk copy until that ID is revisited.
+            // An unacknowledged local edit always wins instead.
+            if cloud is OwnerLibraryPaging,
+               ownerCloudPublishedIDs.contains(id),
+               !pendingSyncIDs.contains(id), phase1[id] != nil { continue }
+            phase1[id] = drop
+        }
         for id in pendingDeleteIDs { phase1[id] = nil }
         for id in unresolvedDeleteIDs { phase1[id] = nil }
         drops = phase1.values.sorted { $0.createdAt > $1.createdAt }
@@ -911,20 +1029,65 @@ final class DropLibrary: ObservableObject {
         // server to have actually answered.
         var cloudReadCompleted = false
         var cloudReadServerServed = false
+        var currentPageIDs: Set<UUID> = []
         if let cloud {
             do {
                 let read: CloudRead
-                if let provenanced = cloud as? ProvenancedDropStore {
-                    read = try await provenanced.loadDropsWithProvenance(
-                        near: location, radius: AppConfig.nearbyQueryRadius
+                if let owner = cloud as? OwnerLibraryPaging {
+                    guard let requestUID else { throw DropStoreError.notSignedIn }
+                    let pendingAtStart = hasPendingOwnerMutation(
+                        for: requestUID, localRows: merged
                     )
+                    let pageStartedAt = ProcessInfo.processInfo.systemUptime
+                    let page = try await owner.loadOwnerPage(
+                        after: ownerPageCursor, limit: OwnerLibraryPagingPolicy.pageSize
+                    )
+                    let pageLatencyMilliseconds = max(0,
+                        (ProcessInfo.processInfo.systemUptime - pageStartedAt) * 1_000)
+                    guard refreshGeneration == generation, activeUID == requestUID else { return }
+                    let pendingAtEnd = hasPendingOwnerMutation(
+                        for: requestUID, localRows: merged
+                    )
+                    let mayAdvance = OwnerLibraryPagingPolicy.mayAdvance(
+                        page, pendingLocalOperations: pendingAtStart || pendingAtEnd
+                    )
+                    let nextCursor = mayAdvance
+                        ? try OwnerLibraryPagingPolicy.nextCursor(after: ownerPageCursor, page: page)
+                        : ownerPageCursor
+                    read = page.read
+                    currentPageIDs = Set(read.drops.map(\.id))
+                    if mayAdvance {
+                        ownerPageCursor = nextCursor
+                        ownerSweepPages += 1
+                        ownerSweepDocumentsRead += page.documentIDs.count
+                        ownerSweepSeenIDs.formUnion(read.drops.map(\.id))
+                        ownerSweepHadUnreadableRows = ownerSweepHadUnreadableRows
+                            || page.unreadableDocumentCount > 0
+                        if page.reachedEnd && !ownerSweepHadUnreadableRows {
+                            ownerHasUnresolvedUnreadableRows = false
+                        }
+                        ownerSyncProgress = OwnerSyncProgress(
+                            loadedRows: ownerSweepSeenIDs.count,
+                            pagesRead: ownerSweepPages,
+                            documentsRead: ownerSweepDocumentsRead,
+                            lastPageLatencyMilliseconds: pageLatencyMilliseconds,
+                            isComplete: page.reachedEnd
+                        )
+                        log.log("Owner page read \(page.documentIDs.count) documents in \(pageLatencyMilliseconds) ms; sweep pages \(self.ownerSweepPages)")
+                    }
+                    ownerCloudPublishedIDs.formUnion(read.drops.map(\.id))
+                    if page.unreadableDocumentCount > 0 {
+                        ownerHasUnresolvedUnreadableRows = true
+                        lastSyncError = "Some cloud drops couldn't be read — sync needs attention"
+                    }
+                } else if let provenanced = cloud as? ProvenancedDropStore {
+                    read = try await provenanced.loadLibraryDropsWithProvenance()
                 } else {
                     // A store without provenance (legacy CloudKit) performs
                     // real network reads — there is no cache to serve from
                     // and no latency compensation to fabricate rows.
-                    let rows = try await cloud.loadDrops(
-                        near: location, radius: AppConfig.nearbyQueryRadius
-                    )
+                    guard let unpaged = cloud as? LibraryDropLoading else { return }
+                    let rows = try await unpaged.loadLibraryDrops()
                     read = CloudRead(
                         drops: rows, servedFromCache: false,
                         serverConfirmedIDs: Set(rows.map(\.id))
@@ -950,7 +1113,10 @@ final class DropLibrary: ObservableObject {
                 // Round 12 (counsel SEAMS-lens-3): a verdict is revoked only
                 // by its issuing authority — a cache-served read must not
                 // clear a server-issued sync failure.
-                if cloudReadServerServed { lastSyncError = nil }
+                if cloudReadServerServed,
+                   !(cloud is OwnerLibraryPaging && ownerHasUnresolvedUnreadableRows) {
+                    lastSyncError = nil
+                }
             } catch DropStoreError.notSignedIn {
                 guard refreshGeneration == generation else { return }
             } catch {
@@ -958,13 +1124,22 @@ final class DropLibrary: ObservableObject {
                 lastSyncError = error.localizedDescription
             }
         }
-        // Phase 2 — the authoritative replace, earned by a COMPLETED cloud
-        // read (or the absence of a cloud store). A failed read leaves the
+        // Phase 2 merges a completed cloud read with local truth. A paged
+        // owner read adds rows already published by earlier pages: an omitted
+        // page is never a server-confirmed deletion. A failed read leaves the
         // additive phase-1 publish standing (round 12, FLOWS-lens-4).
         // Tombstones (pending AND unresolved) suppress the WHOLE merged set:
         // a locally deleted drop must not resurrect from either source while
         // its delete is unconfirmed or refused.
         if cloud == nil || cloudReadCompleted {
+            if cloud is OwnerLibraryPaging {
+                for (id, drop) in phase1 where merged[id] == nil
+                    || (ownerCloudPublishedIDs.contains(id)
+                        && !currentPageIDs.contains(id)
+                        && !pendingSyncIDs.contains(id)) {
+                    merged[id] = drop
+                }
+            }
             for id in pendingDeleteIDs { merged[id] = nil }
             for id in unresolvedDeleteIDs { merged[id] = nil }
             drops = merged.values.sorted { $0.createdAt > $1.createdAt }
@@ -1045,8 +1220,11 @@ final class DropLibrary: ObservableObject {
                 return false
             }
         }()
+        let ownerSweepComplete = cloud is OwnerLibraryPaging
+            ? ownerSyncProgress?.isComplete == true && !ownerSweepHadUnreadableRows
+            : cloudReadServerServed
         if localProvablyClean, storageLedgerError == nil,
-           cloud == nil || cloudReadServerServed {
+           cloud == nil || (cloudReadServerServed && ownerSweepComplete) {
             hasCompletedCleanRefresh = true
         }
 
@@ -1098,6 +1276,31 @@ final class DropLibrary: ObservableObject {
         }
     }
 
+    private func resetOwnerSweep() {
+        ownerPageCursor = nil
+        ownerSweepSeenIDs = []
+        ownerSweepPages = 0
+        ownerSweepDocumentsRead = 0
+        ownerSweepHadUnreadableRows = false
+        ownerSyncProgress = nil
+    }
+
+    /// Firestore can omit a locally deleted row from a server-served query
+    /// without setting pending-write metadata. Only writes for this owner can
+    /// change this owner's query boundary. Pending work bound to another UID
+    /// survives an account switch, but must not hold the new UID's sweep.
+    private func hasPendingOwnerMutation(
+        for uid: String, localRows: [UUID: GeoDrop]
+    ) -> Bool {
+        if pendingDeleteIDs.contains(where: { id in
+            pendingDeleteOwners[id].map { $0 == uid } ?? true
+        }) { return true }
+        return pendingSyncIDs.contains { id in
+            let owner = pendingSyncOwners[id] ?? localRows[id]?.ownerUid
+            return owner.map { $0 == uid } ?? true
+        }
+    }
+
     /// Round 6 (counsel concurrency-5): the incident banner is resolvable by
     /// the user — a legitimately empty library must not carry it forever.
     /// Round 8 (counsel ux-6): the dismissal is a MUTATOR that owns its own
@@ -1119,7 +1322,7 @@ final class DropLibrary: ObservableObject {
             // Round 10 (counsel ux-3): the generation bump above may have
             // aborted an in-flight refresh — the dismissal must not strand
             // the library unpublished for the rest of the session.
-            await self.refresh(near: nil)
+            await self.refreshLibrary()
         }
     }
 
@@ -1213,7 +1416,7 @@ final class DropLibrary: ObservableObject {
             knownAbsenceCapability = nil
             deniedAbsenceRetryAt = nil
         }
-        await refresh(near: nil)
+        await refreshLibrary()
         if changed || firstPassThisSession {
             // Terminal verdicts were issued against an earlier connection or
             // an earlier session — revalidate each; the outcomes decide (an

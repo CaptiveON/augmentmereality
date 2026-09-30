@@ -54,10 +54,12 @@ private struct ARScreenContent: View {
     @State private var hudHidden = false
     /// ADR-041: next camera tap re-homes the nearest drop to the tapped point.
     @State private var pinningToSpot = false
-    /// ADR-043 reveal: masks camera+VIO bring-up as a designed moment. Dismissed
-    /// by real readiness (first frame) or the hard cap — never an empty viewfinder.
-    @State private var revealing = false
-    @State private var revealStartedAt = Date.distantPast
+    /// The opening cover follows observed camera state. Slow/failed content
+    /// remains explicit in the live viewfinder; a timer is never load success.
+    private var revealing: Bool {
+        isActive && manager.cameraReadiness.phase != .hidden
+            && !manager.cameraReadiness.showsLiveViewfinder
+    }
     // Local slider values for the live adjust panel; synced per nearest drop.
     @State private var liveHeight = 3.0
     @State private var liveScale = 3.0
@@ -73,11 +75,6 @@ private struct ARScreenContent: View {
                 }
                 if isActive {
                     holder.cameraDidAppear()
-                    // ADR-048: presented as a cover — reveal on appear too.
-                    if !manager.sessionFrameReady {
-                        revealing = true
-                        revealStartedAt = Date()
-                    }
                 }
             }
             .onDisappear {
@@ -215,33 +212,14 @@ private struct ARScreenContent: View {
                 Spacer()
             }
         }
-        .onChange(of: isActive) { _, active in
-            if active, !manager.sessionFrameReady {
-                revealing = true
-                revealStartedAt = Date()
-            }
-        }
-        .onChange(of: manager.sessionFrameReady) { _, ready in
-            if ready { endRevealSoon() }
-        }
-        .task(id: revealing) {
-            guard revealing else { return }
-            try? await Task.sleep(
-                nanoseconds: UInt64(AppConfig.revealMaxSeconds * 1_000_000_000)
-            )
-            withAnimation(.easeOut(duration: 0.35)) { revealing = false }
-        }
-    }
-
-    /// Hold the overlay just long enough to feel intentional (≥0.45 s), then fade.
-    private func endRevealSoon() {
-        let minimum: TimeInterval = 0.45
-        let elapsed = Date().timeIntervalSince(revealStartedAt)
-        Task {
-            if elapsed < minimum {
-                try? await Task.sleep(nanoseconds: UInt64((minimum - elapsed) * 1_000_000_000))
-            }
-            withAnimation(.easeOut(duration: 0.35)) { revealing = false }
+        .task(id: manager.cameraReadiness.deadlineAt) {
+            guard isActive, let deadline = manager.cameraReadiness.deadlineAt else { return }
+            let generation = manager.cameraReadiness.generation
+            let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            manager.expireCameraReadinessDeadline(generation: generation)
         }
     }
 
@@ -291,6 +269,28 @@ private struct ARScreenContent: View {
         VStack(spacing: 0) {
             statusCard
                 .padding(.top, 4)
+            if let message = manager.cameraReadinessMessage {
+                VStack(spacing: 6) {
+                    Text(message)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                    if manager.canRetryCameraReadiness {
+                        Button("Retry") { manager.retryCameraReadiness() }
+                            .font(.caption.weight(.semibold))
+                    } else if manager.cameraReadiness.suggestedAction == .openSettings {
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(10)
+                .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 24)
+            }
 
             Spacer()
 
@@ -441,6 +441,13 @@ private struct ARScreenContent: View {
 
             if let placement = manager.nearestPlacementDisclosure {
                 Text(placement)
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                    .multilineTextAlignment(.center)
+            }
+
+            if let vertical = manager.nearestVerticalDisclosure {
+                Text(vertical)
                     .font(.caption2)
                     .foregroundStyle(.yellow)
                     .multilineTextAlignment(.center)
@@ -638,7 +645,7 @@ private struct ARScreenContent: View {
 
     private func syncSliders() {
         guard let drop = manager.nearestDrop else { return }
-        liveHeight = drop.heightAboveGround
+        liveHeight = drop.presentationHeightAboveGround
         liveScale = drop.scale
         liveRotation = manager.nearestDropFacingDegrees()
     }
@@ -651,14 +658,14 @@ private struct ARScreenContent: View {
             return
         }
         let results = arView.raycast(
-            from: location, allowing: .estimatedPlane, alignment: .any
+            from: location, allowing: .existingPlaneGeometry, alignment: .horizontal
         )
-        guard let hit = results.first else {
+        guard let hit = results.first, let support = manager.supportHit(from: hit) else {
+            manager.showPersistError("Point at a measured supporting surface and try again", critical: false)
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             return
         }
-        let t = hit.worldTransform.columns.3
-        let outcome = manager.relocateNearestDrop(to: SIMD3(t.x, t.y, t.z))
+        let outcome = manager.relocateNearestDrop(to: support)
         guard outcome != .rejected else {
             UINotificationFeedbackGenerator().notificationOccurred(.error)
             pinningToSpot = false

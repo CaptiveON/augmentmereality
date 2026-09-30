@@ -648,7 +648,7 @@ struct CreateWizard: View {
         guard let choice, let pin else { return }
         let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let recipient = recipientName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let drop = GeoDrop(
+        var drop = GeoDrop(
             content: choice.content,
             message: message.trimmingCharacters(in: .whitespacesAndNewlines),
             latitude: pin.latitude,
@@ -665,6 +665,9 @@ struct CreateWizard: View {
             createdBy: name.isEmpty ? "Someone" : name,
             anchorMode: rooftop ? "rooftop" : "ground",
             recipientName: recipient.isEmpty ? nil : recipient
+        )
+        drop.verticalPlacement = VerticalPlacement(
+            reference: rooftop ? VerticalPlacement.Reference.rooftop : VerticalPlacement.Reference.terrain
         )
         Task {
             do {

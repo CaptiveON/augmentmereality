@@ -8,6 +8,7 @@ struct DropsListScreen: View {
 
     @State private var sharingDrop: GeoDrop?
     @State private var actionError: String?
+    @State private var loadingPage = false
 
     var body: some View {
         NavigationStack {
@@ -16,6 +17,26 @@ struct DropsListScreen: View {
             // "No drops yet" with the loss invisible.
             VStack(spacing: 0) {
                 banners
+                if account.uid != nil, library.ownerSyncProgress?.isComplete != true {
+                    HStack {
+                        Text(library.ownerSyncProgress.map {
+                            "\($0.loadedRows) cloud drops loaded · sync incomplete"
+                        } ?? "Library sync is incomplete")
+                            .font(.caption)
+                        Spacer()
+                        Button(loadingPage ? "Loading…" : "Continue sync") {
+                            loadingPage = true
+                            Task {
+                                await library.refreshLibrary()
+                                loadingPage = false
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .disabled(loadingPage)
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 6)
+                }
                 content
             }
             .navigationTitle("Drops")
@@ -30,7 +51,7 @@ struct DropsListScreen: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        Task { await library.refresh(near: locationService.location) }
+                        Task { await library.refreshLibrary() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
