@@ -7,6 +7,8 @@ import Foundation
 ///
 /// Requires the iCloud → CloudKit capability (paid Apple Developer team). Until then,
 /// keep `AppConfig.cloudKitEnabled = false` and everything runs on the local store.
+/// The store has no mutable instance state; each operation owns its CloudKit
+/// request and returns value drops to the caller.
 final class CloudKitDropStore: DropStore {
     private static let recordType = "GeoDrop"
 

@@ -2,9 +2,10 @@ import CoreLocation
 import Foundation
 import SwiftUI
 
-/// A piece of virtual 3D content pinned to a real-world coordinate.
-struct GeoDrop: Identifiable, Codable, Equatable, Hashable {
-    enum Content: String, Codable, CaseIterable, Identifiable {
+/// A piece of virtual 3D content pinned to a real-world coordinate. Stored
+/// fields are values; UI colors and locations are derived on the caller's side.
+struct GeoDrop: Identifiable, Codable, Equatable, Hashable, Sendable {
+    enum Content: String, Codable, CaseIterable, Identifiable, Sendable {
         case text3D
         case balloons
         case gift

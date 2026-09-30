@@ -1,0 +1,46 @@
+{
+  "devicesAndConfigurations" : [
+    {
+      "device" : {
+        "architecture" : "arm64",
+        "deviceId" : "202D9961-CC2D-48BA-8F77-3668103D73D0",
+        "deviceName" : "iPhone 17 Pro Max",
+        "modelName" : "iPhone 17 Pro Max",
+        "osBuildNumber" : "23F77",
+        "osVersion" : "26.5",
+        "platform" : "iOS Simulator"
+      },
+      "expectedFailures" : 0,
+      "failedTests" : 0,
+      "passedTests" : 105,
+      "skippedTests" : 0,
+      "testPlanConfiguration" : {
+        "configurationId" : "1",
+        "configurationName" : "Test Scheme Action"
+      }
+    }
+  ],
+  "environmentDescription" : "AugmentMeReality · Built with macOS 27.0",
+  "expectedFailures" : 0,
+  "failedTests" : 0,
+  "finishTime" : 1790725898.427,
+  "passedTests" : 105,
+  "result" : "Passed",
+  "skippedTests" : 0,
+  "startTime" : 1790725849.067,
+  "statistics" : [
+
+  ],
+  "testFailures" : [
+
+  ],
+  "title" : "Test - AugmentMeReality",
+  "topInsights" : [
+    {
+      "category" : "Longest Test Runs",
+      "impact" : "32% of duration",
+      "text" : "1 longest test run with outlier durations exceeding 0.68s (three standard deviations)"
+    }
+  ],
+  "totalTestCount" : 105
+}

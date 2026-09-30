@@ -1,0 +1,12 @@
+{
+  "run": 36645268084,
+  "pullRequest": 36,
+  "baseCommit": "eb63a99325a34ff453c320748d8c31d6aaf80ea4",
+  "mergeable": "MERGEABLE",
+  "mergeState": "UNSTABLE",
+  "jobsStarted": false,
+  "failureClass": "GitHub Actions account billing or spending-limit restriction",
+  "url": "https://github.com/CaptiveON/augmentmereality/actions/runs/36645268084",
+  "sourceConflict": false,
+  "checksBypassed": false
+}

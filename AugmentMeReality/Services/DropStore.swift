@@ -5,7 +5,9 @@ import os
 
 /// Storage backend for drops. Local JSON is always active (offline cache / no-account
 /// mode); CloudKit joins in Wave 3 when `AppConfig.cloudKitEnabled` is true.
-protocol DropStore {
+/// Calls cross the main-actor library boundary, so implementations must own
+/// mutable state in an actor or be immutable and safe to share between tasks.
+protocol DropStore: Sendable {
     /// `near` is a hint for backends that support geo queries; local storage ignores it.
     func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop]
     /// Returns the CANONICAL stored form — a backend that stamps fields during
@@ -21,7 +23,7 @@ protocol DropStore {
 /// only the server may answer. Query set-differences and cache-satisfiable
 /// reads are structurally forbidden as evidence — an offline delete would
 /// count its own unflushed write as proof and retire its own tombstone.
-protocol DropAbsenceVerifying {
+protocol DropAbsenceVerifying: Sendable {
     /// True ONLY when the SERVER answered and the document does not exist.
     /// Cache-served reads, network failures, permission denials → false.
     func serverConfirmsAbsent(_ id: UUID) async -> Bool
@@ -52,7 +54,9 @@ enum AbsenceCapability: Sendable {
 /// its results (latency compensation), so rows with pending writes appear in
 /// it without the server ever having acknowledged them. Only rows in
 /// `serverConfirmedIDs` (no pending writes) may produce the acked fact.
-struct CloudRead {
+/// This is a value snapshot; the SDK's mutable query objects never cross the
+/// library boundary.
+struct CloudRead: Sendable {
     var drops: [GeoDrop]
     var servedFromCache: Bool
     var serverConfirmedIDs: Set<UUID>
@@ -60,7 +64,7 @@ struct CloudRead {
 
 /// Adopted by cloud stores that can report read provenance. The plain
 /// `loadDrops` stays for display merging; THIS is what evidence keys on.
-protocol ProvenancedDropStore {
+protocol ProvenancedDropStore: Sendable {
     func loadDropsWithProvenance(
         near location: CLLocation?, radius: CLLocationDistance
     ) async throws -> CloudRead
@@ -122,7 +126,7 @@ enum LocalLoadOutcome: Equatable, Sendable {
 /// PROTOCOL, so test doubles can adopt it and the branches it gates are
 /// reachable from tests — the old `as? LocalDropStore` concrete downcast made
 /// two round-4 tests silently vacuous.
-protocol LocalStoreDiagnostics: AnyObject {
+protocol LocalStoreDiagnostics: AnyObject, Sendable {
     func lastLoadOutcome() async -> LocalLoadOutcome?
     func lastLoadReadWarning() async -> String?
     func lastStorageIncident() async -> StorageIncidentObservation?
@@ -214,6 +218,13 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     }
 
     func loadDrops(near location: CLLocation?, radius: CLLocationDistance) async throws -> [GeoDrop] {
+        try readDropsFromDisk()
+    }
+
+    /// Keep the read-modify-write path inside one actor turn. An `await` in
+    /// save/delete would let another operation enter after the read and before
+    /// the write, even though the file operations themselves are synchronous.
+    private func readDropsFromDisk() throws -> [GeoDrop] {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             // Round 4 (sync-2): an absent file clears only the TRANSIENT
             // warning — a journaled incident survives ("the file vanished" is
@@ -410,7 +421,7 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     func save(_ drop: GeoDrop) async throws -> GeoDrop {
         // Counsel round 2 (C5): a throwing read must RETHROW — collapsing it to
         // [] and persisting would atomically erase the whole library.
-        var drops = try await loadDrops(near: nil, radius: 0)
+        var drops = try readDropsFromDisk()
         guard canRewriteAfterLoad else { throw UnsafeLocalRewrite.unpreservedOriginal }
         drops.removeAll { $0.id == drop.id }
         drops.append(drop)
@@ -419,7 +430,7 @@ actor LocalDropStore: DropStore, LocalStoreDiagnostics {
     }
 
     func delete(_ drop: GeoDrop) async throws {
-        var drops = try await loadDrops(near: nil, radius: 0)
+        var drops = try readDropsFromDisk()
         guard canRewriteAfterLoad else { throw UnsafeLocalRewrite.unpreservedOriginal }
         drops.removeAll { $0.id == drop.id }
         try persist(drops)
